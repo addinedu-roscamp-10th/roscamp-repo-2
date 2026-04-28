@@ -112,5 +112,67 @@ pytest server/main_service/tests/unit/test_task_manager.py
 ```bash
 ./scripts/run_all_tests.sh
 ```
+<<<<<<< HEAD
 # roscamp-repo-2
 ROS2와 AI를 활용한 자율주행 로봇개발자 부트캠프 2팀 저장소. 스마트캐스트 로보틱스 (SmartCast Robotics) : 다품종 소량 생산 사형 주조 공정 스마트 팩토리 시스템 구축
+=======
+
+## 공통 데이터 모델과 Enum 사용 기준
+
+`main_service`에서 여러 모듈이 함께 사용하는 데이터 구조와 상태값은 아래 파일에서 관리합니다.
+
+```text
+server/main_service/src/main_service/
+├── pydantic_models.py  # 데이터 구조, request/response, DB record 모델
+└── enums.py            # 상태값, 작업 타입, 고정 코드값
+```
+
+### `pydantic_models.py`
+
+`pydantic_models.py`는 컴포넌트 사이에서 주고받는 데이터의 형식과 검증 규칙을 정의할 때 사용합니다.
+
+사용하는 경우:
+
+- API request/response 데이터 구조를 정의할 때
+- DB에서 조회한 record 구조를 코드에서 명확히 표현할 때
+- Task, Order, Item, Equipment, AMR 관련 데이터 필드와 타입을 고정해야 할 때
+- 필수값, 선택값, 숫자 범위 같은 validation이 필요할 때
+- 여러 모듈이 같은 데이터 구조를 공유해야 할 때
+
+예:
+
+```python
+from main_service.pydantic_models import CreateOrdInput
+
+order = CreateOrdInput(user_id=1)
+```
+
+### `enums.py`
+
+`enums.py`는 상태값이나 작업 타입처럼 정해진 값만 사용해야 하는 경우에 사용합니다.
+
+사용하는 경우:
+
+- 주문 상태, 설비 상태, AMR 상태처럼 값이 정해져 있을 때
+- 문자열 오타로 인한 오류를 줄이고 싶을 때
+- DB, API, State Diagram, Sequence Diagram에서 같은 상태명을 공유해야 할 때
+- 조건문에서 상태값을 비교해야 할 때
+
+예:
+
+```python
+from main_service.enums import OrdStat, EquipStat
+
+if order_status == OrdStat.RCVD:
+    ...
+
+if equipment_status == EquipStat.IDLE:
+    ...
+```
+
+새로운 상태값이나 작업 타입이 필요하면 문자열을 각 파일에 직접 흩어 쓰지 말고,
+먼저 `enums.py`에 추가한 뒤 필요한 모듈에서 import해서 사용합니다.
+
+새로운 데이터 구조가 필요하면 각 모듈 안에 중복 class를 만들지 말고,
+공통으로 쓰는 구조인지 확인한 뒤 `pydantic_models.py`에 추가합니다.
+>>>>>>> aec3e12 (ENUM & Pydantic Class & state manager v1)
