@@ -49,6 +49,13 @@ class ProductionStartOrderAck:
     equip_task_txn_id: int
 
 
+@dataclass
+class PatternAssignment:
+    ord_id: int
+    pattern_id: int | None
+    ptn_loc_id: int | None
+
+
 _STATUS_CODE = {1: "QUE", 2: "PROC", 3: "SUCC", 4: "FAIL"}
 _STAGE_CODE = {
     1: "QUE",
@@ -183,6 +190,12 @@ class ManagementClient:
             return [_ack_from_proto(order_ack) for order_ack in resp.ack.orders]
         return [_legacy_wo_to_ack(wo) for wo in resp.work_orders]
 
+    def start_production_one(self, ord_id: int) -> ProductionStartOrderAck:
+        acks = self.start_production([str(ord_id)])
+        if not acks:
+            raise ValueError(f"ord_id={ord_id} start_production returned no ack")
+        return acks[0]
+
     def list_items(self, order_id: str | None = None, limit: int = 100):
         """현재 활성 item 목록. proto Item 메시지 그대로 반환."""
         req = management_pb2.ListItemsRequest(order_id=order_id or "", limit=limit)
@@ -246,6 +259,20 @@ class ManagementClient:
             }
             for row in resp.patterns
         ]
+
+    def register_pattern(self, ord_id: int, ptn_loc_id: int) -> PatternAssignment:
+        resp = self._stub.RegisterPattern(
+            management_pb2.RegisterPatternRequest(
+                ord_id=int(ord_id),
+                ptn_loc_id=int(ptn_loc_id),
+            ),
+            timeout=self._timeout,
+        )
+        return PatternAssignment(
+            ord_id=resp.ord_id,
+            pattern_id=resp.pattern_id if resp.HasField("pattern_id") else None,
+            ptn_loc_id=resp.ptn_loc_id if resp.HasField("ptn_loc_id") else None,
+        )
 
     def get_pattern(self, ord_id: int) -> dict[str, Any]:
         resp = self._stub.GetPattern(

@@ -181,6 +181,11 @@ message ListPatternsResponse {
   repeated PatternAssignment patterns = 1;
 }
 
+message RegisterPatternRequest {
+  int32 ord_id = 1;
+  int32 ptn_loc_id = 2;
+}
+
 message EquipTask {
   int32  txn_id       = 1;
   string res_id       = 2;
@@ -461,6 +466,7 @@ service ManagementService {
   rpc CalculateSchedulePriority(CalculateSchedulePriorityRequest) returns (CalculateSchedulePriorityResponse);
   rpc ListPatterns(Empty) returns (ListPatternsResponse);
   rpc GetPattern(GetPatternRequest) returns (PatternAssignment);
+  rpc RegisterPattern(RegisterPatternRequest) returns (PatternAssignment);
 
   // Task Allocator
   rpc AllocateItem(AllocateRequest) returns (AllocateResponse);

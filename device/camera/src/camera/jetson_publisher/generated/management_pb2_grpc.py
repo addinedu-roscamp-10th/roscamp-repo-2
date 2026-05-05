@@ -98,6 +98,11 @@ class ManagementServiceStub(object):
                 request_serializer=management__pb2.GetPatternRequest.SerializeToString,
                 response_deserializer=management__pb2.PatternAssignment.FromString,
                 _registered_method=True)
+        self.RegisterPattern = channel.unary_unary(
+                '/casting.management.v1.ManagementService/RegisterPattern',
+                request_serializer=management__pb2.RegisterPatternRequest.SerializeToString,
+                response_deserializer=management__pb2.PatternAssignment.FromString,
+                _registered_method=True)
         self.AllocateItem = channel.unary_unary(
                 '/casting.management.v1.ManagementService/AllocateItem',
                 request_serializer=management__pb2.AllocateRequest.SerializeToString,
@@ -240,6 +245,12 @@ class ManagementServiceServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def GetPattern(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RegisterPattern(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -402,6 +413,11 @@ def add_ManagementServiceServicer_to_server(servicer, server):
             'GetPattern': grpc.unary_unary_rpc_method_handler(
                     servicer.GetPattern,
                     request_deserializer=management__pb2.GetPatternRequest.FromString,
+                    response_serializer=management__pb2.PatternAssignment.SerializeToString,
+            ),
+            'RegisterPattern': grpc.unary_unary_rpc_method_handler(
+                    servicer.RegisterPattern,
+                    request_deserializer=management__pb2.RegisterPatternRequest.FromString,
                     response_serializer=management__pb2.PatternAssignment.SerializeToString,
             ),
             'AllocateItem': grpc.unary_unary_rpc_method_handler(
@@ -797,6 +813,33 @@ class ManagementService(object):
             target,
             '/casting.management.v1.ManagementService/GetPattern',
             management__pb2.GetPatternRequest.SerializeToString,
+            management__pb2.PatternAssignment.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RegisterPattern(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/casting.management.v1.ManagementService/RegisterPattern',
+            management__pb2.RegisterPatternRequest.SerializeToString,
             management__pb2.PatternAssignment.FromString,
             options,
             channel_credentials,

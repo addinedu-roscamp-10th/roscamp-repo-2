@@ -7,6 +7,7 @@ from services.adapters.robotics.amr_battery import AmrBatteryService
 from services.legacy.execution_monitor import ExecutionMonitor
 from services.legacy.robot_executor import RobotExecutor
 from services.core.task_allocator import TaskAllocator
+from services.core.pattern_command_service import PatternCommandService
 from services.core.task_manager import TaskManager
 from services.core.traffic_manager import TrafficManager
 from services.core.orchestrator import Orchestrator
@@ -51,6 +52,7 @@ class Container:
         
         # 1. Base Core Managers
         self.task_manager = TaskManager()
+        self.pattern_command_service = PatternCommandService()
         self.item_query_service = ItemQueryService()
         self.pattern_query_service = PatternQueryService()
         self.production_order_query_service = ProductionOrderQueryService()

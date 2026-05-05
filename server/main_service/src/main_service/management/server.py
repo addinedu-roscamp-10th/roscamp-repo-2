@@ -72,6 +72,7 @@ class ManagementServicer(
     def __init__(self) -> None:
         # Container에서 조립 완료된 의존성 객체들을 참조
         self.task_manager = container.task_manager
+        self.pattern_command_service = container.pattern_command_service
         self.item_query_service = container.item_query_service
         self.pattern_query_service = container.pattern_query_service
         self.production_order_query_service = container.production_order_query_service

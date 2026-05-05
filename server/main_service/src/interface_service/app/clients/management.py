@@ -183,6 +183,33 @@ class ManagementClient:
 
         raise ManagementUnavailable("StartProduction returned no result payload")
 
+    def register_pattern(self, ord_id: int, ptn_loc_id: int):
+        """발주↔패턴 위치 등록 proxy."""
+        try:
+            self._ensure_channel()
+            assert self._stub is not None
+            resp = self._stub.RegisterPattern(
+                management_pb2.RegisterPatternRequest(
+                    ord_id=int(ord_id),
+                    ptn_loc_id=int(ptn_loc_id),
+                ),
+                timeout=self._timeout,
+            )
+        except grpc.RpcError as exc:
+            code = exc.code() if hasattr(exc, "code") else None
+            if code == grpc.StatusCode.INVALID_ARGUMENT:
+                raise ValueError(exc.details() or "invalid argument") from exc
+            if code == grpc.StatusCode.NOT_FOUND:
+                raise LookupError(exc.details() or "not found") from exc
+            raise ManagementUnavailable(
+                f"RegisterPattern failed ({code}): {exc.details() if hasattr(exc, 'details') else exc}"
+            ) from exc
+        return {
+            "ord_id": resp.ord_id,
+            "pattern_id": resp.pattern_id if resp.HasField("pattern_id") else None,
+            "ptn_loc_id": resp.ptn_loc_id if resp.HasField("ptn_loc_id") else None,
+        }
+
     def close(self) -> None:
         if self._channel is not None:
             try:

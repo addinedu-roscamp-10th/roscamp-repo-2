@@ -340,10 +340,19 @@ class PatternControlPage(QWidget):
         self._sync_selection_view()
 
     def _register_pattern(self, ord_id: int, ptn_loc_id: int) -> dict[str, Any] | None:
-        result = self._api.register_pattern(ord_id, ptn_loc_id)
-        if isinstance(result, dict):
-            self._patterns[ord_id] = ptn_loc_id
-        return result if isinstance(result, dict) else None
+        from app.management_client import ManagementClient
+
+        client = ManagementClient()
+        try:
+            result = client.register_pattern(ord_id, ptn_loc_id)
+        finally:
+            client.close()
+        self._patterns[ord_id] = ptn_loc_id
+        return {
+            "ord_id": result.ord_id,
+            "pattern_id": result.pattern_id,
+            "ptn_loc_id": result.ptn_loc_id,
+        }
 
     @pyqtSlot()
     def _on_register_pattern(self) -> None:
@@ -374,12 +383,18 @@ class PatternControlPage(QWidget):
         ptn_loc_id = self._pattern_spin.value()
         try:
             self._register_pattern(ord_id, ptn_loc_id)
-            result = self._api.start_production_one(ord_id)
+            from app.management_client import ManagementClient
+
+            client = ManagementClient()
+            try:
+                result = client.start_production_one(ord_id)
+            finally:
+                client.close()
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "패턴 등록/생산 시작 실패", str(exc))
             return
 
-        msg = (result or {}).get("message", "Started.")
+        msg = result.reason or "Started."
         QMessageBox.information(
             self,
             "생산 시작 완료",

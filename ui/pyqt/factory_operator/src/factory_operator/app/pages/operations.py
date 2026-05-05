@@ -769,11 +769,17 @@ class OperationsPage(QWidget):
         if ord_id is None:
             return
         try:
-            result = self._api.start_production_one(ord_id)
+            from app.management_client import ManagementClient
+
+            client = ManagementClient()
+            try:
+                result = client.start_production_one(ord_id)
+            finally:
+                client.close()
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "라인 투입 실패", str(exc))
             return
-        msg = (result or {}).get("message", "Started.")
+        msg = result.reason or "Started."
         QMessageBox.information(self, "라인 투입 완료", f"발주 {ord_id}\n{msg}")
         self.refresh()
 
