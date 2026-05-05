@@ -129,6 +129,11 @@ message Item {
   string    curr_res    = 4;   // zone_nm 에서 projection 한 legacy current resource label
   int64     insp_id     = 5;   // legacy placeholder (현재 0)
   Timestamp mfg_at      = 6;   // item_stat.updated_at 기반 시각
+  string    flow_stat   = 7;   // smartcast item.flow_stat
+  string    zone_nm     = 8;   // smartcast item.zone_nm
+  optional bool result        = 9;   // inspection result if present
+  string    cur_stat    = 10;  // legacy stage code ("QUE", "MM", ...)
+  optional bool is_defective  = 11;  // result inverse projected for legacy UI
 }
 
 message ListItemsRequest {
@@ -139,6 +144,187 @@ message ListItemsRequest {
 
 message ListItemsResponse {
   repeated Item items = 1;
+}
+
+message ProductionOrder {
+  int32  ord_id               = 1;
+  int32  user_id              = 2;
+  string latest_stat          = 3;
+  string company_name         = 4;
+  string customer_name        = 5;
+  double total_amount         = 6;
+  string requested_delivery   = 7;
+  string confirmed_delivery   = 8;
+  string created_at           = 9;
+}
+
+message ListProductionOrdersRequest {
+  repeated string status_filters = 1;  // APPR, MFG, ...
+  int32 limit = 2;
+}
+
+message ListProductionOrdersResponse {
+  repeated ProductionOrder orders = 1;
+}
+
+message PatternAssignment {
+  int32 ord_id = 1;
+  optional int32 pattern_id = 2;
+  optional int32 ptn_loc_id = 3;
+}
+
+message GetPatternRequest {
+  int32 ord_id = 1;
+}
+
+message ListPatternsResponse {
+  repeated PatternAssignment patterns = 1;
+}
+
+message RegisterPatternRequest {
+  int32 ord_id = 1;
+  int32 ptn_loc_id = 2;
+}
+
+message EquipTask {
+  int32  txn_id       = 1;
+  string res_id       = 2;
+  string task_type    = 3;
+  string txn_stat     = 4;
+  optional int32 item_id      = 5;
+  optional int32 strg_loc_id  = 6;
+  optional int32 ship_loc_id  = 7;
+  string req_at       = 8;
+  string start_at     = 9;
+  string end_at       = 10;
+}
+
+message ListEquipTasksRequest {
+  string res_id = 1;
+  int32 item_id = 2;
+  int32 limit = 3;
+}
+
+message ListEquipTasksResponse {
+  repeated EquipTask tasks = 1;
+}
+
+message PpOptionDefinition {
+  int32  pp_id       = 1;
+  string pp_nm       = 2;
+  double extra_cost  = 3;
+}
+
+message PpTaskStatus {
+  int32  txn_id      = 1;
+  int32  ord_id      = 2;
+  optional int32 map_id      = 3;
+  string pp_nm       = 4;
+  optional int32 item_id     = 5;
+  optional int32 operator_id = 6;
+  string txn_stat    = 7;
+  string req_at      = 8;
+  string start_at    = 9;
+  string end_at      = 10;
+}
+
+message GetItemPpRequirementsRequest {
+  int32 item_id = 1;
+}
+
+message ItemPpRequirementsResponse {
+  int32 item_id = 1;
+  int32 ord_id = 2;
+  repeated PpOptionDefinition pp_options = 3;
+  repeated PpTaskStatus pp_task_status = 4;
+}
+
+message EquipmentEntry {
+  string res_id = 1;
+  string res_type = 2;
+  string model_nm = 3;
+  optional int32 zone_id = 4;
+  string cur_stat = 5;
+  string err_msg = 6;
+  string updated_at = 7;
+}
+
+message ListEquipmentResponse {
+  repeated EquipmentEntry equipment = 1;
+}
+
+message StageEntry {
+  int32 zone_id = 1;
+  string zone_nm = 2;
+  int32 in_progress_count = 3;
+}
+
+message ListStagesResponse {
+  repeated StageEntry stages = 1;
+}
+
+message OrderItemProgressEntry {
+  int32 ord_id = 1;
+  int32 total_items = 2;
+  map<string, int32> by_stat = 3;
+}
+
+message ListOrderItemProgressResponse {
+  repeated OrderItemProgressEntry items = 1;
+}
+
+message ScheduleJob {
+  string id = 1;
+  string order_id = 2;
+  double priority_score = 3;
+  int32 priority_rank = 4;
+  string assigned_stage = 5;
+  string status = 6;
+  string estimated_completion = 7;
+  string started_at = 8;
+  string completed_at = 9;
+  string created_at = 10;
+  string company_name = 11;
+  string customer_name = 12;
+  double total_amount = 13;
+  string requested_delivery = 14;
+  string confirmed_delivery = 15;
+  string order_status = 16;
+}
+
+message ListScheduleJobsResponse {
+  repeated ScheduleJob jobs = 1;
+}
+
+message CalculateSchedulePriorityRequest {
+  repeated string order_ids = 1;
+}
+
+message PriorityFactor {
+  string name = 1;
+  double score = 2;
+  double max_score = 3;
+  string detail = 4;
+}
+
+message PriorityResult {
+  string order_id = 1;
+  string company_name = 2;
+  string product_summary = 3;
+  int32 total_quantity = 4;
+  string requested_delivery = 5;
+  double total_score = 6;
+  int32 rank = 7;
+  repeated PriorityFactor factors = 8;
+  string recommendation_reason = 9;
+  string delay_risk = 10;
+  string ready_status = 11;
+  repeated string blocking_reasons = 12;
+  int32 estimated_days = 13;
+}
+
+message CalculateSchedulePriorityResponse {
+  repeated PriorityResult results = 1;
 }
 
 // -----------------------------------------------------------------------------
@@ -270,6 +456,17 @@ service ManagementService {
   // Task Manager (work_order + items)
   rpc StartProduction(StartProductionRequest) returns (StartProductionResponse);
   rpc ListItems(ListItemsRequest) returns (ListItemsResponse);
+  rpc ListProductionOrders(ListProductionOrdersRequest) returns (ListProductionOrdersResponse);
+  rpc ListEquipTasks(ListEquipTasksRequest) returns (ListEquipTasksResponse);
+  rpc GetItemPpRequirements(GetItemPpRequirementsRequest) returns (ItemPpRequirementsResponse);
+  rpc ListEquipment(Empty) returns (ListEquipmentResponse);
+  rpc ListStages(Empty) returns (ListStagesResponse);
+  rpc ListOrderItemProgress(Empty) returns (ListOrderItemProgressResponse);
+  rpc ListScheduleJobs(Empty) returns (ListScheduleJobsResponse);
+  rpc CalculateSchedulePriority(CalculateSchedulePriorityRequest) returns (CalculateSchedulePriorityResponse);
+  rpc ListPatterns(Empty) returns (ListPatternsResponse);
+  rpc GetPattern(GetPatternRequest) returns (PatternAssignment);
+  rpc RegisterPattern(RegisterPatternRequest) returns (PatternAssignment);
 
   // Task Allocator
   rpc AllocateItem(AllocateRequest) returns (AllocateResponse);

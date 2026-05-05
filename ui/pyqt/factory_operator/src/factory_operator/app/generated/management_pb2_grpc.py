@@ -48,6 +48,61 @@ class ManagementServiceStub(object):
                 request_serializer=management__pb2.ListItemsRequest.SerializeToString,
                 response_deserializer=management__pb2.ListItemsResponse.FromString,
                 _registered_method=True)
+        self.ListProductionOrders = channel.unary_unary(
+                '/casting.management.v1.ManagementService/ListProductionOrders',
+                request_serializer=management__pb2.ListProductionOrdersRequest.SerializeToString,
+                response_deserializer=management__pb2.ListProductionOrdersResponse.FromString,
+                _registered_method=True)
+        self.ListEquipTasks = channel.unary_unary(
+                '/casting.management.v1.ManagementService/ListEquipTasks',
+                request_serializer=management__pb2.ListEquipTasksRequest.SerializeToString,
+                response_deserializer=management__pb2.ListEquipTasksResponse.FromString,
+                _registered_method=True)
+        self.GetItemPpRequirements = channel.unary_unary(
+                '/casting.management.v1.ManagementService/GetItemPpRequirements',
+                request_serializer=management__pb2.GetItemPpRequirementsRequest.SerializeToString,
+                response_deserializer=management__pb2.ItemPpRequirementsResponse.FromString,
+                _registered_method=True)
+        self.ListEquipment = channel.unary_unary(
+                '/casting.management.v1.ManagementService/ListEquipment',
+                request_serializer=management__pb2.Empty.SerializeToString,
+                response_deserializer=management__pb2.ListEquipmentResponse.FromString,
+                _registered_method=True)
+        self.ListStages = channel.unary_unary(
+                '/casting.management.v1.ManagementService/ListStages',
+                request_serializer=management__pb2.Empty.SerializeToString,
+                response_deserializer=management__pb2.ListStagesResponse.FromString,
+                _registered_method=True)
+        self.ListOrderItemProgress = channel.unary_unary(
+                '/casting.management.v1.ManagementService/ListOrderItemProgress',
+                request_serializer=management__pb2.Empty.SerializeToString,
+                response_deserializer=management__pb2.ListOrderItemProgressResponse.FromString,
+                _registered_method=True)
+        self.ListScheduleJobs = channel.unary_unary(
+                '/casting.management.v1.ManagementService/ListScheduleJobs',
+                request_serializer=management__pb2.Empty.SerializeToString,
+                response_deserializer=management__pb2.ListScheduleJobsResponse.FromString,
+                _registered_method=True)
+        self.CalculateSchedulePriority = channel.unary_unary(
+                '/casting.management.v1.ManagementService/CalculateSchedulePriority',
+                request_serializer=management__pb2.CalculateSchedulePriorityRequest.SerializeToString,
+                response_deserializer=management__pb2.CalculateSchedulePriorityResponse.FromString,
+                _registered_method=True)
+        self.ListPatterns = channel.unary_unary(
+                '/casting.management.v1.ManagementService/ListPatterns',
+                request_serializer=management__pb2.Empty.SerializeToString,
+                response_deserializer=management__pb2.ListPatternsResponse.FromString,
+                _registered_method=True)
+        self.GetPattern = channel.unary_unary(
+                '/casting.management.v1.ManagementService/GetPattern',
+                request_serializer=management__pb2.GetPatternRequest.SerializeToString,
+                response_deserializer=management__pb2.PatternAssignment.FromString,
+                _registered_method=True)
+        self.RegisterPattern = channel.unary_unary(
+                '/casting.management.v1.ManagementService/RegisterPattern',
+                request_serializer=management__pb2.RegisterPatternRequest.SerializeToString,
+                response_deserializer=management__pb2.PatternAssignment.FromString,
+                _registered_method=True)
         self.AllocateItem = channel.unary_unary(
                 '/casting.management.v1.ManagementService/AllocateItem',
                 request_serializer=management__pb2.AllocateRequest.SerializeToString,
@@ -130,6 +185,72 @@ class ManagementServiceServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def ListItems(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListProductionOrders(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListEquipTasks(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetItemPpRequirements(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListEquipment(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListStages(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListOrderItemProgress(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListScheduleJobs(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CalculateSchedulePriority(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListPatterns(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetPattern(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RegisterPattern(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -243,6 +364,61 @@ def add_ManagementServiceServicer_to_server(servicer, server):
                     servicer.ListItems,
                     request_deserializer=management__pb2.ListItemsRequest.FromString,
                     response_serializer=management__pb2.ListItemsResponse.SerializeToString,
+            ),
+            'ListProductionOrders': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListProductionOrders,
+                    request_deserializer=management__pb2.ListProductionOrdersRequest.FromString,
+                    response_serializer=management__pb2.ListProductionOrdersResponse.SerializeToString,
+            ),
+            'ListEquipTasks': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListEquipTasks,
+                    request_deserializer=management__pb2.ListEquipTasksRequest.FromString,
+                    response_serializer=management__pb2.ListEquipTasksResponse.SerializeToString,
+            ),
+            'GetItemPpRequirements': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetItemPpRequirements,
+                    request_deserializer=management__pb2.GetItemPpRequirementsRequest.FromString,
+                    response_serializer=management__pb2.ItemPpRequirementsResponse.SerializeToString,
+            ),
+            'ListEquipment': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListEquipment,
+                    request_deserializer=management__pb2.Empty.FromString,
+                    response_serializer=management__pb2.ListEquipmentResponse.SerializeToString,
+            ),
+            'ListStages': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListStages,
+                    request_deserializer=management__pb2.Empty.FromString,
+                    response_serializer=management__pb2.ListStagesResponse.SerializeToString,
+            ),
+            'ListOrderItemProgress': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListOrderItemProgress,
+                    request_deserializer=management__pb2.Empty.FromString,
+                    response_serializer=management__pb2.ListOrderItemProgressResponse.SerializeToString,
+            ),
+            'ListScheduleJobs': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListScheduleJobs,
+                    request_deserializer=management__pb2.Empty.FromString,
+                    response_serializer=management__pb2.ListScheduleJobsResponse.SerializeToString,
+            ),
+            'CalculateSchedulePriority': grpc.unary_unary_rpc_method_handler(
+                    servicer.CalculateSchedulePriority,
+                    request_deserializer=management__pb2.CalculateSchedulePriorityRequest.FromString,
+                    response_serializer=management__pb2.CalculateSchedulePriorityResponse.SerializeToString,
+            ),
+            'ListPatterns': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListPatterns,
+                    request_deserializer=management__pb2.Empty.FromString,
+                    response_serializer=management__pb2.ListPatternsResponse.SerializeToString,
+            ),
+            'GetPattern': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetPattern,
+                    request_deserializer=management__pb2.GetPatternRequest.FromString,
+                    response_serializer=management__pb2.PatternAssignment.SerializeToString,
+            ),
+            'RegisterPattern': grpc.unary_unary_rpc_method_handler(
+                    servicer.RegisterPattern,
+                    request_deserializer=management__pb2.RegisterPatternRequest.FromString,
+                    response_serializer=management__pb2.PatternAssignment.SerializeToString,
             ),
             'AllocateItem': grpc.unary_unary_rpc_method_handler(
                     servicer.AllocateItem,
@@ -368,6 +544,303 @@ class ManagementService(object):
             '/casting.management.v1.ManagementService/ListItems',
             management__pb2.ListItemsRequest.SerializeToString,
             management__pb2.ListItemsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListProductionOrders(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/casting.management.v1.ManagementService/ListProductionOrders',
+            management__pb2.ListProductionOrdersRequest.SerializeToString,
+            management__pb2.ListProductionOrdersResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListEquipTasks(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/casting.management.v1.ManagementService/ListEquipTasks',
+            management__pb2.ListEquipTasksRequest.SerializeToString,
+            management__pb2.ListEquipTasksResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetItemPpRequirements(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/casting.management.v1.ManagementService/GetItemPpRequirements',
+            management__pb2.GetItemPpRequirementsRequest.SerializeToString,
+            management__pb2.ItemPpRequirementsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListEquipment(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/casting.management.v1.ManagementService/ListEquipment',
+            management__pb2.Empty.SerializeToString,
+            management__pb2.ListEquipmentResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListStages(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/casting.management.v1.ManagementService/ListStages',
+            management__pb2.Empty.SerializeToString,
+            management__pb2.ListStagesResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListOrderItemProgress(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/casting.management.v1.ManagementService/ListOrderItemProgress',
+            management__pb2.Empty.SerializeToString,
+            management__pb2.ListOrderItemProgressResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListScheduleJobs(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/casting.management.v1.ManagementService/ListScheduleJobs',
+            management__pb2.Empty.SerializeToString,
+            management__pb2.ListScheduleJobsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CalculateSchedulePriority(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/casting.management.v1.ManagementService/CalculateSchedulePriority',
+            management__pb2.CalculateSchedulePriorityRequest.SerializeToString,
+            management__pb2.CalculateSchedulePriorityResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListPatterns(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/casting.management.v1.ManagementService/ListPatterns',
+            management__pb2.Empty.SerializeToString,
+            management__pb2.ListPatternsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetPattern(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/casting.management.v1.ManagementService/GetPattern',
+            management__pb2.GetPatternRequest.SerializeToString,
+            management__pb2.PatternAssignment.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RegisterPattern(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/casting.management.v1.ManagementService/RegisterPattern',
+            management__pb2.RegisterPatternRequest.SerializeToString,
+            management__pb2.PatternAssignment.FromString,
             options,
             channel_credentials,
             insecure,

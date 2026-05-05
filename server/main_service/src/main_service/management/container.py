@@ -7,11 +7,16 @@ from services.adapters.robotics.amr_battery import AmrBatteryService
 from services.legacy.execution_monitor import ExecutionMonitor
 from services.legacy.robot_executor import RobotExecutor
 from services.core.task_allocator import TaskAllocator
+from services.core.pattern_command_service import PatternCommandService
 from services.core.task_manager import TaskManager
 from services.core.traffic_manager import TrafficManager
 from services.core.orchestrator import Orchestrator
 from services.core.event_bridge import EventBridge
 from services.core.mock_state_manager import MockStateManager
+from services.query.item_query_service import ItemQueryService
+from services.query.pattern_query_service import PatternQueryService
+from services.query.production_order_query_service import ProductionOrderQueryService
+from services.query.schedule_query_service import ScheduleQueryService
 
 from services.adapters.vision.ai_client import AIServerConfig, AIUploader
 from services.adapters.vision.image_forwarder import ForwarderConfig, ImageForwarder
@@ -47,6 +52,11 @@ class Container:
         
         # 1. Base Core Managers
         self.task_manager = TaskManager()
+        self.pattern_command_service = PatternCommandService()
+        self.item_query_service = ItemQueryService()
+        self.pattern_query_service = PatternQueryService()
+        self.production_order_query_service = ProductionOrderQueryService()
+        self.schedule_query_service = ScheduleQueryService()
         self.rfid_service = RfidService()
         self.task_allocator = TaskAllocator()
         self.traffic_manager = TrafficManager()

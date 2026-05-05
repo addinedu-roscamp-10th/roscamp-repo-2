@@ -14,27 +14,26 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.clients.management import ManagementClient, ManagementUnavailable
 from smart_cast_db.database import get_db
-from smart_cast_db.models import Ord, OrdPattern
+from smart_cast_db.models import OrdPattern
 from app.schemas.schemas import OrdPatternIn, OrdPatternOut
 
 router = APIRouter(prefix="/api/production", tags=["production"])
 
 
 @router.post("/patterns", response_model=OrdPatternOut, status_code=201)
-def register_pattern(payload: OrdPatternIn, db: Session = Depends(get_db)) -> OrdPatternOut:
+def register_pattern(payload: OrdPatternIn) -> OrdPatternOut:
     """발주↔패턴 위치 등록 (ptn_loc_id 1-3). 발주 1:1 — 동일 ord_id 재등록 시 UPDATE."""
-    if not db.get(Ord, payload.ord_id):
-        raise HTTPException(404, f"ord_id={payload.ord_id} not found")
-    existing = db.get(OrdPattern, payload.ord_id)
-    if existing:
-        existing.ptn_loc_id = payload.ptn_loc_id
-    else:
-        existing = OrdPattern(ord_id=payload.ord_id, ptn_loc_id=payload.ptn_loc_id)
-        db.add(existing)
-    db.commit()
-    db.refresh(existing)
-    return OrdPatternOut.model_validate(existing)
+    try:
+        result = ManagementClient.get().register_pattern(payload.ord_id, payload.ptn_loc_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ManagementUnavailable as exc:
+        raise HTTPException(503, f"Management Service unavailable: {exc}") from exc
+    return OrdPatternOut.model_validate(result)
 
 
 @router.get("/patterns", response_model=list[OrdPatternOut])

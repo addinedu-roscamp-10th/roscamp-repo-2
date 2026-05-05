@@ -33,22 +33,24 @@ class _RefreshWorker(QObject):
 
     data_ready = pyqtSignal(dict)
 
-    def __init__(self, api: ApiClient) -> None:
-        super().__init__()
-        self._api = api
-
     @pyqtSlot()
     def run(self) -> None:
+        from app.management_client import ManagementClient
+
         def _safe(fn, *args, **kwargs):
             try:
                 return fn(*args, **kwargs) or []
             except Exception:  # noqa: BLE001
                 return []
 
-        data: dict[str, Any] = {
-            "orders": _safe(self._api.get_smartcast_orders),
-            "patterns": _safe(self._api.get_patterns),
-        }
+        client = ManagementClient()
+        try:
+            data: dict[str, Any] = {
+                "orders": _safe(client.list_production_orders),
+                "patterns": _safe(client.list_patterns),
+            }
+        finally:
+            client.close()
         self.data_ready.emit(data)
 
 
@@ -171,7 +173,7 @@ class PatternControlPage(QWidget):
         if self._refresh_thread is not None and self._refresh_thread.isRunning():
             return
 
-        worker = _RefreshWorker(self._api)
+        worker = _RefreshWorker()
         thread = QThread(self)
         self._refresh_worker = worker
         worker.moveToThread(thread)
@@ -338,10 +340,19 @@ class PatternControlPage(QWidget):
         self._sync_selection_view()
 
     def _register_pattern(self, ord_id: int, ptn_loc_id: int) -> dict[str, Any] | None:
-        result = self._api.register_pattern(ord_id, ptn_loc_id)
-        if isinstance(result, dict):
-            self._patterns[ord_id] = ptn_loc_id
-        return result if isinstance(result, dict) else None
+        from app.management_client import ManagementClient
+
+        client = ManagementClient()
+        try:
+            result = client.register_pattern(ord_id, ptn_loc_id)
+        finally:
+            client.close()
+        self._patterns[ord_id] = ptn_loc_id
+        return {
+            "ord_id": result.ord_id,
+            "pattern_id": result.pattern_id,
+            "ptn_loc_id": result.ptn_loc_id,
+        }
 
     @pyqtSlot()
     def _on_register_pattern(self) -> None:
@@ -372,12 +383,18 @@ class PatternControlPage(QWidget):
         ptn_loc_id = self._pattern_spin.value()
         try:
             self._register_pattern(ord_id, ptn_loc_id)
-            result = self._api.start_production_one(ord_id)
+            from app.management_client import ManagementClient
+
+            client = ManagementClient()
+            try:
+                result = client.start_production_one(ord_id)
+            finally:
+                client.close()
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "패턴 등록/생산 시작 실패", str(exc))
             return
 
-        msg = (result or {}).get("message", "Started.")
+        msg = result.reason or "Started."
         QMessageBox.information(
             self,
             "생산 시작 완료",

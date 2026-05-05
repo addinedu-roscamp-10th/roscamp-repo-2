@@ -17,9 +17,9 @@ ProductionJob 레코드가 생성되어 이 페이지의 풀에 들어온다.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
-import requests
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
@@ -38,6 +38,7 @@ from PyQt5.QtWidgets import (
 )
 
 from app.api_client import ApiClient
+from app.management_client import ManagementClient
 from app.pages.dashboard import KpiCard
 
 # ---------- 표시용 상수 ----------
@@ -63,6 +64,8 @@ DELAY_RISK_COLOR = {
     "medium": "#f59e0b",
     "low": "#10b981",
 }
+
+logger = logging.getLogger(__name__)
 
 
 def _format_currency(value: Any) -> str:
@@ -309,9 +312,25 @@ class SchedulePage(QWidget):
     # ================================================================
 
     def refresh(self) -> None:
-        self._orders = self._api.get_approved_and_running_orders()
-        if not self._orders:
-            self._orders = self._orders_from_schedule_jobs(self._api.get_production_jobs())
+        client = ManagementClient()
+        try:
+            try:
+                jobs = client.list_schedule_jobs()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("SchedulePage refresh failed: %s", exc)
+                self._orders = []
+                self._priority_results = []
+                self._orders_count_lbl.setText("총 0건")
+                self._reason_label.setText(
+                    "Management 연결 대기 중입니다. 잠시 후 새로고침하세요."
+                )
+                self._render_orders_table()
+                self._render_results_table()
+                self._update_kpis()
+                return
+            self._orders = self._orders_from_schedule_jobs(jobs)
+        finally:
+            client.close()
         self._render_orders_table()
         self._update_kpis()
 
@@ -326,13 +345,13 @@ class SchedulePage(QWidget):
             orders.append(
                 {
                     "id": str(order_id),
-                    "company_name": "-",
-                    "customer_name": "-",
-                    "total_amount": 0,
-                    "requested_delivery": job.get("estimated_completion") or "",
-                    "confirmed_delivery": job.get("estimated_completion") or "",
+                    "company_name": job.get("company_name") or "-",
+                    "customer_name": job.get("customer_name") or "-",
+                    "total_amount": job.get("total_amount") or 0,
+                    "requested_delivery": job.get("requested_delivery") or job.get("estimated_completion") or "",
+                    "confirmed_delivery": job.get("confirmed_delivery") or job.get("estimated_completion") or "",
                     "created_at": job.get("created_at") or "",
-                    "status": "in_production" if job.get("started_at") else "approved",
+                    "status": "in_production",
                 }
             )
         return orders
@@ -416,12 +435,16 @@ class SchedulePage(QWidget):
         try:
             self._calc_btn.setEnabled(False)
             self._calc_btn.setText("⏳ 계산 중...")
-            response = self._api.calculate_priority(order_ids)
-        except requests.RequestException as exc:
+            client = ManagementClient()
+            try:
+                response = client.calculate_schedule_priority(order_ids)
+            finally:
+                client.close()
+        except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(
                 self,
                 "우선순위 계산 실패",
-                f"백엔드 API 호출 실패:\n{exc}\n\n백엔드 서버가 실행 중인지 확인하세요.",
+                f"Management gRPC 호출 실패:\n{exc}\n\nManagement Service(:50051)가 실행 중인지 확인하세요.",
             )
             return
         finally:
