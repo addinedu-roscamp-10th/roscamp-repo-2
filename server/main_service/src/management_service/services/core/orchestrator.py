@@ -30,20 +30,8 @@ class Orchestrator:
         self.task_manager = task_manager
         self.task_allocator = task_allocator
         self.state_manager = state_manager
-        self._loop: asyncio.AbstractEventLoop | None = None
 
-    def start_production(self, order_ids: list[int]) -> "StartProductionBatchAckModel":
-        """Sync entrypoint for unified production starts."""
-        return self._run_sync(self._async_start_production(order_ids))
-
-    def _run_sync(self, coro):
-        if self._loop is None:
-            logger.error("Orchestrator loop is not running. Cannot handle request.")
-            raise RuntimeError("Orchestrator 루프가 꺼져있습니다.")
-        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return future.result(timeout=5.0)
-
-    async def _async_start_production(self, order_ids: list[int]) -> "StartProductionBatchAckModel":
+    async def start_production(self, order_ids: list[int]) -> "StartProductionBatchAckModel":
         """Create the initial production queue records for the given orders via StateManager."""
         logger.info("[Async] 통합 생산 큐 등록 시작: order_ids=%s", order_ids)
         results: list[StartProductionOrderAckModel] = []
@@ -99,13 +87,3 @@ class Orchestrator:
     def on_task_completed(self, event) -> None:
         """TASK_COMPLETED event handler."""
         pass
-
-    async def run_loop(self) -> None:
-        """Background async loop that owns the orchestrator event loop."""
-        self._loop = asyncio.get_running_loop()
-        logger.info("Orchestrator 비동기 이벤트 루프 시작됨.")
-        try:
-            while True:
-                await asyncio.sleep(1.0)
-        except asyncio.CancelledError:
-            logger.info("Orchestrator 루프가 종료되었습니다.")
