@@ -21,10 +21,12 @@ Factory Operator PC(PyQt)가 직접 gRPC 로 호출하며, Interface Service 장
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import signal
 import sys
+import threading
 from concurrent import futures
 
 import grpc
@@ -54,6 +56,51 @@ logger = logging.getLogger(__name__)
 
 HOST = os.environ.get("MANAGEMENT_GRPC_HOST", "0.0.0.0")
 PORT = int(os.environ.get("MANAGEMENT_GRPC_PORT", "50051"))
+
+
+class OrchestratorThread:
+    """Async<->sync bridge for running Orchestrator coroutines from gRPC threads."""
+
+    def __init__(self) -> None:
+        self.loop = asyncio.new_event_loop()
+        self._ready = threading.Event()
+        self.thread = threading.Thread(
+            target=self._run_loop,
+            daemon=True,
+            name="OrchestratorThread",
+        )
+        self.thread.start()
+        if not self._ready.wait(timeout=5.0):
+            raise RuntimeError("Orchestrator event loop failed to start.")
+
+    def _run_loop(self) -> None:
+        asyncio.set_event_loop(self.loop)
+        self._ready.set()
+        logger.info("Orchestrator Thread & Event Loop Started.")
+        try:
+            self.loop.run_forever()
+        finally:
+            pending = asyncio.all_tasks(self.loop)
+            for task in pending:
+                task.cancel()
+            if pending:
+                self.loop.run_until_complete(
+                    asyncio.gather(*pending, return_exceptions=True)
+                )
+            self.loop.close()
+            logger.info("Orchestrator Thread & Event Loop Stopped.")
+
+    def run_coro(self, coro):
+        if self.loop.is_closed():
+            raise RuntimeError("Orchestrator 루프가 꺼져있습니다.")
+        future = asyncio.run_coroutine_threadsafe(coro, self.loop)
+        return future.result(timeout=5.0)
+
+    def stop(self) -> None:
+        if self.loop.is_closed():
+            return
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self.thread.join(timeout=5.0)
 
 
 class ManagementServicer(
@@ -90,6 +137,7 @@ class ManagementServicer(
 
         self.amr_battery = container.amr_battery
         self.robot_executor = container.robot_executor
+        self.orchestrator_thread: OrchestratorThread | None = None
 
     def Health(self, request, context):
         return management_pb2.Empty()
@@ -171,29 +219,16 @@ def serve() -> None:
         server.add_insecure_port(bind_addr)
         scheme = "INSECURE (V6 S-001: MGMT_GRPC_TLS_ENABLED=1 권장)"
 
+    orchestrator_thread = OrchestratorThread()
+    servicer.orchestrator_thread = orchestrator_thread
+
     server.start()
     logger.info("Management Service listening on %s [%s]", bind_addr, scheme)
-
-    # [NEW] Phase B: Event-Driven Orchestrator 루프 스레드 가동
-    def _start_orchestrator():
-        import asyncio
-        import threading
-        def _run():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            logger.info("Orchestrator Thread & Event Loop Started.")
-            try:
-                loop.run_until_complete(servicer.orchestrator.run_loop())
-            finally:
-                loop.close()
-        t = threading.Thread(target=_run, daemon=True, name="OrchestratorThread")
-        t.start()
-
-    _start_orchestrator()
 
     # Graceful shutdown
     def _stop(_signum, _frame):
         logger.info("Shutting down...")
+        orchestrator_thread.stop()
         server.stop(grace=5)
 
     signal.signal(signal.SIGINT, _stop)

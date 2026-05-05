@@ -44,8 +44,16 @@ class ProductionRpcMixin:
             context.set_details("Either ord_id or order_ids must be provided")
             return management_pb2.StartProductionResponse()
 
+        orchestrator_thread = getattr(self, "orchestrator_thread", None)
+        if orchestrator_thread is None:
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details("Orchestrator thread is not configured.")
+            return management_pb2.StartProductionResponse()
+
         try:
-            ack_model = self.orchestrator.start_production(target_ids)
+            ack_model = orchestrator_thread.run_coro(
+                self.orchestrator.start_production(target_ids)
+            )
         except Exception as e:
             context.set_code(grpc.StatusCode.INTERNAL)
             context.set_details(str(e))
