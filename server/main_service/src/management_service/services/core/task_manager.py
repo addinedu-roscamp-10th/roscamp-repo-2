@@ -1,10 +1,4 @@
-"""Canonical TaskManager entrypoint for Management production queue writes.
-
-This module exposes the currently supported smartcast v2 production-start
-behavior from the legacy implementation under the stable `services.core`
-import path. The orchestrator and RPC layer should depend on this module,
-not the legacy path directly.
-"""
+"""Compatibility shell for the deprecated TaskManager dependency."""
 
 from __future__ import annotations
 
