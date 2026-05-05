@@ -9,7 +9,7 @@
 
 레이아웃:
   ┌─────── 상단: 발주 운영 (패턴 위치 표시 + 생산 시작) ───────┐
-  ├─────── 본문 좌: 선택 발주 item 목록 + 설비 단계 진행 ────────┤
+  ├─────── 본문 좌: 선택 발주 item 목록 + 활성 설비 작업 ────────┤
   ├─────── 본문 우: 검사 요약 (양품/불량/미검사) ─────────────────┤
   ├─────── 공정 단계 테이블 (실시간) ─────────────────────────────┤
   ├─────── 주문별 제품 실시간 위치 (gRPC ListItems) ─────────────┤
@@ -367,7 +367,7 @@ class OperationsPage(QWidget):
         items_v = QVBoxLayout(items_box)
         self._items_table = QTableWidget(0, 6)
         self._items_table.setHorizontalHeaderLabels(
-            ["item_id", "cur_stat", "res", "is_defective", "필요 후처리", "설비 단계 진행"]
+            ["item_id", "cur_stat", "res", "is_defective", "필요 후처리", "활성 설비 작업"]
         )
         self._items_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._items_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
@@ -689,24 +689,16 @@ class OperationsPage(QWidget):
                 qi.setTextAlignment(Qt.AlignCenter)
                 self._items_table.setItem(row, col, qi)
 
-            txn_id_raw = active_txn.get("txn_id") if active_txn else None
-            if active_txn and txn_id_raw is not None:
-                btn = QPushButton(f"▶ {active_txn.get('task_type', '?')} 진행")
-                btn.setToolTip(
-                    f"txn_id={txn_id_raw} task_type={active_txn.get('task_type')} "
-                    f"stat={active_txn.get('txn_stat')}"
-                )
-                try:
-                    txn_id = int(txn_id_raw)
-                except (TypeError, ValueError):
-                    btn = QPushButton("— 진행 가능 작업 없음 —")
-                    btn.setEnabled(False)
-                else:
-                    btn.clicked.connect(lambda _checked, t=txn_id: self._advance_equip(t))
+            if active_txn and active_txn.get("txn_id") is not None:
+                task_type = str(active_txn.get("task_type", "?"))
+                txn_stat = str(active_txn.get("txn_stat", "?"))
+                txn_id = active_txn.get("txn_id")
+                text = f"{task_type} [{txn_stat}] (txn_id={txn_id})"
             else:
-                btn = QPushButton("— 진행 가능 작업 없음 —")
-                btn.setEnabled(False)
-            self._items_table.setCellWidget(row, 5, btn)
+                text = "활성 작업 없음"
+            active_item = QTableWidgetItem(text)
+            active_item.setTextAlignment(Qt.AlignCenter)
+            self._items_table.setItem(row, 5, active_item)
 
         if self._status_label.text().endswith("(item 목록 로딩 중…)"):
             # 로딩 완료 메시지로 교체
@@ -731,32 +723,6 @@ class OperationsPage(QWidget):
         if not opts:
             return "후처리 없음"
         return ", ".join(f"{o['pp_nm']}[{statuses.get(o['pp_nm'], 'QUE')}]" for o in opts)
-
-    def _advance_equip(self, txn_id: int) -> None:
-        try:
-            rsp = self._api.advance_equip_task(txn_id)
-        except Exception as exc:  # noqa: BLE001
-            QMessageBox.critical(self, "Advance 실패", f"txn_id={txn_id}\n{exc}")
-            return
-
-        prev = rsp.get("prev_stat")
-        nxt = rsp.get("new_stat")
-        stat = rsp.get("txn_stat")
-        item_stat = rsp.get("item_cur_stat")
-        auto = rsp.get("auto") or {}
-
-        msg = f"txn_id={txn_id}\n  {prev} → {nxt}  (txn_stat={stat})\n  item.cur_stat = {item_stat}"
-        if auto.get("next_equip_txn_id"):
-            msg += f"\n\n✅ 자동 생성: equip_task_txn={auto['next_equip_txn_id']}"
-        if auto.get("next_trans_txn_id"):
-            msg += (
-                f"\n\n✅ 자동 생성: trans_task_txn={auto['next_trans_txn_id']} "
-                f"AMR={auto.get('amr_id')}\n"
-                "→ PP 워커 페이지에서 핸드오프 푸시버튼을 눌러 진행하세요."
-            )
-
-        QMessageBox.information(self, "Advance 완료", msg)
-        self._on_ord_selected()
 
     @pyqtSlot()
     def _on_start_production(self) -> None:

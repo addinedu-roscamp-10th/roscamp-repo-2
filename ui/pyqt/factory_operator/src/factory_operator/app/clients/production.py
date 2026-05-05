@@ -1,6 +1,6 @@
 """Production 도메인 mixin — 라인 투입/items/equip/stages/metrics/equipment/schedule.
 
-Pink GUI #5 (생산 시작), #4 (item별 후처리), 운영자 페이지의 advance/스케줄러.
+Pink GUI #5 (생산 시작), #4 (item별 후처리), 운영자 페이지의 스케줄러.
 
 2026-04-27: 동명 메서드 critical 픽스 — start_production_one (단건 라인 투입) +
 start_production_batch (배치 큐 등록) 로 분리. ApiClient.start_production 사라짐.
@@ -60,15 +60,6 @@ class ProductionMixin:
         # 가장 최근 (txn_id 최대) 1건
         active.sort(key=lambda r: int(r.get("txn_id", 0)), reverse=True)
         return active[0]
-
-    def advance_equip_task(self, txn_id: int) -> dict[str, Any]:
-        """POST /api/production/equip-tasks/{txn_id}/advance.
-
-        IDLE 도달 시 backend 가 자동으로 후속 task (POUR/DM/ToPP) 생성.
-        Response: {txn_id, prev_stat, new_stat, txn_stat, item_cur_stat, auto: {...}}
-        """
-        result = self._post(f"/api/production/equip-tasks/{txn_id}/advance", payload={})
-        return result if isinstance(result, dict) else {}
 
     # ===== Production views (legacy) =====
     def get_production_metrics(self) -> list[dict[str, Any]] | None:
