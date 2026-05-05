@@ -67,25 +67,54 @@ class _RefreshWorker(QObject):
 
     @pyqtSlot()
     def run(self) -> None:
+        from app.management_client import ManagementClient
+
         def _safe(fn, *args, **kwargs):
             try:
                 return fn(*args, **kwargs) or []
             except Exception:  # noqa: BLE001
                 return []
 
-        data: dict[str, Any] = {
-            "orders":        _safe(self._api.get_smartcast_orders),
-            "patterns":      _safe(self._api.get_patterns),
-            "summary":       _safe(self._api.get_inspection_summary),
-            "stages":        _safe(self._api.get_process_stages),
-            "item_progress": _safe(self._api.get_order_item_progress),
-            "hourly":        _safe(self._api.get_hourly_production_v2, hours=24),
-            "err_trend":     _safe(self._api.get_err_log_trend, hours=24),
-        }
+        def _progress_rows(client: ManagementClient) -> list[dict[str, Any]]:
+            stage_label = {
+                "QUE": "대기",
+                "MM": "주탕",
+                "DM": "탈형",
+                "TR_PP": "후처리",
+                "PP": "후처리",
+                "IP": "검사",
+                "TR_LD": "적재",
+                "SH": "적재",
+            }
+            rows: list[dict[str, Any]] = []
+            for item in client.list_item_views(limit=200):
+                rows.append(
+                    {
+                        "order_id": str(item.get("ord_id", "")),
+                        "product": "-",
+                        "item": f"I-{item.get('item_id', '')}",
+                        "stage": stage_label.get(str(item.get("cur_stat", "QUE")), "대기"),
+                    }
+                )
+            return rows
+
+        client = ManagementClient()
         try:
-            data["dashboard"] = self._api.get_dashboard_stats_v2() or {}
-        except Exception:  # noqa: BLE001
-            data["dashboard"] = {}
+            data: dict[str, Any] = {
+                "orders": _safe(client.list_production_orders),
+                "patterns": _safe(client.list_patterns),
+                "summary": _safe(self._api.get_inspection_summary),
+                "stages": _safe(client.list_stages),
+                "item_progress": _safe(_progress_rows, client),
+                "hourly": _safe(self._api.get_hourly_production_v2, hours=24),
+                "err_trend": _safe(self._api.get_err_log_trend, hours=24),
+            }
+            try:
+                data["dashboard"] = self._api.get_dashboard_stats_v2() or {}
+            except Exception:  # noqa: BLE001
+                data["dashboard"] = {}
+        finally:
+            client.close()
 
         self.data_ready.emit(data)
 
@@ -98,24 +127,41 @@ class _OrdItemsWorker(QObject):
 
     def __init__(self, api: ApiClient, ord_id: int) -> None:
         super().__init__()
-        self._api = api
         self._ord_id = ord_id
 
     @pyqtSlot()
     def run(self) -> None:
-        items = self._api.get_smartcast_items(ord_id=self._ord_id) or []
-        enriched: list[dict[str, Any]] = []
-        for it in items:
-            item_id = int(it.get("item_id"))
-            try:
-                pp_data = self._api.get_item_pp_requirements(item_id)
-            except Exception:  # noqa: BLE001
-                pp_data = None
-            try:
-                active_txn = self._api.get_active_equip_task_for_item(item_id)
-            except Exception:  # noqa: BLE001
-                active_txn = None
-            enriched.append({"item": it, "item_id": item_id, "pp_data": pp_data, "active_txn": active_txn})
+        from app.management_client import ManagementClient
+
+        client = ManagementClient()
+        try:
+            items = client.list_item_views(order_id=str(self._ord_id), limit=200) or []
+            enriched: list[dict[str, Any]] = []
+            for it in items:
+                item_id = int(it.get("item_id"))
+                try:
+                    pp_data = client.get_item_pp_requirements(item_id)
+                except Exception:  # noqa: BLE001
+                    pp_data = None
+                try:
+                    tasks = client.list_equip_tasks(item_id=item_id, limit=20)
+                    active = [
+                        row for row in tasks if str(row.get("txn_stat", "")).upper() in ("QUE", "PROC")
+                    ]
+                    active.sort(key=lambda row: int(row.get("txn_id", 0)), reverse=True)
+                    active_txn = active[0] if active else None
+                except Exception:  # noqa: BLE001
+                    active_txn = None
+                enriched.append(
+                    {
+                        "item": it,
+                        "item_id": item_id,
+                        "pp_data": pp_data,
+                        "active_txn": active_txn,
+                    }
+                )
+        finally:
+            client.close()
         self.data_ready.emit(self._ord_id, enriched)
 
 
@@ -490,8 +536,8 @@ class OperationsPage(QWidget):
             self._stages_table.setItem(row, 2, QTableWidgetItem(str(stage.get("equipment", ""))))
 
         # 주문별 제품 실시간 위치 (gRPC 우선 → HTTP fallback)
-        grpc_rows = self._fetch_items_via_grpc()
-        self._render_item_progress(grpc_rows or item_progress)
+        grpc_rows = item_progress or self._fetch_items_via_grpc()
+        self._render_item_progress(grpc_rows or [])
 
         # 시계열 mini-summary
         try:

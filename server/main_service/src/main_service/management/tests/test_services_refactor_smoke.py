@@ -35,10 +35,15 @@ import pytest
         "rpc.field_event_rpc",
         "rpc.hardware_rpc",
         "rpc.monitor_rpc",
+        "rpc.pattern_rpc",
         "rpc.production_rpc",
         "rpc.robot_rpc",
         "rpc.task_rpc",
         "rpc.traffic_rpc",
+        "services.query.item_query_service",
+        "services.query.pattern_query_service",
+        "services.query.production_order_query_service",
+        "services.query.schedule_query_service",
     ],
 )
 def test_management_modules_remain_importable(module_name: str) -> None:

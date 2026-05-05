@@ -33,22 +33,24 @@ class _RefreshWorker(QObject):
 
     data_ready = pyqtSignal(dict)
 
-    def __init__(self, api: ApiClient) -> None:
-        super().__init__()
-        self._api = api
-
     @pyqtSlot()
     def run(self) -> None:
+        from app.management_client import ManagementClient
+
         def _safe(fn, *args, **kwargs):
             try:
                 return fn(*args, **kwargs) or []
             except Exception:  # noqa: BLE001
                 return []
 
-        data: dict[str, Any] = {
-            "orders": _safe(self._api.get_smartcast_orders),
-            "patterns": _safe(self._api.get_patterns),
-        }
+        client = ManagementClient()
+        try:
+            data: dict[str, Any] = {
+                "orders": _safe(client.list_production_orders),
+                "patterns": _safe(client.list_patterns),
+            }
+        finally:
+            client.close()
         self.data_ready.emit(data)
 
 
@@ -171,7 +173,7 @@ class PatternControlPage(QWidget):
         if self._refresh_thread is not None and self._refresh_thread.isRunning():
             return
 
-        worker = _RefreshWorker(self._api)
+        worker = _RefreshWorker()
         thread = QThread(self)
         self._refresh_worker = worker
         worker.moveToThread(thread)

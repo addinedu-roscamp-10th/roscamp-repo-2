@@ -3,13 +3,10 @@
 V6 canonical 아키텍처 Phase 4 (Phase C-1): Interface Service(FastAPI, :8000) 가
 Management Service(gRPC, :50051) 를 호출할 때 사용하는 싱글톤 stub.
 
-현재 범위 (Phase C-1):
-  - Health RPC proxy (canonical 화살표 1건 실체화)
+현재 범위:
+  - Health RPC proxy
+  - StartProduction write proxy
   - Graceful degradation: Management 미가동 시 ManagementUnavailable 예외 → 503 응답
-
-향후 (Phase C-2, 별도 SPEC 필요):
-  - StartProduction / ListItems / WatchItems 등 write/read 경로 proxy
-  - Management TaskManager 의 smartcast v2 스키마 정합 완료가 전제 조건
 
 환경변수:
   MANAGEMENT_GRPC_HOST     기본 localhost
@@ -29,10 +26,10 @@ import grpc
 
 logger = logging.getLogger("app.clients.management")
 
-# Management 의 proto 산출물은 backend/management/ 에 있음 — sys.path 에 등록.
+# Management 의 proto 산출물은 src/main_service/management/ 에 있음 — sys.path 에 등록.
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-_BACKEND_DIR = os.path.abspath(os.path.join(_THIS_DIR, "..", ".."))
-_MGMT_DIR = os.path.join(_BACKEND_DIR, "management")
+_SRC_DIR = os.path.abspath(os.path.join(_THIS_DIR, "..", "..", ".."))
+_MGMT_DIR = os.path.join(_SRC_DIR, "main_service", "management")
 if _MGMT_DIR not in sys.path:
     sys.path.insert(0, _MGMT_DIR)
 

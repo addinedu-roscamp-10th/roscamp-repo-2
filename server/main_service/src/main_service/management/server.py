@@ -42,6 +42,7 @@ import management_pb2_grpc  # type: ignore  # noqa: E402
 from rpc.field_event_rpc import FieldEventRpcMixin  # noqa: E402
 from rpc.hardware_rpc import HardwareRpcMixin, ImagePublisherServicer  # noqa: E402
 from rpc.monitor_rpc import MonitorRpcMixin  # noqa: E402
+from rpc.pattern_rpc import PatternRpcMixin  # noqa: E402
 from rpc.production_rpc import ProductionRpcMixin  # noqa: E402
 from rpc.robot_rpc import RobotRpcMixin  # noqa: E402
 from rpc.task_rpc import TaskRpcMixin  # noqa: E402
@@ -57,6 +58,7 @@ PORT = int(os.environ.get("MANAGEMENT_GRPC_PORT", "50051"))
 
 class ManagementServicer(
     ProductionRpcMixin,
+    PatternRpcMixin,
     TaskRpcMixin,
     TrafficRpcMixin,
     MonitorRpcMixin,
@@ -70,6 +72,10 @@ class ManagementServicer(
     def __init__(self) -> None:
         # Container에서 조립 완료된 의존성 객체들을 참조
         self.task_manager = container.task_manager
+        self.item_query_service = container.item_query_service
+        self.pattern_query_service = container.pattern_query_service
+        self.production_order_query_service = container.production_order_query_service
+        self.schedule_query_service = container.schedule_query_service
         self.rfid_service = container.rfid_service
         self.task_allocator = container.task_allocator
         self.traffic_manager = container.traffic_manager
