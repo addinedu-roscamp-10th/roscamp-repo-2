@@ -21,6 +21,7 @@ import logging
 import os
 from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import Any
 
 import grpc
 
@@ -46,6 +47,13 @@ class ProductionStartOrderAck:
     reason: str
     item_id: int
     equip_task_txn_id: int
+
+
+@dataclass
+class PatternAssignment:
+    ord_id: int
+    pattern_id: int | None
+    ptn_loc_id: int | None
 
 
 _STATUS_CODE = {1: "QUE", 2: "PROC", 3: "SUCC", 4: "FAIL"}
@@ -182,11 +190,258 @@ class ManagementClient:
             return [_ack_from_proto(order_ack) for order_ack in resp.ack.orders]
         return [_legacy_wo_to_ack(wo) for wo in resp.work_orders]
 
+    def start_production_one(self, ord_id: int) -> ProductionStartOrderAck:
+        acks = self.start_production([str(ord_id)])
+        if not acks:
+            raise ValueError(f"ord_id={ord_id} start_production returned no ack")
+        return acks[0]
+
     def list_items(self, order_id: str | None = None, limit: int = 100):
         """현재 활성 item 목록. proto Item 메시지 그대로 반환."""
         req = management_pb2.ListItemsRequest(order_id=order_id or "", limit=limit)
         resp = self._stub.ListItems(req, timeout=self._timeout)
         return list(resp.items)
+
+    def list_item_views(self, order_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        items = self.list_items(order_id=order_id, limit=limit)
+        rows: list[dict[str, Any]] = []
+        for item in items:
+            rows.append(
+                {
+                    "item_id": int(item.id),
+                    "ord_id": int(item.order_id or 0),
+                    "flow_stat": item.flow_stat or None,
+                    "zone_nm": item.zone_nm or None,
+                    "result": item.result if item.HasField("result") else None,
+                    "equip_task_type": None,
+                    "trans_task_type": None,
+                    "cur_stat": item.cur_stat or self.stage_code_to_label(int(item.cur_stage)),
+                    "cur_res": item.curr_res or "",
+                    "is_defective": item.is_defective if item.HasField("is_defective") else None,
+                    "updated_at": item.mfg_at.iso8601 or None,
+                }
+            )
+        return rows
+
+    def list_production_orders(
+        self,
+        *,
+        status_filters: list[str] | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        req = management_pb2.ListProductionOrdersRequest(
+            status_filters=status_filters or [],
+            limit=limit,
+        )
+        resp = self._stub.ListProductionOrders(req, timeout=self._timeout)
+        return [
+            {
+                "ord_id": row.ord_id,
+                "user_id": row.user_id,
+                "latest_stat": row.latest_stat or "",
+                "company_name": row.company_name or "-",
+                "customer_name": row.customer_name or "-",
+                "total_amount": row.total_amount or 0,
+                "requested_delivery": row.requested_delivery or "",
+                "confirmed_delivery": row.confirmed_delivery or "",
+                "created_at": row.created_at or "",
+            }
+            for row in resp.orders
+        ]
+
+    def list_patterns(self) -> list[dict[str, Any]]:
+        resp = self._stub.ListPatterns(management_pb2.Empty(), timeout=self._timeout)
+        return [
+            {
+                "ord_id": row.ord_id,
+                "pattern_id": row.pattern_id if row.HasField("pattern_id") else None,
+                "ptn_loc_id": row.ptn_loc_id if row.HasField("ptn_loc_id") else None,
+            }
+            for row in resp.patterns
+        ]
+
+    def register_pattern(self, ord_id: int, ptn_loc_id: int) -> PatternAssignment:
+        resp = self._stub.RegisterPattern(
+            management_pb2.RegisterPatternRequest(
+                ord_id=int(ord_id),
+                ptn_loc_id=int(ptn_loc_id),
+            ),
+            timeout=self._timeout,
+        )
+        return PatternAssignment(
+            ord_id=resp.ord_id,
+            pattern_id=resp.pattern_id if resp.HasField("pattern_id") else None,
+            ptn_loc_id=resp.ptn_loc_id if resp.HasField("ptn_loc_id") else None,
+        )
+
+    def get_pattern(self, ord_id: int) -> dict[str, Any]:
+        resp = self._stub.GetPattern(
+            management_pb2.GetPatternRequest(ord_id=int(ord_id)),
+            timeout=self._timeout,
+        )
+        return {
+            "ord_id": resp.ord_id,
+            "pattern_id": resp.pattern_id if resp.HasField("pattern_id") else None,
+            "ptn_loc_id": resp.ptn_loc_id if resp.HasField("ptn_loc_id") else None,
+        }
+
+    def list_equip_tasks(
+        self,
+        *,
+        res_id: str | None = None,
+        item_id: int | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        req = management_pb2.ListEquipTasksRequest(
+            res_id=res_id or "",
+            item_id=int(item_id or 0),
+            limit=limit,
+        )
+        resp = self._stub.ListEquipTasks(req, timeout=self._timeout)
+        return [
+            {
+                "txn_id": row.txn_id,
+                "res_id": row.res_id or None,
+                "task_type": row.task_type or None,
+                "txn_stat": row.txn_stat or None,
+                "item_id": row.item_id if row.HasField("item_id") else None,
+                "strg_loc_id": row.strg_loc_id if row.HasField("strg_loc_id") else None,
+                "ship_loc_id": row.ship_loc_id if row.HasField("ship_loc_id") else None,
+                "req_at": row.req_at or None,
+                "start_at": row.start_at or None,
+                "end_at": row.end_at or None,
+            }
+            for row in resp.tasks
+        ]
+
+    def get_item_pp_requirements(self, item_id: int) -> dict[str, Any]:
+        resp = self._stub.GetItemPpRequirements(
+            management_pb2.GetItemPpRequirementsRequest(item_id=int(item_id)),
+            timeout=self._timeout,
+        )
+        return {
+            "item_id": resp.item_id,
+            "ord_id": resp.ord_id,
+            "pp_options": [
+                {
+                    "pp_id": row.pp_id,
+                    "pp_nm": row.pp_nm or None,
+                    "extra_cost": row.extra_cost,
+                }
+                for row in resp.pp_options
+            ],
+            "pp_task_status": [
+                {
+                    "txn_id": row.txn_id,
+                    "ord_id": row.ord_id,
+                    "map_id": row.map_id if row.HasField("map_id") else None,
+                    "pp_nm": row.pp_nm or None,
+                    "item_id": row.item_id if row.HasField("item_id") else None,
+                    "operator_id": row.operator_id if row.HasField("operator_id") else None,
+                    "txn_stat": row.txn_stat or None,
+                    "req_at": row.req_at or None,
+                    "start_at": row.start_at or None,
+                    "end_at": row.end_at or None,
+                }
+                for row in resp.pp_task_status
+            ],
+        }
+
+    def list_equipment(self) -> list[dict[str, Any]]:
+        resp = self._stub.ListEquipment(management_pb2.Empty(), timeout=self._timeout)
+        return [
+            {
+                "res_id": row.res_id,
+                "res_type": row.res_type or None,
+                "model_nm": row.model_nm or None,
+                "zone_id": row.zone_id if row.HasField("zone_id") else None,
+                "cur_stat": row.cur_stat or None,
+                "err_msg": row.err_msg or None,
+                "updated_at": row.updated_at or None,
+            }
+            for row in resp.equipment
+        ]
+
+    def list_stages(self) -> list[dict[str, Any]]:
+        resp = self._stub.ListStages(management_pb2.Empty(), timeout=self._timeout)
+        return [
+            {
+                "zone_id": row.zone_id,
+                "zone_nm": row.zone_nm or "",
+                "in_progress_count": row.in_progress_count,
+                "name": row.zone_nm or "",
+                "status": f"{row.in_progress_count}건 진행중",
+                "equipment": "-",
+            }
+            for row in resp.stages
+        ]
+
+    def list_order_item_progress(self) -> list[dict[str, Any]]:
+        resp = self._stub.ListOrderItemProgress(management_pb2.Empty(), timeout=self._timeout)
+        return [
+            {
+                "ord_id": row.ord_id,
+                "total_items": row.total_items,
+                "by_stat": dict(row.by_stat),
+            }
+            for row in resp.items
+        ]
+
+    def list_schedule_jobs(self) -> list[dict[str, Any]]:
+        resp = self._stub.ListScheduleJobs(management_pb2.Empty(), timeout=self._timeout)
+        return [
+            {
+                "id": row.id or "",
+                "order_id": row.order_id or "",
+                "priority_score": row.priority_score,
+                "priority_rank": row.priority_rank,
+                "assigned_stage": row.assigned_stage or "",
+                "status": row.status or "",
+                "estimated_completion": row.estimated_completion or "",
+                "started_at": row.started_at or "",
+                "completed_at": row.completed_at or "",
+                "created_at": row.created_at or "",
+                "company_name": row.company_name or "-",
+                "customer_name": row.customer_name or "-",
+                "total_amount": row.total_amount,
+                "requested_delivery": row.requested_delivery or "",
+                "confirmed_delivery": row.confirmed_delivery or "",
+                "order_status": row.order_status or "",
+            }
+            for row in resp.jobs
+        ]
+
+    def calculate_schedule_priority(self, order_ids: list[str]) -> dict[str, Any]:
+        req = management_pb2.CalculateSchedulePriorityRequest(order_ids=order_ids)
+        resp = self._stub.CalculateSchedulePriority(req, timeout=self._timeout)
+        return {
+            "results": [
+                {
+                    "order_id": row.order_id or "",
+                    "company_name": row.company_name or "-",
+                    "product_summary": row.product_summary or "",
+                    "total_quantity": row.total_quantity,
+                    "requested_delivery": row.requested_delivery or "",
+                    "total_score": row.total_score,
+                    "rank": row.rank,
+                    "factors": [
+                        {
+                            "name": factor.name or "",
+                            "score": factor.score,
+                            "max_score": factor.max_score,
+                            "detail": factor.detail or "",
+                        }
+                        for factor in row.factors
+                    ],
+                    "recommendation_reason": row.recommendation_reason or "",
+                    "delay_risk": row.delay_risk or "",
+                    "ready_status": row.ready_status or "",
+                    "blocking_reasons": list(row.blocking_reasons),
+                    "estimated_days": row.estimated_days,
+                }
+                for row in resp.results
+            ]
+        }
 
     def watch_items(self, order_id: str | None = None) -> Iterator:
         """Server streaming. 무한 루프 — 별도 QThread 에서 소비."""

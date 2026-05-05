@@ -9,7 +9,7 @@
 
 레이아웃:
   ┌─────── 상단: 발주 운영 (패턴 위치 표시 + 생산 시작) ───────┐
-  ├─────── 본문 좌: 선택 발주 item 목록 + 설비 단계 진행 ────────┤
+  ├─────── 본문 좌: 선택 발주 item 목록 + 활성 설비 작업 ────────┤
   ├─────── 본문 우: 검사 요약 (양품/불량/미검사) ─────────────────┤
   ├─────── 공정 단계 테이블 (실시간) ─────────────────────────────┤
   ├─────── 주문별 제품 실시간 위치 (gRPC ListItems) ─────────────┤
@@ -67,25 +67,54 @@ class _RefreshWorker(QObject):
 
     @pyqtSlot()
     def run(self) -> None:
+        from app.management_client import ManagementClient
+
         def _safe(fn, *args, **kwargs):
             try:
                 return fn(*args, **kwargs) or []
             except Exception:  # noqa: BLE001
                 return []
 
-        data: dict[str, Any] = {
-            "orders":        _safe(self._api.get_smartcast_orders),
-            "patterns":      _safe(self._api.get_patterns),
-            "summary":       _safe(self._api.get_inspection_summary),
-            "stages":        _safe(self._api.get_process_stages),
-            "item_progress": _safe(self._api.get_order_item_progress),
-            "hourly":        _safe(self._api.get_hourly_production_v2, hours=24),
-            "err_trend":     _safe(self._api.get_err_log_trend, hours=24),
-        }
+        def _progress_rows(client: ManagementClient) -> list[dict[str, Any]]:
+            stage_label = {
+                "QUE": "대기",
+                "MM": "주탕",
+                "DM": "탈형",
+                "TR_PP": "후처리",
+                "PP": "후처리",
+                "IP": "검사",
+                "TR_LD": "적재",
+                "SH": "적재",
+            }
+            rows: list[dict[str, Any]] = []
+            for item in client.list_item_views(limit=200):
+                rows.append(
+                    {
+                        "order_id": str(item.get("ord_id", "")),
+                        "product": "-",
+                        "item": f"I-{item.get('item_id', '')}",
+                        "stage": stage_label.get(str(item.get("cur_stat", "QUE")), "대기"),
+                    }
+                )
+            return rows
+
+        client = ManagementClient()
         try:
-            data["dashboard"] = self._api.get_dashboard_stats_v2() or {}
-        except Exception:  # noqa: BLE001
-            data["dashboard"] = {}
+            data: dict[str, Any] = {
+                "orders": _safe(client.list_production_orders),
+                "patterns": _safe(client.list_patterns),
+                "summary": _safe(self._api.get_inspection_summary),
+                "stages": _safe(client.list_stages),
+                "item_progress": _safe(_progress_rows, client),
+                "hourly": _safe(self._api.get_hourly_production_v2, hours=24),
+                "err_trend": _safe(self._api.get_err_log_trend, hours=24),
+            }
+            try:
+                data["dashboard"] = self._api.get_dashboard_stats_v2() or {}
+            except Exception:  # noqa: BLE001
+                data["dashboard"] = {}
+        finally:
+            client.close()
 
         self.data_ready.emit(data)
 
@@ -98,24 +127,41 @@ class _OrdItemsWorker(QObject):
 
     def __init__(self, api: ApiClient, ord_id: int) -> None:
         super().__init__()
-        self._api = api
         self._ord_id = ord_id
 
     @pyqtSlot()
     def run(self) -> None:
-        items = self._api.get_smartcast_items(ord_id=self._ord_id) or []
-        enriched: list[dict[str, Any]] = []
-        for it in items:
-            item_id = int(it.get("item_id"))
-            try:
-                pp_data = self._api.get_item_pp_requirements(item_id)
-            except Exception:  # noqa: BLE001
-                pp_data = None
-            try:
-                active_txn = self._api.get_active_equip_task_for_item(item_id)
-            except Exception:  # noqa: BLE001
-                active_txn = None
-            enriched.append({"item": it, "item_id": item_id, "pp_data": pp_data, "active_txn": active_txn})
+        from app.management_client import ManagementClient
+
+        client = ManagementClient()
+        try:
+            items = client.list_item_views(order_id=str(self._ord_id), limit=200) or []
+            enriched: list[dict[str, Any]] = []
+            for it in items:
+                item_id = int(it.get("item_id"))
+                try:
+                    pp_data = client.get_item_pp_requirements(item_id)
+                except Exception:  # noqa: BLE001
+                    pp_data = None
+                try:
+                    tasks = client.list_equip_tasks(item_id=item_id, limit=20)
+                    active = [
+                        row for row in tasks if str(row.get("txn_stat", "")).upper() in ("QUE", "PROC")
+                    ]
+                    active.sort(key=lambda row: int(row.get("txn_id", 0)), reverse=True)
+                    active_txn = active[0] if active else None
+                except Exception:  # noqa: BLE001
+                    active_txn = None
+                enriched.append(
+                    {
+                        "item": it,
+                        "item_id": item_id,
+                        "pp_data": pp_data,
+                        "active_txn": active_txn,
+                    }
+                )
+        finally:
+            client.close()
         self.data_ready.emit(self._ord_id, enriched)
 
 
@@ -321,7 +367,7 @@ class OperationsPage(QWidget):
         items_v = QVBoxLayout(items_box)
         self._items_table = QTableWidget(0, 6)
         self._items_table.setHorizontalHeaderLabels(
-            ["item_id", "cur_stat", "res", "is_defective", "필요 후처리", "설비 단계 진행"]
+            ["item_id", "cur_stat", "res", "is_defective", "필요 후처리", "활성 설비 작업"]
         )
         self._items_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._items_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
@@ -490,8 +536,8 @@ class OperationsPage(QWidget):
             self._stages_table.setItem(row, 2, QTableWidgetItem(str(stage.get("equipment", ""))))
 
         # 주문별 제품 실시간 위치 (gRPC 우선 → HTTP fallback)
-        grpc_rows = self._fetch_items_via_grpc()
-        self._render_item_progress(grpc_rows or item_progress)
+        grpc_rows = item_progress or self._fetch_items_via_grpc()
+        self._render_item_progress(grpc_rows or [])
 
         # 시계열 mini-summary
         try:
@@ -643,24 +689,16 @@ class OperationsPage(QWidget):
                 qi.setTextAlignment(Qt.AlignCenter)
                 self._items_table.setItem(row, col, qi)
 
-            txn_id_raw = active_txn.get("txn_id") if active_txn else None
-            if active_txn and txn_id_raw is not None:
-                btn = QPushButton(f"▶ {active_txn.get('task_type', '?')} 진행")
-                btn.setToolTip(
-                    f"txn_id={txn_id_raw} task_type={active_txn.get('task_type')} "
-                    f"stat={active_txn.get('txn_stat')}"
-                )
-                try:
-                    txn_id = int(txn_id_raw)
-                except (TypeError, ValueError):
-                    btn = QPushButton("— 진행 가능 작업 없음 —")
-                    btn.setEnabled(False)
-                else:
-                    btn.clicked.connect(lambda _checked, t=txn_id: self._advance_equip(t))
+            if active_txn and active_txn.get("txn_id") is not None:
+                task_type = str(active_txn.get("task_type", "?"))
+                txn_stat = str(active_txn.get("txn_stat", "?"))
+                txn_id = active_txn.get("txn_id")
+                text = f"{task_type} [{txn_stat}] (txn_id={txn_id})"
             else:
-                btn = QPushButton("— 진행 가능 작업 없음 —")
-                btn.setEnabled(False)
-            self._items_table.setCellWidget(row, 5, btn)
+                text = "활성 작업 없음"
+            active_item = QTableWidgetItem(text)
+            active_item.setTextAlignment(Qt.AlignCenter)
+            self._items_table.setItem(row, 5, active_item)
 
         if self._status_label.text().endswith("(item 목록 로딩 중…)"):
             # 로딩 완료 메시지로 교체
@@ -686,32 +724,6 @@ class OperationsPage(QWidget):
             return "후처리 없음"
         return ", ".join(f"{o['pp_nm']}[{statuses.get(o['pp_nm'], 'QUE')}]" for o in opts)
 
-    def _advance_equip(self, txn_id: int) -> None:
-        try:
-            rsp = self._api.advance_equip_task(txn_id)
-        except Exception as exc:  # noqa: BLE001
-            QMessageBox.critical(self, "Advance 실패", f"txn_id={txn_id}\n{exc}")
-            return
-
-        prev = rsp.get("prev_stat")
-        nxt = rsp.get("new_stat")
-        stat = rsp.get("txn_stat")
-        item_stat = rsp.get("item_cur_stat")
-        auto = rsp.get("auto") or {}
-
-        msg = f"txn_id={txn_id}\n  {prev} → {nxt}  (txn_stat={stat})\n  item.cur_stat = {item_stat}"
-        if auto.get("next_equip_txn_id"):
-            msg += f"\n\n✅ 자동 생성: equip_task_txn={auto['next_equip_txn_id']}"
-        if auto.get("next_trans_txn_id"):
-            msg += (
-                f"\n\n✅ 자동 생성: trans_task_txn={auto['next_trans_txn_id']} "
-                f"AMR={auto.get('amr_id')}\n"
-                "→ PP 워커 페이지에서 핸드오프 푸시버튼을 눌러 진행하세요."
-            )
-
-        QMessageBox.information(self, "Advance 완료", msg)
-        self._on_ord_selected()
-
     @pyqtSlot()
     def _on_start_production(self) -> None:
         """단건 라인 투입 — Item + EquipTaskTxn 즉시 생성 (RA1/MM QUE).
@@ -723,11 +735,17 @@ class OperationsPage(QWidget):
         if ord_id is None:
             return
         try:
-            result = self._api.start_production_one(ord_id)
+            from app.management_client import ManagementClient
+
+            client = ManagementClient()
+            try:
+                result = client.start_production_one(ord_id)
+            finally:
+                client.close()
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "라인 투입 실패", str(exc))
             return
-        msg = (result or {}).get("message", "Started.")
+        msg = result.reason or "Started."
         QMessageBox.information(self, "라인 투입 완료", f"발주 {ord_id}\n{msg}")
         self.refresh()
 

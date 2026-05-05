@@ -11,9 +11,9 @@ PY=".venv/bin/python"
 [ -x "$PY" ] || { echo "✗ $PY 없음. ./scripts/setup.sh 다시 실행."; exit 1; }
 
 "$PY" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else "backend .venv 가 Python 3.11 미만입니다. Python 3.11 설치 후 ./scripts/setup.sh 를 다시 실행하세요.")'
-export PYTHONPATH=src/interface_service:src/main_service:src
+export PYTHONPATH=src/management_service:src/interface_service:src
 
 HOST="${MANAGEMENT_GRPC_HOST:-0.0.0.0}"
 PORT="${MANAGEMENT_GRPC_PORT:-50051}"
 echo "→ Management gRPC on $HOST:$PORT (Ctrl+C 종료)"
-exec "$PY" src/main_service/management/server.py
+exec "$PY" src/management_service/server.py

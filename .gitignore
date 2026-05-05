@@ -224,3 +224,5 @@ log/
 
 # Study / local analysis notes
 /study/
+*.env.local
+*.env
