@@ -1,14 +1,9 @@
-from typing import Protocol, Dict, Any, List
-from pydantic import BaseModel
+
+from typing import Protocol, Dict, Any, List, Optional
 
 from .enums import EventType
-from .models import (
-    CreateTaskInput, CreateTaskResult,
-    AllocateTaskInput, AllocateTaskResult,
-    ExecuteTaskInput, ExecuteTaskResult,
-    StartProductionOrderAckModel,
-    StartProductionBatchAckModel,
-)
+from .models import *
+
 
 class IOrchestrator(Protocol):
     async def start_production(self, ord_id: int, qty: int) -> List[int]:
@@ -18,23 +13,37 @@ class IOrchestrator(Protocol):
         ...
 
 class ITaskManager(Protocol):
-    def create_next_tasks(self, input_data: CreateTaskInput) -> CreateTaskResult:
+
+    ##orchestrator가 사용하는 인터페이스
+    def reserve_rack_slots(self, order_id: int, start_pos: str): 
         ...
+    
+    def create_next_task(self, item_info: ItemStatusRecord ,eventMsg: Optional[str] = None) -> List[NextTaskResult]: 
+        ...
+
+    def reissue_task_on_error(self, item_info: ItemStatusRecord) -> List[NextTaskResult]: 
+        ...
+
+    def get_order_progress(self, order_id: int) : 
+     ...
 
 class ITaskAllocator(Protocol):
-    def allocate(self, input_data: AllocateTaskInput) -> AllocateTaskResult:
-        ...
-
-class ITaskExecutor(Protocol):
-    async def execute(self, input_data: ExecuteTaskInput) -> ExecuteTaskResult:
+    def allocate(self, input_data )  :
         ...
 
 class IAdapter(Protocol):
+
+    ##
     async def send_task(self, robot_id: str, task_type: str, payload: Dict[str, Any]) -> bool:
         ...
+    
+    ##Task Executor가 사용하는 인터페이스
+    async def send_command(self, robot_id: str, action: str, params: Dict) -> bool: 
+        ...
+
 
 class IStateManager(Protocol):
-    def start_production(self, ord_id: int) -> StartProductionOrderAckModel:
+    """    def start_production(self, ord_id: int) -> StartProductionOrderAckModel:
         ...
 
     def create_order_with_items(self, ord_id: int, qty: int) -> List[int]:
@@ -57,7 +66,8 @@ class IStateManager(Protocol):
         
     def assign_task_robot(self, task_id: str, robot_id: str, is_trans: bool) -> None:
         ...
-        
+
+    
     def update_task_status(self, task_id: str, status: str, is_trans: bool) -> None:
         ...
 
@@ -88,10 +98,32 @@ class IStateManager(Protocol):
 
     def update_robot_task_state(self, task_id: str, robot_id: str, cur_stat: str) -> None:
         ...
+"""
+    
+    ##Task Executor가 사용하는 인터페이스
+    async def update_task_status(self, req: UpdateTaskStatusInput) -> bool: 
+        ...    
+
+    ##Task Manager가 사용하는 인터페이스
+    items: Dict[int, ItemStatusRecord]
+    orders: Dict[int, dict]
+    slot_table: Dict[tuple, dict]
+
+    def insert_task_txn(self, task_input: CreateTaskInput) -> int:
+        ...
+    
+    def create_empty_item(self, order_id: int) -> int:
+        ...
+    
 
 class IEventBridge(Protocol):
-    def subscribe(self, event_type: EventType, handler) -> None:
+    
+    ##Task Executor가 사용하는 인터페이스
+    def publish(self, event: Event) -> PublishResult: 
         ...
-        
-    def publish(self, event_type: EventType, payload: BaseModel) -> None:
+    def subscribe(self, event_type: EventType, handler: Callable[[Event], None], subscriber_name: str) -> None: 
+        ...
+    def unsubscribe(self, event_type: EventType, subscriber_name: str) -> bool: 
+        ...
+    def list_subscribers(self, event_type: EventType | None = None) -> list[HandlerMeta]: 
         ...

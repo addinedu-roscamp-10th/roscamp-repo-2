@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import Enum
 
 
-class OrdTxnType(str, Enum):
+"""class OrdTxnType(str, Enum):
     RCVD = "RCVD"
     APPR = "APPR"
     CNCL = "CNCL"
@@ -121,3 +121,60 @@ class EventType(str, Enum):
     TASK_COMPLETED = "TASK_COMPLETED"
     ITEM_STATUS_CHANGED = "ITEM_STATUS_CHANGED"
     TASK_ASSIGNED = "TASK_ASSIGNED"
+<<<<<<< Updated upstream
+=======
+"""
+
+##task manager
+class TaskType(str, Enum):
+    # 생산 및 장비 작업 [equip]
+    MM = "MM"
+    POUR = "POUR"
+    DM = "DM"
+    PP = "PP"
+    INSP = "INSP"
+    ToWaitPA = "ToWaitPA"
+    PA_GP = "PA_GP"
+    PA_DP = "PA_DP"
+    PICK = "PICK"
+    
+    # 이송 및 이동 작업 [trans]
+    ToPP = "ToPP"
+    ToINSP = "ToINSP"
+    ToSTRG = "ToSTRG"
+    ToSHIP = "ToSHIP"
+    ToCHG = "ToCHG"
+
+    #출고
+    SHIP = "SHIP"
+
+
+class FlowStatus(str, Enum):
+    CREATED = "CREATED"
+    CAST = "CAST"
+    WAIT_PP = "WAIT_PP"
+    PP = "PP"
+    WAIT_INSP = "WAIT_INSP"
+    INSP = "INSP"
+    WAIT_PA = "WAIT_PA"
+    PA = "PA"
+    STORED = "STORED"
+    DISCARDED = "DISCARDED"
+    PICK = "PICK"
+    READY_TO_SHIP = "READY_TO_SHIP"
+
+
+##Event Bridge
+class EventType(str, Enum):
+    TASK_COMPLETED = "TASK_COMPLETED"
+    ITEM_STATUS_CHANGED = "ITEM_STATUS_CHANGED"
+    TASK_ASSIGNED = "TASK_ASSIGNED"
+
+##Task Executor
+class TxnStat(str, Enum):
+    """DB Schema (equip_task_txn / trans_task_txn) 의 txn_stat 컬럼과 매칭"""
+    QUE = "QUE"
+    PROC = "PROC"
+    SUCC = "SUCC"
+    FAIL = "FAIL"
+
