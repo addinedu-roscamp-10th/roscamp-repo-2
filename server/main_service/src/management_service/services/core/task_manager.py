@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import  List
-from contracts.models import *
+from services.contracts.models import *
 from services.contracts.protocols import ITaskManager , IStateManager
 
 
@@ -101,6 +101,10 @@ class TaskManager(ITaskManager):
                 task_results.append(self._create_result(item_info, TaskType.ToWaitPA))
                 return task_results
 
+            elif event == "amr_battery_low":
+                task_results.append(self._create_result(item_info, TaskType.ToCHG))
+                return task_results
+
             elif event == "tostrg_DLD":
                 if item_info.is_defective:
                     # 1. 불량 보충 아이템 생성 및 MM 태스크 발행 (우선순위 10)
@@ -155,7 +159,7 @@ class TaskManager(ITaskManager):
         return task_results
     
     # txn 생성 to state manager
-    def _create_result(self, item_info, task_type):  #현재 진행된 아이템 정보 , 다은 공정 이름
+    def _create_result(self, item_info, task_type):  #현재 진행된 아이템 정보 , 다음 공정 이름
         # 트랜잭션 DB 기록 로직 (sm.insert_task_txn 호출 등) 포함
         strg_loc = self._calculate_strg_loc(task_type, item_info) #
         curr_input = CreateTaskInput(item_id=item_info.item_id, task_type=task_type, strg_loc=strg_loc , txn_stat=TxnStat.QUE , res_id =None )

@@ -1,27 +1,28 @@
 import logging
 import os
 
+from services.legacy.execution_monitor import ExecutionMonitor
+from services.core.orchestrator import Orchestrator
+from services.core.task_manager import TaskManager
+from services.core.task_allocator import TaskAllocator
+from services.core.task_executor import TaskExecutor
+from services.core.adapter import Adapter
+from services.core.traffic_manager import TrafficManager
+from services.core.mock_state_manager import MockStateManager
+from services.core.event_bridge import EventBridge
+
+from services.core.adapters.vision.ai_client import AIServerConfig, AIUploader
+from services.core.adapters.vision.image_forwarder import ForwarderConfig, ImageForwarder
+from services.core.adapters.vision.image_sink import sink as image_sink
 from services.core.adapters.sensors.rfid_service import RfidService
 from services.core.adapters.robotics.amr_battery import AmrBatteryService
-
-from services.legacy.execution_monitor import ExecutionMonitor
-from services.legacy.robot_executor import RobotExecutor
-from services.core.task_allocator import TaskAllocator
-from services.core.task_manager import TaskManager
-from services.core.traffic_manager import TrafficManager
-from services.core.orchestrator import Orchestrator
-from services.core.event_bridge import EventBridge
-from services.core.mock_state_manager import MockStateManager
-from services.core.pattern_command_service import PatternCommandService
 
 from services.query.item_query_service import ItemQueryService
 from services.query.pattern_query_service import PatternQueryService
 from services.query.production_order_query_service import ProductionOrderQueryService
 from services.query.schedule_query_service import ScheduleQueryService
+from services.core.pattern_command_service import PatternCommandService
 
-from services.core.adapters.vision.ai_client import AIServerConfig, AIUploader
-from services.core.adapters.vision.image_forwarder import ForwarderConfig, ImageForwarder
-from services.core.adapters.vision.image_sink import sink as image_sink
 
 logger = logging.getLogger(__name__)
 
@@ -50,28 +51,32 @@ class Container:
     """
     def __init__(self):
         logger.info("Initializing Dependency Container...")
-        
-        # 1. Base Core Managers
-        self.task_manager = TaskManager()
-        self.pattern_command_service = PatternCommandService()
-        self.item_query_service = ItemQueryService()
-        self.pattern_query_service = PatternQueryService()
-        self.production_order_query_service = ProductionOrderQueryService()
-        self.schedule_query_service = ScheduleQueryService()
-        self.rfid_service = RfidService()
-        self.task_allocator = TaskAllocator()
-        self.traffic_manager = TrafficManager()
 
-        # 2. Event-Driven Core
         self.event_bridge = EventBridge()
-        self.state_manager = MockStateManager()
+        self.state_manager = MockStateManager(event_bridge=self.event_bridge)
+        self.task_manager = TaskManager(sm=self.state_manager)
+        self.task_allocator = TaskAllocator(state_manager=self.state_manager)
+        self.adapter = Adapter()
+        self.task_executor = TaskExecutor(
+            adapter=self.adapter,
+            state_manager=self.state_manager,
+        )
         self.orchestrator = Orchestrator(
             event_bridge=self.event_bridge,
             task_manager=self.task_manager,
             task_allocator=self.task_allocator,
             state_manager=self.state_manager,
+            task_executor=self.task_executor,
         )
+        self.traffic_manager = TrafficManager()
 
+        self.item_query_service = ItemQueryService()
+        self.pattern_query_service = PatternQueryService()
+        self.production_order_query_service = ProductionOrderQueryService()
+        self.schedule_query_service = ScheduleQueryService()
+        self.pattern_command_service = PatternCommandService()
+        self.rfid_service = RfidService()
+        
         # 3. Vision / Monitor Adapters
         self.image_forwarder = _build_image_forwarder()
         self.execution_monitor = ExecutionMonitor(
@@ -81,8 +86,6 @@ class Container:
         # 4. Robotics Adapters
         self.amr_battery = AmrBatteryService()
         self.amr_battery.start()
-
-        self.robot_executor = RobotExecutor()
 
 # Singleton Container Instance
 container = Container()

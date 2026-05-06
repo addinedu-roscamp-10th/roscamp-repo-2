@@ -9,11 +9,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import logging
 import threading
 from collections import defaultdict
 from collections.abc import Callable
-from contracts.models import *
+from services.contracts.models import *
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +44,22 @@ class EventBridgeImpl:
         failed = 0
         for meta in handlers:
             try:
-                meta.handler(event)
+                result = meta.handler(event)
+                if inspect.isawaitable(result):
+                    try:
+                        loop = asyncio.get_running_loop()
+                    except RuntimeError as exc:
+                        raise RuntimeError(
+                            f"async handler '{meta.subscriber_name}' requires a running event loop"
+                        ) from exc
+                    task = loop.create_task(result)
+                    task.add_done_callback(
+                        lambda t, subscriber_name=meta.subscriber_name, event_type=event.event_type.value: _log_async_handler_result(
+                            t,
+                            subscriber_name,
+                            event_type,
+                        )
+                    )
                 success += 1
             except Exception as exc:  # noqa: BLE001 — handler 격리 목적 광역 catch
                 failed += 1
@@ -128,3 +145,19 @@ class EventBridgeImpl:
                     all_metas.extend(metas)
                 return sorted(all_metas, key=lambda m: m.registered_at)
             return list(self._handlers.get(event_type, []))
+
+
+def _log_async_handler_result(task: asyncio.Task, subscriber_name: str, event_type: str) -> None:
+    try:
+        task.result()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "EventBridge async handler '%s' 실패 (%s): %s",
+            subscriber_name,
+            event_type,
+            exc,
+            exc_info=True,
+        )
+
+
+EventBridge = EventBridgeImpl

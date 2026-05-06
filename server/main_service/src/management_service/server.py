@@ -50,7 +50,6 @@ from rpc.robot_rpc import RobotRpcMixin  # noqa: E402
 from rpc.task_rpc import TaskRpcMixin  # noqa: E402
 from rpc.traffic_rpc import TrafficRpcMixin  # noqa: E402
 from container import container  # noqa: E402
-from services.core.adapters.robotics.ros2_publisher import init_ros2, is_real_ros2, shutdown_ros2  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -118,25 +117,29 @@ class ManagementServicer(
 
     def __init__(self) -> None:
         # Container에서 조립 완료된 의존성 객체들을 참조
+        self.orchestrator = container.orchestrator
+
         self.task_manager = container.task_manager
+        self.task_allocator = container.task_allocator
+        self.task_executor = container.task_executor
+
+        self.traffic_manager = container.traffic_manager
+
+
         self.pattern_command_service = container.pattern_command_service
         self.item_query_service = container.item_query_service
         self.pattern_query_service = container.pattern_query_service
         self.production_order_query_service = container.production_order_query_service
         self.schedule_query_service = container.schedule_query_service
         self.rfid_service = container.rfid_service
-        self.task_allocator = container.task_allocator
-        self.traffic_manager = container.traffic_manager
 
         self.event_bridge = container.event_bridge
         self.state_manager = container.state_manager
-        self.orchestrator = container.orchestrator
 
         self.image_forwarder = container.image_forwarder
         self.execution_monitor = container.execution_monitor
 
         self.amr_battery = container.amr_battery
-        self.robot_executor = container.robot_executor
         self.orchestrator_thread: OrchestratorThread | None = None
 
     def Health(self, request, context):

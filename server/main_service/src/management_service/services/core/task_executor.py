@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import logging
 from typing import  List,  Dict
-from contracts.models import *
-from services.contracts.protocols import IStateManager,IAdapter
+from services.contracts.models import *
+from services.contracts.protocols import IStateManager, IAdapter
 
 
 """성수님 기존 [TaskStat] Enum 명칭 -> [TxnStat]으로 바뀌었습니다!!! 아래 반영해두었습니다"""
@@ -48,12 +48,12 @@ class TaskExecutor:
                 CommandStep(step_id=6, action="GO_HOME", params={}),
             ],
             TaskType.POUR: [
-                CommandStep(step_id=1, action="POURING_PICK_READY", params={"speed": 50}),
-                CommandStep(step_id=2, action="POURING_PICK", params={"speed": 50}),
-                CommandStep(step_id=3, action="GRIPPER_CLOSE", params={"speed": 50}),
-                CommandStep(step_id=4, action="POURING_TILT", params={"speed": 50}),
-                CommandStep(step_id=5, action="GRIPPER_OPEN", params={"speed": 50}),
-                CommandStep(step_id=6, action="GO_HOME", params={}),
+                CommandStep(step_id=1, action="POUR_PREPARE", params={"speed": 50}),
+                CommandStep(step_id=2, action="PICK_KETTLE", params={"speed": 50}),
+                CommandStep(step_id=3, action="MOVE_TO_POUR_POSITION", params={"speed": 50}),
+                CommandStep(step_id=4, action="EXECUTE_POUR", params={"speed": 30, "hold_sec": 10}),
+                CommandStep(step_id=5, action="RETURN_KETTLE", params={"speed": 50}),
+                CommandStep(step_id=6, action="GO_HOME", params={"speed": 50}),
             ],
             TaskType.DM: [
                 CommandStep(step_id=1, action="DEMOLD_APPROACH", params={"speed": 50}),
@@ -98,17 +98,14 @@ class TaskExecutor:
             TaskType.ToPP: [
                 CommandStep(step_id=1, action="ToCAST1", params={}),  # Casting Waiting
                 CommandStep(step_id=2, action="ToPP1", params={}),    # PP Zone
-                CommandStep(step_id=3, action="ToCHG1", params={}),   # Charging
             ],
             TaskType.ToSTRG: [
                 CommandStep(step_id=1, action="ToINSP", params={}),   # Conveyor Waiting
                 CommandStep(step_id=2, action="ToSTRG1", params={}),  # STRG Zone
-                CommandStep(step_id=3, action="ToCHG1", params={}),   # Charging
             ],
             TaskType.ToSHIP: [
                 CommandStep(step_id=1, action="ToSTRG1", params={}),  # STRG Zone (PICK 후)
                 CommandStep(step_id=2, action="ToSHIP", params={}),   # SHIP Zone
-                CommandStep(step_id=3, action="ToCHG1", params={}),   # Charging
             ],
             TaskType.ToCHG: [
                 CommandStep(step_id=1, action="ToCHG1", params={}),   # Charging Zone
@@ -118,7 +115,7 @@ class TaskExecutor:
             TaskType.ToINSP: [
                 CommandStep(step_id=1, action="CONV_RUN", params={"duration_sec": 4}),
             ],
-            TaskType.ToPAWait: [
+            TaskType.ToWaitPA: [
                 CommandStep(step_id=1, action="CONV_RUN", params={"duration_sec": 4}),
             ],
         }
@@ -162,6 +159,7 @@ class TaskExecutor:
                 
                 executed_steps += 1
                 self.logger.info(f"[Executor] Step {step.step_id} completed")
+                await self._handle_step_completion(input_data, step)
             
             # [FB4 반영] Task 진행 상태가 성공한 경우 전이: PROC -> SUCC
             await self.state_manager.update_task_status(
@@ -195,6 +193,25 @@ class TaskExecutor:
             robot_id=res_id,
             action=step.action,
             params=step.params
+        )
+
+    async def _handle_step_completion(self, input_data: TaskExecutorInput, step: CommandStep) -> None:
+        """특정 step 완료 시 후속 이벤트를 StateManager에 위임."""
+        subtask_by_action = {
+            "EXECUTE_POUR": "pour",
+            "ToCAST1": "topp",
+            "ToSTRG1": "tostrg",
+        }
+        subtask = subtask_by_action.get(step.action)
+        if subtask is None:
+            return
+
+        item_id = int(input_data.item_id) if input_data.item_id is not None else None
+        await self.state_manager.publish_subtask_completed(
+            task_id=input_data.task_id,
+            item_id=item_id,
+            subtask=subtask,
+            task_type=input_data.task_type.value,
         )
 
     async def _handle_error(self, input_data: TaskExecutorInput, error_msg: str, steps: int) -> ExecutionResult:
