@@ -59,6 +59,12 @@ class StartProductionBatchAckModel(BaseModel):
     orders: list[StartProductionOrderAckModel] = Field(default_factory=list)
     message: str | None = None
 
+class ScheduleNextTaskInput(BaseModel):
+    item_id: int
+    planning_event: str | None = None
+    last_task_type: TaskType | None = None
+    req_res_id: str | None = None
+
 class TaskInfo(BaseModel):
     task_id: str
     task_type: str
@@ -86,13 +92,6 @@ class CreateTaskInput(BaseModel): #tm -> sm
     txn_stat: str = "que"
     res_id : Optional[int] = None
 
-# orchestrator
-# class CreateTaskInput(BaseModel):
-#     item_id: int
-#     flow_stat: str | None = None
-#     zone_nm: str | None = None
-#     event_msg: str | None = None
-#     item_status: ItemStatusRecord | None = None
 
 class NextTaskResult(BaseModel): # tm -> ok
     item_id: int
