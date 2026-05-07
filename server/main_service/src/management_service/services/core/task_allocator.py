@@ -2,7 +2,7 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING
 
-from services.contracts.enums import EquipTaskType, TransTaskType, TransferPoint
+from services.contracts.enums import TaskType, TransferPoint
 from services.contracts.models import (
     AllocateTaskInput,
     AllocateTaskResult,
@@ -22,29 +22,32 @@ TRANSFER_POINT_COORDS: dict[TransferPoint, tuple[float, float]] = {
 }
 
 STORAGE_AND_SHIPPING_TASKS = {
-    EquipTaskType.PA_GP,
-    EquipTaskType.PA_DP,
-    EquipTaskType.PICK,
-    EquipTaskType.SHIP,
-    "PA_GP",
-    "PA_DP",
-    "PICK",
-    "SHIP",
+    TaskType.PA_GP,
+    TaskType.PA_DP,
+    TaskType.PICK,
+    TaskType.SHIP,
 }
 
-def get_required_resource_type(
-    task_type: str | EquipTaskType | TransTaskType | None,
+CONVEYOR_TASKS = {
+    TaskType.ToINSP,
+    TaskType.ToWaitPA,
+}
+
+TRANSPORT_TASKS = {
+    TaskType.ToPP,
+    TaskType.ToSTRG,
+    TaskType.ToSHIP,
+    TaskType.ToCHG,
+}
+
+def _get_required_resource_type(
+    task_type: TaskType | None,
     zone_nm: str | None = None,
 ) -> str:
-    if isinstance(task_type, TransTaskType) or task_type in [t.value for t in TransTaskType]:
+    if task_type in TRANSPORT_TASKS:
         return "TAT"
 
-    if (
-        task_type == EquipTaskType.ToINSP
-        or task_type == "ToINSP"
-        or task_type == "ToWaitPA"
-        or zone_nm == "INSP"
-    ):
+    if task_type in CONVEYOR_TASKS or zone_nm == "INSP":
         return "CONV"
 
     if zone_nm == "STRG" or task_type in STORAGE_AND_SHIPPING_TASKS:
@@ -70,17 +73,13 @@ class TaskAllocator:
     # 각 src의 좌표 반환
     def _get_transfer_point(
         self,
-        task_type: str | EquipTaskType | TransTaskType | None,
+        task_type: TaskType | None,
     ) -> TransferPoint | None:
         task_to_transfer_point = {
-            TransTaskType.ToPP: TransferPoint.CAST_OUT,
-            TransTaskType.ToSTRG: TransferPoint.PP_CONV_END,
-            TransTaskType.ToSHIP: TransferPoint.STRG_IN,
-            TransTaskType.ToCHG: TransferPoint.CHG_IN,
-            "ToPP": TransferPoint.CAST_OUT,
-            "ToSTRG": TransferPoint.PP_CONV_END,
-            "ToSHIP": TransferPoint.STRG_IN,
-            "ToCHG": TransferPoint.CHG_IN,
+            TaskType.ToPP: TransferPoint.CAST_OUT,
+            TaskType.ToSTRG: TransferPoint.PP_CONV_END,
+            TaskType.ToSHIP: TransferPoint.STRG_IN,
+            TaskType.ToCHG: TransferPoint.CHG_IN,
         }
         return task_to_transfer_point.get(task_type)
 
@@ -97,13 +96,13 @@ class TaskAllocator:
     def _select_resource(
         self,
         available_resources: list[str],
-        task_type: str | EquipTaskType | TransTaskType | None,
+        task_type: TaskType | None,
         zone_nm: str | None = None,
         amr_locations: list[AmrLocationResult] | None = None,
     ) -> str | None:
-        is_trans = isinstance(task_type, TransTaskType) or task_type in [t.value for t in TransTaskType]
+        is_trans = task_type in TRANSPORT_TASKS
         
-        # 1. TAT(AMR) 선택 로직: 가장 가까운 로봇 선택
+        # TAT(AMR) 선택 로직: 가장 가까운 로봇 선택
         if amr_locations and is_trans:
             transfer_point = self._get_transfer_point(task_type)
             if transfer_point is not None: 
@@ -130,33 +129,33 @@ class TaskAllocator:
         self,
         task: AllocateTaskInput,
     ) -> AllocateTaskResult:
-        # orchestrator가 미리 채워준 타입을 우선 사용하고, 없으면 여기서 계산한다.
-        req_res_type = task.req_res_type or get_required_resource_type(task.task_type, task.zone_nm)
+        # 입력에 타입이 없으면 allocator가 최종 req_res_type을 해석한다.
+        req_res_type = task.req_res_type or _get_required_resource_type(task.task_type, task.zone_nm)
 
+        # req_res_id가 들어오면 반드시 그 로봇이 할당되도록
         if task.req_res_id:
-            is_available = self.state_manager.get_robot_available_for_item(
-                task.req_res_id,
-                task.item_id,
-            )
-            if not is_available:
-                return AllocateTaskResult(
-                    success=False,
-                    reason=f"required_robot_{task.req_res_id}_not_available",
-                )
             await self._update_task_allocation(task, task.req_res_id)
-            return AllocateTaskResult(success=True, robot_id=task.req_res_id)
+            return AllocateTaskResult(
+                success=True,
+                req_res_type=req_res_type,
+                robot_id=task.req_res_id,
+            )
 
         # 가용 리소스 조회
         available_resources = await self.state_manager.get_available_resources(req_res_type)
 
         if not available_resources:
-            return AllocateTaskResult(success=False, reason="no_available_resource")
+            return AllocateTaskResult(
+                success=False,
+                req_res_type=req_res_type,
+                reason="no_available_resource",
+            )
 
         amr_locations: list[AmrLocationResult] | None = None
         if req_res_type == "TAT":
             amr_locations = await self.state_manager.get_amr_locations()
 
-        # 4. 최적 리소스 선택 (일반적인 경우)
+        # 최적 리소스 선택
         selected_res_id = self._select_resource(
             available_resources,
             task.task_type,
@@ -164,11 +163,9 @@ class TaskAllocator:
             amr_locations,
         )
 
-        if not selected_res_id:
-            return AllocateTaskResult(success=False, reason="resource_not_found")
-
         await self._update_task_allocation(task, selected_res_id)
         return AllocateTaskResult(
             success=True,
+            req_res_type=req_res_type,
             robot_id=selected_res_id,
         )
