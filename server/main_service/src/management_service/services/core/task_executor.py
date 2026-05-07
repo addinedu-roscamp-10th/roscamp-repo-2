@@ -263,7 +263,7 @@ class TaskExecutor:
             return await self._wait_for_subtask_completed(input_data, step)
 
         return await self.adapter.send_command(
-            robot_id=input_data.res_id,
+            res_id=input_data.res_id,
             action=step.action,
             params={**step.params, **input_data.payload}
         )

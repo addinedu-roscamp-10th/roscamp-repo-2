@@ -252,7 +252,7 @@ class Orchestrator(IOrchestrator):
         allocate_input = self._build_allocate_task_input(task, item_info, req_res_id,)
         allocation_result = await self.task_allocator.allocate(allocate_input)
 
-        if allocation_result.success and allocation_result.robot_id:
+        if allocation_result.success and allocation_result.res_id:
             if self.task_executor is None:
                 logger.warning(
                     "task executor not configured; skipping execution for task_id=%s",
@@ -262,7 +262,7 @@ class Orchestrator(IOrchestrator):
             execute_input = self._build_execute_task_input(
                 task,
                 item_info,
-                allocation_result.robot_id,
+                allocation_result.res_id,
             )
             asyncio.create_task(self.task_executor.execute_task(execute_input))
             return
@@ -319,12 +319,12 @@ class Orchestrator(IOrchestrator):
         self,
         task: NextTaskResult,
         item_info: ItemStatusRecord,
-        robot_id: str,
+        res_id: str,
     ) -> ExecuteTaskInput:
         """executor 입력을 생성한다."""
         return ExecuteTaskInput(
             task_id=str(task.txn_id),
-            res_id=robot_id,
+            res_id=res_id,
             item_id=str(item_info.item_id),
             task_type=task.task_type,
         )

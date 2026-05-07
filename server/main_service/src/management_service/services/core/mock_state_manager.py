@@ -15,7 +15,7 @@ from ..contracts.enums import EventType
 from ..contracts.enums import TaskType, TxnStat
 from ..contracts.models import (
     AmrLocationResult,
-    AssignTaskRobotInput,
+    AllocateTaskResInput,
     CreateTaskInput,
     Event,
     ItemStatusRecord,
@@ -44,7 +44,7 @@ class MockStateManager:
     def __init__(self, event_bridge=None) -> None:
         self._items: dict[int, dict[str, Any]] = {}
         self._tasks: dict[str, dict[str, Any]] = {}
-        self._robots: dict[str, dict[str, Any]] = {}
+        self._res_list: dict[str, dict[str, Any]] = {}
         self.items = self._items
         self.orders: dict[int, dict[str, Any]] = {}
         self.slot_table: dict[tuple, dict[str, Any]] = {}
@@ -60,7 +60,7 @@ class MockStateManager:
         self._pattern_model = None
         self._item_model = None
         self._equip_task_txn_model = None
-        self._seed_robot_pool()
+        self._seed_res_pool()
         try:
             from db_session import SessionLocal
             from smart_cast_db.models import EquipTaskTxn, ItemStat, Ord, OrdDetail, OrdLog, OrdStat, Pattern
@@ -79,17 +79,17 @@ class MockStateManager:
             logger.warning("[MockStateManager] DB-backed start_production unavailable: %s", exc)
         logger.info("[MockStateManager] stub mode enabled")
 
-    def _seed_robot_pool(self) -> None:
-        for robot_type in ("TAT", "CONV", "RA_STRG", "RA_CAST"):
+    def _seed_res_pool(self) -> None:
+        for res_type in ("TAT", "CONV", "RA_STRG", "RA_CAST"):
             for idx in range(1, 5):
-                robot_id = f"{robot_type}_{idx}"
-                self._robots[robot_id] = {
-                    "robot_id": robot_id,
-                    "robot_type": robot_type,
+                res_id = f"{res_type}_{idx}"
+                self._res_list[res_id] = {
+                    "res_id": res_id,
+                    "res_type": res_type,
                     "task_id": None,
                     "item_id": None,
                     "status": "idle",
-                    "x": float(idx - 1) if robot_type == "TAT" else 0.0,
+                    "x": float(idx - 1) if res_type == "TAT" else 0.0,
                     "y": 0.0,
                 }
 
@@ -362,48 +362,48 @@ class MockStateManager:
         self._tasks[task_id] = dict(task)
         return task_id
 
-    def find_available_robot(self, robot_type: str, task_type: str | None = None) -> str | None:
-        for robot_id, robot_meta in self._robots.items():
+    def find_available_res(self, res_type: str, task_type: str | None = None) -> str | None:
+        for res_id, res_meta in self._res_list.items():
             if (
-                robot_meta.get("robot_type") == robot_type
-                and robot_meta.get("status") == "idle"
-                and robot_meta.get("item_id") is None
+                res_meta.get("res_type") == res_type
+                and res_meta.get("status") == "idle"
+                and res_meta.get("item_id") is None
             ):
-                return robot_id
+                return res_id
         return None
 
     async def get_available_resources(self, req_res_type: str) -> list[str]:
         available = [
-            robot_id
-            for robot_id, robot_meta in sorted(self._robots.items())
-            if robot_meta.get("robot_type") == req_res_type
-            and robot_meta.get("status") == "idle"
-            and robot_meta.get("item_id") is None
+            res_id
+            for res_id, res_meta in sorted(self._res_list.items())
+            if res_meta.get("res_type") == req_res_type
+            and res_meta.get("status") == "idle"
+            and res_meta.get("item_id") is None
         ]
         return available
 
     async def get_amr_locations(self) -> list[AmrLocationResult]:
         return [
             AmrLocationResult(
-                res_id=robot_id,
-                x=float(robot_meta.get("x", 0.0)),
-                y=float(robot_meta.get("y", 0.0)),
+                res_id=res_id,
+                x=float(res_meta.get("x", 0.0)),
+                y=float(res_meta.get("y", 0.0)),
             )
-            for robot_id, robot_meta in sorted(self._robots.items())
-            if robot_meta.get("robot_type") == "TAT"
+            for res_id, res_meta in sorted(self._res_list.items())
+            if res_meta.get("res_type") == "TAT"
         ]
 
-    def get_robot_available_for_item(self, robot_id: str, item_id: int | None = None) -> bool:
-        robot_meta = self._robots.get(robot_id)
-        if robot_meta is None:
+    def get_res_available_for_item(self, res_id: str, item_id: int | None = None) -> bool:
+        res_meta = self._res_list.get(res_id)
+        if res_meta is None:
             return False
-        if robot_meta.get("status") != "idle":
+        if res_meta.get("status") != "idle":
             return False
         if item_id is None:
-            return robot_meta.get("item_id") is None
-        return robot_meta.get("item_id") == item_id
+            return res_meta.get("item_id") is None
+        return res_meta.get("item_id") == item_id
 
-    async def update_task_allocation(self, assign_input: AssignTaskRobotInput) -> None:
+    async def update_task_allocation(self, assign_input: AllocateTaskResInput) -> None:
         task_key = (
             assign_input.task_id
             if assign_input.task_id.startswith("task_")
@@ -412,26 +412,25 @@ class MockStateManager:
         task_meta = self._tasks.get(task_key)
         if task_meta is not None:
             task_meta["item_id"] = assign_input.item_id
-            task_meta["res_id"] = assign_input.robot_id
-            task_meta["robot_id"] = assign_input.robot_id
+            task_meta["res_id"] = assign_input.res_id
             task_meta["assignment_status"] = "allocated"
             task_meta["status"] = "allocated"
 
-        self._robots.setdefault(assign_input.robot_id, {})
-        self._robots[assign_input.robot_id].update(
+        self._res_list.setdefault(assign_input.res_id, {})
+        self._res_list[assign_input.res_id].update(
             {
-                "robot_id": assign_input.robot_id,
-                "robot_type": self._robots.get(assign_input.robot_id, {}).get("robot_type"),
+                "res_id": assign_input.res_id,
+                "res_type": self._res_list.get(assign_input.res_id, {}).get("res_type"),
                 "task_id": assign_input.task_id,
                 "item_id": assign_input.item_id,
                 "status": "allocated",
             }
         )
         logger.info(
-            "[MockStateManager] update_task_allocation: task=%s item=%s robot=%s",
+            "[MockStateManager] update_task_allocation: task=%s item=%s res=%s",
             assign_input.task_id,
             assign_input.item_id,
-            assign_input.robot_id,
+            assign_input.res_id,
         )
 
     async def update_task_status(self, req: UpdateTaskStatusInput) -> bool:
@@ -451,7 +450,7 @@ class MockStateManager:
                     item = self._items.setdefault(item_id, {"item_id": item_id})
                     if item.get("flow_stat") == "CREATED":
                         item["flow_stat"] = "CAST"
-                res_meta = self._robots.setdefault(assigned_res_id, {"robot_id": assigned_res_id})
+                res_meta = self._res_list.setdefault(assigned_res_id, {"res_id": assigned_res_id})
                 res_meta.update(
                     {
                         "task_id": req.task_id,
@@ -474,7 +473,7 @@ class MockStateManager:
                 if previous_status != TxnStat.SUCC.value and task_meta.get("task_type") == "PA_GP":
                     suppress_task_completed = self._handle_pa_gp_completion(task_meta)
             if req.new_stat in {TxnStat.SUCC, TxnStat.FAIL} and assigned_res_id is not None:
-                res_meta = self._robots.setdefault(assigned_res_id, {"robot_id": assigned_res_id})
+                res_meta = self._res_list.setdefault(assigned_res_id, {"res_id": assigned_res_id})
                 keep_item_affinity = (
                     req.new_stat == TxnStat.SUCC
                     and task_meta.get("task_type") in ITEM_AFFINITY_PREDECESSORS
@@ -491,7 +490,7 @@ class MockStateManager:
                 else:
                     res_meta["item_id"] = None
 
-                req_res_type = res_meta.get("robot_type")
+                req_res_type = res_meta.get("res_type")
                 if (
                     self._event_bridge is not None
                     and isinstance(req_res_type, str)
@@ -641,13 +640,13 @@ class MockStateManager:
         if self._event_bridge is None:
             return False
 
-        robot_meta = self._robots.setdefault(res_id, {})
-        robot_meta["robot_id"] = res_id
-        robot_meta["status"] = "idle"
+        res_meta = self._res_list.setdefault(res_id, {})
+        res_meta["res_id"] = res_id
+        res_meta["status"] = "idle"
         if task_id is not None:
-            robot_meta["task_id"] = task_id
+            res_meta["task_id"] = task_id
         if item_id is not None:
-            robot_meta["item_id"] = item_id
+            res_meta["item_id"] = item_id
 
         self._event_bridge.publish(
             Event(
@@ -668,13 +667,12 @@ class MockStateManager:
         )
         return True
 
-    def mark_task_started(self, task_id: str, robot_id: str, is_trans: bool) -> None:
+    def mark_task_started(self, task_id: str, res_id: str, is_trans: bool) -> None:
         if task_id in self._tasks:
             self._tasks[task_id]["status"] = "PROC"
-            self._tasks[task_id]["robot_id"] = robot_id
-        robot_meta = self._robots.setdefault(robot_id, {"robot_id": robot_id})
-        robot_meta.update({"task_id": task_id, "status": "PROC"})
-        logger.info("[MockStateManager] mark_task_started: task=%s robot=%s", task_id, robot_id)
+        res_meta = self._res_list.setdefault(res_id, {"res_id": res_id})
+        res_meta.update({"task_id": task_id, "status": "PROC"})
+        logger.info("[MockStateManager] mark_task_started: task=%s res=%s", task_id, res_id)
 
     def update_item_status(
         self,
@@ -697,10 +695,10 @@ class MockStateManager:
             zone_nm,
         )
 
-    def update_robot_status_memory(self, robot_id: str, x: float, y: float, battery_pct: int) -> None:
+    def update_res_status_memory(self, res_id: str, x: float, y: float, battery_pct: int) -> None:
         logger.debug(
-            "[MockStateManager] update_robot_status_memory: robot=%s x=%s y=%s battery=%s",
-            robot_id,
+            "[MockStateManager] update_res_status_memory: res=%s x=%s y=%s battery=%s",
+            res_id,
             x,
             y,
             battery_pct,
@@ -708,34 +706,33 @@ class MockStateManager:
 
     def update_amr_runtime_memory(
         self,
-        robot_id: str,
+        res_id: str,
         *,
         x: float | None = None,
         y: float | None = None,
         battery_pct: int | None = None,
     ) -> None:
         logger.debug(
-            "[MockStateManager] update_amr_runtime_memory: robot=%s x=%s y=%s battery=%s",
-            robot_id,
+            "[MockStateManager] update_amr_runtime_memory: res=%s x=%s y=%s battery=%s",
+            res_id,
             x,
             y,
             battery_pct,
         )
 
-    def update_robot_task_state(self, task_id: str, robot_id: str, cur_stat: str) -> None:
+    def update_res_task_state(self, task_id: str, res_id: str, cur_stat: str) -> None:
         if task_id in self._tasks:
             self._tasks[task_id]["status"] = cur_stat
-            self._tasks[task_id]["robot_id"] = robot_id
-        robot_meta = self._robots.setdefault(robot_id, {"robot_id": robot_id})
-        robot_meta.update(
+        res_meta = self._res_list.setdefault(res_id, {"res_id": res_id})
+        res_meta.update(
             {
                 "task_id": None if cur_stat in {TxnStat.SUCC.value, TxnStat.FAIL.value} else task_id,
                 "status": "idle" if cur_stat in {TxnStat.SUCC.value, TxnStat.FAIL.value} else cur_stat,
             }
         )
         logger.info(
-            "[MockStateManager] update_robot_task_state: task=%s robot=%s cur_stat=%s",
+            "[MockStateManager] update_res_task_state: task=%s res=%s cur_stat=%s",
             task_id,
-            robot_id,
+            res_id,
             cur_stat,
         )

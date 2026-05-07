@@ -170,15 +170,15 @@ class AllocateTaskInput(BaseModel):
     zone_nm: str | None = None
     task_type: TaskType | None = None
 
-class AssignTaskRobotInput(BaseModel):
+class AllocateTaskResInput(BaseModel):
     task_id: str
     item_id: int
-    robot_id: str
+    res_id: str
 
 class AllocateTaskResult(BaseModel):
     success: bool
     req_res_type: str | None = None
-    robot_id: str | None = None
+    res_id: str | None = None
     reason: str | None = None
 
 class AmrLocationResult(BaseModel):

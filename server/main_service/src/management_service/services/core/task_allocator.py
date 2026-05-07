@@ -6,8 +6,8 @@ from services.contracts.enums import TaskType, TransferPoint
 from services.contracts.models import (
     AllocateTaskInput,
     AllocateTaskResult,
+    AllocateTaskResInput,
     AmrLocationResult,
-    AssignTaskRobotInput,
 )
 
 if TYPE_CHECKING:
@@ -64,11 +64,11 @@ class TaskAllocator:
     def __init__(self, state_manager: IStateManager):
         self.state_manager = state_manager
 
-    async def _update_task_allocation(self, task: AllocateTaskInput, robot_id: str) -> None:
-        assign_input = AssignTaskRobotInput(
+    async def _update_task_allocation(self, task: AllocateTaskInput, res_id: str) -> None:
+        assign_input = AllocateTaskResInput(
             task_id=task.task_id,
             item_id=task.item_id,
-            robot_id=robot_id,
+            res_id=res_id,
         )
         await self.state_manager.update_task_allocation(assign_input)
 
@@ -140,7 +140,7 @@ class TaskAllocator:
             return AllocateTaskResult(
                 success=True,
                 req_res_type=req_res_type,
-                robot_id=task.req_res_id,
+                res_id=task.req_res_id,
             )
 
         # 가용 리소스 조회
@@ -169,5 +169,5 @@ class TaskAllocator:
         return AllocateTaskResult(
             success=True,
             req_res_type=req_res_type,
-            robot_id=selected_res_id,
+            res_id=selected_res_id,
         )

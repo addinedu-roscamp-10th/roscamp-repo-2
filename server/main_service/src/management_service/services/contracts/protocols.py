@@ -47,7 +47,7 @@ class ITaskExecutor(Protocol):
 class IAdapter(Protocol):
     
     ##Task Executor가 사용하는 인터페이스
-    async def send_command(self, robot_id: str, action: str, params: Dict) -> bool: 
+    async def send_command(self, res_id: str, action: str, params: Dict) -> bool: 
         ...
 
 
@@ -68,20 +68,20 @@ class IStateManager(Protocol):
     def add_task(self, task: Dict[str, Any]) -> str:
         ...
         
-    def find_available_robot(self, robot_type: str, task_type: str | None = None) -> str | None:
+    def find_available_res(self, res_type: str, task_type: str | None = None) -> str | None:
         ...
 
-    def get_robot_available_for_item(self, robot_id: str, item_id: int | None = None) -> bool:
+    def get_res_available_for_item(self, res_id: str, item_id: int | None = None) -> bool:
         ...
         
-    def update_task_allocation(self, assign_input: AssignTaskRobotInput) -> None:
+    def update_task_allocation(self, assign_input: AllocateTaskResInput) -> None:
         ...
 
     
     def update_task_status(self, task_id: str, status: str, is_trans: bool) -> None:
         ...
 
-    def mark_task_started(self, task_id: str, robot_id: str, is_trans: bool) -> None:
+    def mark_task_started(self, task_id: str, res_id: str, is_trans: bool) -> None:
         ...
         
     def update_item_status(
@@ -93,12 +93,12 @@ class IStateManager(Protocol):
     ) -> None:
         ...
         
-    def update_robot_status_memory(self, robot_id: str, x: float, y: float, battery_pct: int) -> None:
+    def update_res_status_memory(self, res_id: str, x: float, y: float, battery_pct: int) -> None:
         ...
 
     def update_amr_runtime_memory(
         self,
-        robot_id: str,
+        res_id: str,
         *,
         x: float | None = None,
         y: float | None = None,
@@ -106,7 +106,7 @@ class IStateManager(Protocol):
     ) -> None:
         ...
 
-    def update_robot_task_state(self, task_id: str, robot_id: str, cur_stat: str) -> None:
+    def update_res_task_state(self, task_id: str, res_id: str, cur_stat: str) -> None:
         ...
 """
         
@@ -124,7 +124,7 @@ class IStateManager(Protocol):
     async def get_amr_locations(self) -> list[AmrLocationResult]:
         ...
 
-    async def update_task_allocation(self, assign_input: AssignTaskRobotInput) -> None:
+    async def update_task_allocation(self, assign_input: AllocateTaskResInput) -> None:
         ...
 
     ##Task Executor가 사용하는 인터페이스
