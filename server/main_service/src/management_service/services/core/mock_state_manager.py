@@ -24,7 +24,7 @@ from ..contracts.models import (
 )
 
 logger = logging.getLogger(__name__)
-ITEM_AFFINITY_PREDECESSORS = {"MM", "POUR"}
+ITEM_AFFINITY_PREDECESSORS = {"MM", "POUR", "PP", "ToINSP", "INSP"}
 
 
 def _normalize_task_type(task_type: Any) -> TaskType | None:

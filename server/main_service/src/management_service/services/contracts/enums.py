@@ -72,7 +72,13 @@ class ResourceBindingPolicy(str, Enum):
     FREE = "FREE"
     REQUIRED = "REQUIRED"
 
-def get_resource_binding_policy(task_type: TaskType | str | None) -> ResourceBindingPolicy:
-    if task_type in {TaskType.POUR, TaskType.DM, "POUR", "DM"}:
+def get_resource_binding_policy(task_type: TaskType) -> ResourceBindingPolicy:
+    if task_type in {
+        TaskType.POUR,
+        TaskType.DM,
+        TaskType.ToINSP,
+        TaskType.INSP,
+        TaskType.ToWaitPA,
+    }:
         return ResourceBindingPolicy.REQUIRED
     return ResourceBindingPolicy.FREE

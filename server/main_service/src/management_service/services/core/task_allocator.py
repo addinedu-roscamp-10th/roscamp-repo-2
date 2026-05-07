@@ -29,6 +29,8 @@ STORAGE_AND_SHIPPING_TASKS = {
 }
 
 CONVEYOR_TASKS = {
+    TaskType.PP,
+    TaskType.INSP,
     TaskType.ToINSP,
     TaskType.ToWaitPA,
 }
