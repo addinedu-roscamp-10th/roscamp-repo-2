@@ -138,6 +138,7 @@ class ExecuteTaskInput(BaseModel):
     res_id: str   # min_length 제거
     task_type: TaskType
     item_id: Optional[str] = None
+    payload: Dict[str, Any] = Field(default_factory=dict)
     
     @field_validator("task_id", "res_id")
     @classmethod

@@ -23,6 +23,7 @@ class TaskExecutor:
         self._waiters_lock = threading.Lock()
         self._task_waiters: dict[tuple[int, TaskType], list[asyncio.Future[str]]] = defaultdict(list)
         self._subtask_waiters: dict[tuple[int, str], list[asyncio.Future[None]]] = defaultdict(list)
+        self._completed_subtasks: set[tuple[int, str]] = set()
 
         if self.event_bridge is not None:
             self.event_bridge.subscribe(
@@ -62,18 +63,6 @@ class TaskExecutor:
                 CommandStep(step_id=5, action="GRIPPER_OPEN", params={"speed": 50}),
                 CommandStep(step_id=6, action="GO_HOME", params={}),
             ],
-            TaskType.PP: [
-                CommandStep(step_id=1, action="PP_APPROACH", params={"speed": 50}),
-                CommandStep(step_id=2, action="PP_GRIND", params={"speed": 40}),
-                CommandStep(step_id=3, action="PP_DEBURR", params={"speed": 40}),
-                CommandStep(step_id=4, action="PP_PLACE", params={"speed": 50}),
-                CommandStep(step_id=5, action="GO_HOME", params={}),
-            ],
-            TaskType.INSP: [
-                CommandStep(step_id=1, action="INSP_SCAN", params={"speed": 30}),
-                CommandStep(step_id=2, action="INSP_COMPLETE", params={}),
-            ],
-            
             # === PAT (Logistics Robot) ===
             TaskType.PA_GP: [
                 CommandStep(step_id=1, action="APPROACH", params={"floor": 3, "cell": 1, "speed": 30}),
@@ -105,54 +94,89 @@ class TaskExecutor:
             ],
             # === TAT (AMR) ===
             TaskType.ToPP: [
-                CommandStep(step_id=1, action="ToCAST1", params={}),  # Casting Waiting
+                CommandStep(step_id=1, action="ToCAST1", params={}),  # Casting zone 상차 대기 장소
                 CommandStep(
                     step_id=2,
                     action="WAIT_TASK_COMPLETED",
                     params={"task_type": TaskType.DM},
                     timeout_sec=600,
                 ),
-                CommandStep(step_id=3, action="ToPP1", params={}),    # PP Zone
-                CommandStep(step_id=4, action="ToCHG1", params={}),
+                CommandStep(step_id=3, action="ToPP1", params={}),    # PP Zone 하차 대기 장소
+                # 외부 이벤트 일단 주석 처리
+                # CommandStep(
+                #     step_id=4,
+                #     action="WAIT_SUBTASK_COMPLETED",
+                #     params={"subtask_type": "button_pushed"},
+                #     timeout_sec=600,
+                # ),
+                CommandStep(step_id=4, action="ToCHG", params={}),
             ],
             TaskType.ToSTRG: [
-                CommandStep(step_id=1, action="ToINSP", params={}),   # Conveyor Waiting
+                CommandStep(step_id=1, action="ToINSP", params={}),   # 컨베이어 상차 대기 장소
                 CommandStep(
                     step_id=2,
                     action="WAIT_TASK_COMPLETED",
                     params={"task_type": TaskType.ToWaitPA},
                     timeout_sec=600,
                 ),
-                CommandStep(step_id=3, action="ToSTRG1", params={}),  # STRG Zone
+                CommandStep(step_id=3, action="ToSTRG1", params={}),  # STRG zone 하차 대기 장소
                 CommandStep(
                     step_id=4,
                     action="WAIT_SUBTASK_COMPLETED",
                     params={"subtask_type": "pa_dld_done"},
                     timeout_sec=600,
                 ),
-                CommandStep(step_id=5, action="ToCHG1", params={}),
+                CommandStep(step_id=5, action="ToCHG", params={}),
             ],
             TaskType.ToSHIP: [
-                CommandStep(step_id=1, action="ToSTRG1", params={}),  # STRG Zone (PICK 후)
+                CommandStep(step_id=1, action="ToSTRG2", params={}),  # STRG Zone 상차 대기 장소
                 CommandStep(
                     step_id=2,
                     action="WAIT_TASK_COMPLETED",
                     params={"task_type": TaskType.PICK},
                     timeout_sec=600,
                 ),
-                CommandStep(step_id=3, action="ToSHIP", params={}),   # SHIP Zone
-                CommandStep(step_id=4, action="ToCHG1", params={}),
+                CommandStep(step_id=3, action="ToSHIP", params={}),   # SHIP Zone 하차 대기 장소
+                CommandStep(step_id=4, action="ToCHG", params={}),
             ],
             TaskType.ToCHG: [
-                CommandStep(step_id=1, action="ToCHG1", params={}),   # Charging Zone
+                CommandStep(step_id=1, action="ToCHG", params={}),   # Charging Zone
             ],
             
             # === CONV (Conveyor Belt) ===
-            TaskType.ToINSP: [
-                CommandStep(step_id=1, action="CONV_RUN", params={"duration_sec": 4}),
+            # 후처리 시작 -> RFID 신호가 종료 조건
+            TaskType.PP: [
+                # 외부 이벤트 임시 주석 처리
+                # CommandStep(
+                #     step_id=1,
+                #     action="WAIT_SUBTASK_COMPLETED",
+                #     params={"subtask_type": "rfid_scanned"},
+                #     timeout_sec=600,
+                # ),
             ],
+            # 컨베이어 이동 후 이미지 수신이 종료 조건
+            TaskType.ToINSP: [
+                # 외부 이벤트 임시 주석 처리
+                # CommandStep(
+                #     step_id=2,
+                #     action="WAIT_SUBTASK_COMPLETED",
+                #     params={"subtask_type": "image_arrived"},
+                #     timeout_sec=600,
+                # ),
+            ],
+            # INSP은 수신된 이미지로 AI에 추론 요청을 보내고 추론 결과 수신이 종료 조건
+            TaskType.INSP: [
+                CommandStep(step_id=1, action="AI_INFERENCE_REQUEST", params={}),
+            ],
+            # 컨베이어 재가동은 INSP(AI 추론 끝) 끝난 후에 가동 가능, 가동 4초 뒤가 종료 조건
             TaskType.ToWaitPA: [
-                CommandStep(step_id=1, action="CONV_RUN", params={"duration_sec": 4}),
+                CommandStep(
+                    step_id=1,
+                    action="WAIT_TASK_COMPLETED",
+                    params={"task_type": TaskType.INSP},
+                    timeout_sec=600,
+                ),
+                CommandStep(step_id=2, action="CONV_ALLOW_MOVE", params={"duration_sec": 4}),
             ],
         }
 
@@ -241,7 +265,7 @@ class TaskExecutor:
         return await self.adapter.send_command(
             robot_id=input_data.res_id,
             action=step.action,
-            params=step.params
+            params={**step.params, **input_data.payload}
         )
 
     async def _wait_for_task_completed(self, input_data: ExecuteTaskInput, step: CommandStep) -> bool:
@@ -306,6 +330,16 @@ class TaskExecutor:
             raise RuntimeError("WAIT_SUBTASK_COMPLETED requires params.subtask_type")
 
         key = (item_id, subtask_type.strip())
+        # task 생성 전에 먼저 온 이벤트를 보고 성공처리
+        if key in self._completed_subtasks:
+            self.logger.info(
+                "[Executor] Subtask already observed: task=%s item=%s subtask_type=%s",
+                input_data.task_id,
+                item_id,
+                key[1],
+            )
+            return True
+
         loop = asyncio.get_running_loop()
         future: asyncio.Future[None] = loop.create_future()
         with self._waiters_lock:
@@ -406,6 +440,7 @@ class TaskExecutor:
             return
 
         key = (item_id, payload_subtask_type)
+        self._completed_subtasks.add(key)  # 먼저 온 subtask를 저장해두기
         with self._waiters_lock:
             futures = self._subtask_waiters.pop(key, [])
 
