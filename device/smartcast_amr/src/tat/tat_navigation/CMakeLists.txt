@@ -28,11 +28,6 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}
 )
 
-install(FILES
-  scripts/index.html scripts/pinklab_logo.png
-  DESTINATION lib/${PROJECT_NAME}
-)
-
 install(
   DIRECTORY launch params map rviz
   DESTINATION share/${PROJECT_NAME}
