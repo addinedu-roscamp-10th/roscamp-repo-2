@@ -74,6 +74,7 @@ class ItemStatusRecord(BaseModel): #ok -> tm
     item_id: int
     order_id: int  # 어느 주문에 속한 아이tuple인지 추적하기 위해 추가
     last_task_type: Optional[TaskType] = None
+    req_res_id: str | None = None
     flow_stat: Optional[str] = None
     is_defective: bool = False
     ptn_id: Optional[int] = None
@@ -174,7 +175,7 @@ class AllocateTaskInput(BaseModel):
     task_id: str
     item_id: int
     req_res_type: str | None = None
-    last_res_id: str | None = None
+    req_res_id: str | None = None
     zone_nm: str | None = None
     task_type: str | None = None
 

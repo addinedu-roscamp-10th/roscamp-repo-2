@@ -22,11 +22,35 @@ TRANSFER_POINT_COORDS: dict[TransferPoint, tuple[float, float]] = {
 }
 
 STORAGE_AND_SHIPPING_TASKS = {
+    EquipTaskType.PA_GP,
+    EquipTaskType.PA_DP,
     EquipTaskType.PICK,
     EquipTaskType.SHIP,
+    "PA_GP",
+    "PA_DP",
     "PICK",
     "SHIP",
 }
+
+def get_required_resource_type(
+    task_type: str | EquipTaskType | TransTaskType | None,
+    zone_nm: str | None = None,
+) -> str:
+    if isinstance(task_type, TransTaskType) or task_type in [t.value for t in TransTaskType]:
+        return "TAT"
+
+    if (
+        task_type == EquipTaskType.ToINSP
+        or task_type == "ToINSP"
+        or task_type == "ToWaitPA"
+        or zone_nm == "INSP"
+    ):
+        return "CONV"
+
+    if zone_nm == "STRG" or task_type in STORAGE_AND_SHIPPING_TASKS:
+        return "RA_STRG"
+
+    return "RA_CAST"
 
 
 class TaskAllocator:
@@ -35,30 +59,13 @@ class TaskAllocator:
     def __init__(self, state_manager: IStateManager):
         self.state_manager = state_manager
 
-    # task별 필요한 res 분류 반환 (RA, TAT, CONV)
-    def _get_required_resource_type(
-        self,
-        task_type: str | EquipTaskType | TransTaskType | None,
-        zone_nm: str | None = None,
-    ) -> str:
-        if isinstance(task_type, TransTaskType) or task_type in [t.value for t in TransTaskType]:
-            return "TAT"
-
-        if task_type == EquipTaskType.ToINSP or task_type == "ToINSP" or zone_nm == "INSP":
-            return "CONV"
-
-        if zone_nm == "STRG" or task_type in STORAGE_AND_SHIPPING_TASKS:
-            return "RA_STRG"
-
-        return "RA_CAST"
-
-    async def update_task_allocation(self, task: AllocateTaskInput, robot_id: str) -> None:
+    async def _update_task_allocation(self, task: AllocateTaskInput, robot_id: str) -> None:
         assign_input = AssignTaskRobotInput(
             task_id=task.task_id,
             item_id=task.item_id,
             robot_id=robot_id,
         )
-        self.state_manager.update_task_allocation(assign_input)
+        await self.state_manager.update_task_allocation(assign_input)
 
     # 각 src의 좌표 반환
     def _get_transfer_point(
@@ -123,23 +130,27 @@ class TaskAllocator:
         self,
         task: AllocateTaskInput,
     ) -> AllocateTaskResult:
-        # 요청된 task에 대한 res 타입 결정
-        req_res_type = self._get_required_resource_type(task.task_type, task.zone_nm)
-        
+        # orchestrator가 미리 채워준 타입을 우선 사용하고, 없으면 여기서 계산한다.
+        req_res_type = task.req_res_type or get_required_resource_type(task.task_type, task.zone_nm)
+
+        if task.req_res_id:
+            is_available = self.state_manager.get_robot_available_for_item(
+                task.req_res_id,
+                task.item_id,
+            )
+            if not is_available:
+                return AllocateTaskResult(
+                    success=False,
+                    reason=f"required_robot_{task.req_res_id}_not_available",
+                )
+            await self._update_task_allocation(task, task.req_res_id)
+            return AllocateTaskResult(success=True, robot_id=task.req_res_id)
+
         # 가용 리소스 조회
         available_resources = await self.state_manager.get_available_resources(req_res_type)
 
         if not available_resources:
             return AllocateTaskResult(success=False, reason="no_available_resource")
-
-
-        # POUR, DM은 직전 작업을 수행한 로봇이 이어서 수행해야 함
-        sticky_tasks = {EquipTaskType.POUR, EquipTaskType.DM, "POUR", "DM"}
-        if task.task_type in sticky_tasks and task.last_res_id:
-            if task.last_res_id in available_resources:
-                return AllocateTaskResult(success=True, robot_id=task.last_res_id)
-            else:
-                return AllocateTaskResult(success=False, reason=f"sticky_robot_{task.last_res_id}_not_available")
 
         amr_locations: list[AmrLocationResult] | None = None
         if req_res_type == "TAT":
@@ -156,6 +167,7 @@ class TaskAllocator:
         if not selected_res_id:
             return AllocateTaskResult(success=False, reason="resource_not_found")
 
+        await self._update_task_allocation(task, selected_res_id)
         return AllocateTaskResult(
             success=True,
             robot_id=selected_res_id,
