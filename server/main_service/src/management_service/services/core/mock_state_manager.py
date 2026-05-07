@@ -12,17 +12,19 @@ import logging
 from typing import Any
 
 from ..contracts.enums import EventType
-from ..contracts.enums import TxnStat
+from ..contracts.enums import TaskType, TxnStat
 from ..contracts.models import (
     AmrLocationResult,
     AssignTaskRobotInput,
     CreateTaskInput,
     Event,
+    ItemStatusRecord,
     StartProductionOrderAckModel,
     UpdateTaskStatusInput,
 )
 
 logger = logging.getLogger(__name__)
+ITEM_AFFINITY_PREDECESSORS = {"MM", "POUR"}
 
 
 class MockStateManager:
@@ -41,17 +43,20 @@ class MockStateManager:
         self._db_ready = False
         self._session_factory = None
         self._ord_model = None
+        self._ord_detail_model = None
         self._ord_stat_model = None
         self._ord_log_model = None
         self._pattern_model = None
         self._item_model = None
         self._equip_task_txn_model = None
+        self._seed_robot_pool()
         try:
             from db_session import SessionLocal
-            from smart_cast_db.models import EquipTaskTxn, ItemStat, Ord, OrdLog, OrdStat, Pattern
+            from smart_cast_db.models import EquipTaskTxn, ItemStat, Ord, OrdDetail, OrdLog, OrdStat, Pattern
 
             self._session_factory = SessionLocal
             self._ord_model = Ord
+            self._ord_detail_model = OrdDetail
             self._ord_stat_model = OrdStat
             self._ord_log_model = OrdLog
             self._pattern_model = Pattern
@@ -62,6 +67,20 @@ class MockStateManager:
         except Exception as exc:
             logger.warning("[MockStateManager] DB-backed start_production unavailable: %s", exc)
         logger.info("[MockStateManager] stub mode enabled")
+
+    def _seed_robot_pool(self) -> None:
+        for robot_type in ("TAT", "CONV", "RA_STRG", "RA_CAST"):
+            for idx in range(1, 5):
+                robot_id = f"{robot_type}_{idx}"
+                self._robots[robot_id] = {
+                    "robot_id": robot_id,
+                    "robot_type": robot_type,
+                    "task_id": None,
+                    "item_id": None,
+                    "status": "idle",
+                    "x": float(idx - 1) if robot_type == "TAT" else 0.0,
+                    "y": 0.0,
+                }
 
     async def start_production(self, ord_id: int) -> StartProductionOrderAckModel:
         """Accept a positive order id and return a deterministic mock ack."""
@@ -76,38 +95,48 @@ class MockStateManager:
         if self._db_ready:
             return self._start_production_db(ord_id)
 
-        item_id = self._next_item_id
-        equip_task_txn_id = self._next_equip_task_txn_id
-        self._next_item_id += 1
-        self._next_equip_task_txn_id += 1
+        target_qty = max(int(self.orders.get(ord_id, {}).get("target", 1) or 1), 1)
+        item_ids: list[int] = []
+        equip_task_txn_ids: list[int] = []
 
-        self._items[item_id] = {
-            "item_id": item_id,
-            "ord_id": ord_id,
-            "order_id": ord_id,
-            "flow_stat": "CREATED",
-            "zone_nm": None,
-            "result": None,
-        }
-        self._tasks[f"task_{equip_task_txn_id}"] = {
-            "ord_id": ord_id,
-            "item_id": item_id,
-            "txn_id": equip_task_txn_id,
-            "status": "QUE",
-        }
+        for _ in range(target_qty):
+            item_id = self._next_item_id
+            equip_task_txn_id = self._next_equip_task_txn_id
+            self._next_item_id += 1
+            self._next_equip_task_txn_id += 1
+
+            self._items[item_id] = {
+                "item_id": item_id,
+                "ord_id": ord_id,
+                "order_id": ord_id,
+                "flow_stat": "CREATED",
+                "zone_nm": None,
+                "result": None,
+            }
+            self._tasks[f"task_{equip_task_txn_id}"] = {
+                "ord_id": ord_id,
+                "item_id": item_id,
+                "txn_id": equip_task_txn_id,
+                "status": "QUE",
+                "task_type": "MM",
+                "res_id": "PAT",
+            }
+            item_ids.append(item_id)
+            equip_task_txn_ids.append(equip_task_txn_id)
 
         return StartProductionOrderAckModel(
             ord_id=ord_id,
             accepted=True,
-            reason="Accepted by MockStateManager.",
-            item_id=item_id,
-            equip_task_txn_id=equip_task_txn_id,
+            reason=f"Accepted by MockStateManager. created_items={len(item_ids)}",
+            item_ids=item_ids,
+            equip_task_txn_ids=equip_task_txn_ids,
         )
 
     def _start_production_db(self, ord_id: int) -> StartProductionOrderAckModel:
         if (
             self._session_factory is None
             or self._ord_model is None
+            or self._ord_detail_model is None
             or self._ord_stat_model is None
             or self._ord_log_model is None
             or self._pattern_model is None
@@ -133,6 +162,13 @@ class MockStateManager:
                     ord_id=ord_id,
                     accepted=False,
                     reason=f"pattern for ord_id={ord_id} not registered",
+                )
+            detail = db.query(self._ord_detail_model).filter(self._ord_detail_model.ord_id == ord_id).first()
+            if detail is None or int(detail.qty or 0) <= 0:
+                return StartProductionOrderAckModel(
+                    ord_id=ord_id,
+                    accepted=False,
+                    reason=f"ord_id={ord_id} has no valid qty in ord_detail",
                 )
 
             existing_item = db.query(self._item_model).filter(self._item_model.ord_id == ord_id).first()
@@ -166,51 +202,67 @@ class MockStateManager:
                         prev_stat=prev_stat,
                         new_stat="MFG",
                         changed_by=None,
-                    )
+                        )
                 )
 
-            new_item = self._item_model(
-                ord_id=ord_id,
-                cur_stat="CREATED",
-                cur_res="PAT",
-                is_defective=None,
-            )
-            db.add(new_item)
-            db.flush()
+            item_ids: list[int] = []
+            equip_task_txn_ids: list[int] = []
+            created_items: list[Any] = []
+            created_txns: list[Any] = []
 
-            txn = self._equip_task_txn_model(
-                res_id="PAT",
-                task_type="MM",
-                txn_stat="QUE",
-                item_id=new_item.item_id,
-            )
-            db.add(txn)
+            for _ in range(int(detail.qty)):
+                new_item = self._item_model(
+                    ord_id=ord_id,
+                    cur_stat="CREATED",
+                    cur_res="PAT",
+                    is_defective=None,
+                )
+                db.add(new_item)
+                db.flush()
+
+                new_item_id = getattr(new_item, "item_id", getattr(new_item, "item_stat_id", None))
+                txn = self._equip_task_txn_model(
+                    res_id="PAT",
+                    task_type="MM",
+                    txn_stat="QUE",
+                    item_id=new_item_id,
+                )
+                db.add(txn)
+                db.flush()
+
+                created_items.append(new_item)
+                created_txns.append(txn)
+                item_ids.append(int(new_item_id))
+                equip_task_txn_ids.append(int(txn.txn_id))
+
             db.commit()
-            db.refresh(new_item)
-            db.refresh(txn)
-
-            self._items[new_item.item_id] = {
-                "item_id": new_item.item_id,
-                "ord_id": ord_id,
-                "order_id": ord_id,
-                "flow_stat": getattr(new_item, "cur_stat", "CREATED"),
-                "zone_nm": getattr(new_item, "cur_res", None),
-                "result": getattr(new_item, "result", None),
-            }
-            self._tasks[f"task_{txn.txn_id}"] = {
-                "ord_id": ord_id,
-                "item_id": new_item.item_id,
-                "txn_id": txn.txn_id,
-                "status": txn.txn_stat,
-                "res_id": txn.res_id,
-            }
+            for new_item, txn in zip(created_items, created_txns):
+                db.refresh(new_item)
+                db.refresh(txn)
+                new_item_id = getattr(new_item, "item_id", getattr(new_item, "item_stat_id", None))
+                self._items[new_item_id] = {
+                    "item_id": new_item_id,
+                    "ord_id": ord_id,
+                    "order_id": ord_id,
+                    "flow_stat": getattr(new_item, "cur_stat", "CREATED"),
+                    "zone_nm": getattr(new_item, "cur_res", None),
+                    "result": getattr(new_item, "result", None),
+                }
+                self._tasks[f"task_{txn.txn_id}"] = {
+                    "ord_id": ord_id,
+                    "item_id": new_item_id,
+                    "txn_id": txn.txn_id,
+                    "status": txn.txn_stat,
+                    "res_id": txn.res_id,
+                    "task_type": txn.task_type,
+                }
 
             return StartProductionOrderAckModel(
                 ord_id=ord_id,
                 accepted=True,
-                reason="Production started: item and equip_task_txn created.",
-                item_id=new_item.item_id,
-                equip_task_txn_id=txn.txn_id,
+                reason=f"Production started: {len(item_ids)} items and MM tasks created.",
+                item_ids=item_ids,
+                equip_task_txn_ids=equip_task_txn_ids,
             )
 
     def create_order_with_items(self, ord_id: int, qty: int) -> list[int]:
@@ -244,34 +296,44 @@ class MockStateManager:
             if item.get("ord_id") == ord_id
         ]
 
-    def get_item(self, item_id: int) -> dict[str, Any]:
+    async def get_item(self, item_id: int) -> ItemStatusRecord:
         item = dict(self._items.get(item_id, {"item_id": item_id, "flow_stat": "HOLD"}))
-        flow_stat = item.get("flow_stat")
-        zone_nm = item.get("zone_nm")
-        result = item.get("result")
-        item.setdefault("order_id", item.get("ord_id"))
-        item.setdefault("cur_stat", flow_stat)
-        item.setdefault("cur_res", zone_nm)
-        item.setdefault("is_defective", None if result is None else (not result))
-        return item
+        last_task_type = item.get("last_task_type") or item.get("task_type")
+        if isinstance(last_task_type, str):
+            try:
+                last_task_type = TaskType(last_task_type)
+            except ValueError:
+                last_task_type = None
+        else:
+            last_task_type = None
 
-    def insert_task_txn(self, task_input: CreateTaskInput) -> int:
+        return ItemStatusRecord(
+            item_id=int(item["item_id"]),
+            order_id=int(item.get("order_id") or item.get("ord_id") or 0),
+            last_task_type=last_task_type,
+            req_res_id=item.get("req_res_id"),
+            flow_stat=item.get("flow_stat"),
+            is_defective=bool(item.get("is_defective", False)),
+            ptn_id=item.get("ptn_id"),
+        )
+
+    async def insert_task_txn(self, task_input: CreateTaskInput) -> int:
         txn_id = self._next_equip_task_txn_id
         self._next_equip_task_txn_id += 1
         task_id = f"task_{txn_id}"
+        item_meta = self._items.setdefault(task_input.item_id, {"item_id": task_input.item_id})
         self._tasks[task_id] = {
             "txn_id": txn_id,
             "item_id": task_input.item_id,
+            "ord_id": item_meta.get("ord_id") or item_meta.get("order_id"),
             "task_type": task_input.task_type.value,
             "status": str(task_input.txn_stat),
             "res_id": task_input.res_id,
             "strg_loc": task_input.strg_loc,
         }
-        item = self._items.setdefault(task_input.item_id, {"item_id": task_input.item_id})
-        item["last_task_type"] = task_input.task_type.value
         return txn_id
 
-    def create_empty_item(self, order_id: int) -> int:
+    async def create_empty_item(self, order_id: int) -> int:
         item_id = self._next_item_id
         self._next_item_id += 1
         self._items[item_id] = {
@@ -290,24 +352,47 @@ class MockStateManager:
         return task_id
 
     def find_available_robot(self, robot_type: str, task_type: str | None = None) -> str | None:
-        return "robot_1"
+        for robot_id, robot_meta in self._robots.items():
+            if (
+                robot_meta.get("robot_type") == robot_type
+                and robot_meta.get("status") == "idle"
+                and robot_meta.get("item_id") is None
+            ):
+                return robot_id
+        return None
 
     async def get_available_resources(self, req_res_type: str) -> list[str]:
-        defaults = {
-            "TAT": ["TAT_1"],
-            "CONV": ["CONV_1"],
-            "RA_STRG": ["RA_STRG_1"],
-            "RA_CAST": ["RA_CAST_1"],
-        }
-        return defaults.get(req_res_type, ["robot_1"])
+        available = [
+            robot_id
+            for robot_id, robot_meta in sorted(self._robots.items())
+            if robot_meta.get("robot_type") == req_res_type
+            and robot_meta.get("status") == "idle"
+            and robot_meta.get("item_id") is None
+        ]
+        return available
 
     async def get_amr_locations(self) -> list[AmrLocationResult]:
-        return [AmrLocationResult(res_id="TAT_1", x=0.0, y=0.0)]
+        return [
+            AmrLocationResult(
+                res_id=robot_id,
+                x=float(robot_meta.get("x", 0.0)),
+                y=float(robot_meta.get("y", 0.0)),
+            )
+            for robot_id, robot_meta in sorted(self._robots.items())
+            if robot_meta.get("robot_type") == "TAT"
+        ]
 
     def get_robot_available_for_item(self, robot_id: str, item_id: int | None = None) -> bool:
-        return True
+        robot_meta = self._robots.get(robot_id)
+        if robot_meta is None:
+            return False
+        if robot_meta.get("status") != "idle":
+            return False
+        if item_id is None:
+            return robot_meta.get("item_id") is None
+        return robot_meta.get("item_id") == item_id
 
-    def update_task_allocation(self, assign_input: AssignTaskRobotInput) -> None:
+    async def update_task_allocation(self, assign_input: AssignTaskRobotInput) -> None:
         task_key = (
             assign_input.task_id
             if assign_input.task_id.startswith("task_")
@@ -319,11 +404,13 @@ class MockStateManager:
             task_meta["res_id"] = assign_input.robot_id
             task_meta["robot_id"] = assign_input.robot_id
             task_meta["assignment_status"] = "allocated"
+            task_meta["status"] = "allocated"
 
         self._robots.setdefault(assign_input.robot_id, {})
         self._robots[assign_input.robot_id].update(
             {
                 "robot_id": assign_input.robot_id,
+                "robot_type": self._robots.get(assign_input.robot_id, {}).get("robot_type"),
                 "task_id": assign_input.task_id,
                 "item_id": assign_input.item_id,
                 "status": "allocated",
@@ -339,16 +426,90 @@ class MockStateManager:
     async def update_task_status(self, req: UpdateTaskStatusInput) -> bool:
         task_key = req.task_id if req.task_id.startswith("task_") else f"task_{req.task_id}"
         task_meta = self._tasks.get(task_key)
+        previous_status = task_meta.get("status") if task_meta is not None else None
+        suppress_task_completed = False
+        suppress_resource_available = False
+        assigned_res_id = task_meta.get("res_id") if task_meta is not None else None
         if task_meta is not None:
             task_meta["status"] = req.new_stat.value
             if req.error_code is not None:
                 task_meta["error_code"] = req.error_code
+            if req.new_stat == TxnStat.PROC and assigned_res_id is not None:
+                item_id = task_meta.get("item_id")
+                if item_id is not None and task_meta.get("task_type") == "MM":
+                    item = self._items.setdefault(item_id, {"item_id": item_id})
+                    if item.get("flow_stat") == "CREATED":
+                        item["flow_stat"] = "CAST"
+                res_meta = self._robots.setdefault(assigned_res_id, {"robot_id": assigned_res_id})
+                res_meta.update(
+                    {
+                        "task_id": req.task_id,
+                        "item_id": task_meta.get("item_id"),
+                        "status": TxnStat.PROC.value,
+                    }
+                )
+            if req.new_stat == TxnStat.SUCC:
+                item_id = task_meta.get("item_id")
+                if item_id is not None:
+                    item = self._items.setdefault(item_id, {"item_id": item_id})
+                    item["last_task_type"] = task_meta.get("task_type")
+                    item["req_res_id"] = (
+                        task_meta.get("res_id")
+                        if task_meta.get("task_type") in ITEM_AFFINITY_PREDECESSORS
+                        else None
+                    )
+                if task_meta.get("task_type") == "ToSTRG":
+                    suppress_task_completed = True
+                if previous_status != TxnStat.SUCC.value and task_meta.get("task_type") == "PA_GP":
+                    suppress_task_completed = self._handle_pa_gp_completion(task_meta)
+            if req.new_stat in {TxnStat.SUCC, TxnStat.FAIL} and assigned_res_id is not None:
+                res_meta = self._robots.setdefault(assigned_res_id, {"robot_id": assigned_res_id})
+                keep_item_affinity = (
+                    req.new_stat == TxnStat.SUCC
+                    and task_meta.get("task_type") in ITEM_AFFINITY_PREDECESSORS
+                )
+                res_meta.update(
+                    {
+                        "task_id": None,
+                        "status": "idle",
+                    }
+                )
+                if keep_item_affinity:
+                    res_meta["item_id"] = task_meta.get("item_id")
+                    suppress_resource_available = True
+                else:
+                    res_meta["item_id"] = None
+
+                req_res_type = res_meta.get("robot_type")
+                if (
+                    self._event_bridge is not None
+                    and isinstance(req_res_type, str)
+                    and req_res_type
+                    and not suppress_resource_available
+                ):
+                    self._event_bridge.publish(
+                        Event(
+                            event_type=EventType.RESOURCE_AVAILABLE,
+                            item_id=task_meta.get("item_id"),
+                            res_id=assigned_res_id,
+                            payload={
+                                "req_res_type": req_res_type,
+                                "task_id": req.task_id,
+                                "status": req.new_stat.value,
+                            },
+                        )
+                    )
         logger.info(
             "[MockStateManager] update_task_status: task=%s status=%s",
             req.task_id,
             req.new_stat.value,
         )
-        if req.new_stat == TxnStat.SUCC and self._event_bridge is not None and task_meta is not None:
+        if (
+            req.new_stat in {TxnStat.SUCC, TxnStat.FAIL}
+            and self._event_bridge is not None
+            and task_meta is not None
+            and not suppress_task_completed
+        ):
             self._event_bridge.publish(
                 Event(
                     event_type=EventType.TASK_COMPLETED,
@@ -365,12 +526,68 @@ class MockStateManager:
             )
         return True
 
+    def _handle_pa_gp_completion(self, task_meta: dict[str, Any]) -> bool:
+        ord_id = task_meta.get("ord_id")
+        if ord_id is None:
+            return False
+
+        if self._db_ready and self._session_factory and self._ord_detail_model and self._ord_stat_model:
+            with self._session_factory() as db:
+                detail = db.query(self._ord_detail_model).filter(self._ord_detail_model.ord_id == ord_id).first()
+                stat = db.query(self._ord_stat_model).filter(self._ord_stat_model.ord_id == ord_id).first()
+                if detail is None or stat is None:
+                    logger.warning(
+                        "[MockStateManager] PA_GP completion without order detail/stat: ord_id=%s",
+                        ord_id,
+                    )
+                    return False
+
+                stat.gp_qty = int(stat.gp_qty or 0) + 1
+                stat.updated_at = datetime.utcnow()
+                db.commit()
+
+                is_complete = stat.gp_qty >= int(detail.qty or 0)
+                logger.info(
+                    "[MockStateManager] PA_GP completion: ord_id=%s gp_qty=%s qty=%s complete=%s",
+                    ord_id,
+                    stat.gp_qty,
+                    detail.qty,
+                    is_complete,
+                )
+                if is_complete:
+                    logger.info(
+                        "[MockStateManager] ord_id=%s qty=%s 생산완료",
+                        ord_id,
+                        detail.qty,
+                    )
+                return is_complete
+
+        order_state = self.orders.setdefault(ord_id, {})
+        gp_qty = int(order_state.get("gp_qty", 0)) + 1
+        order_state["gp_qty"] = gp_qty
+        target_qty = order_state.get("target")
+        is_complete = target_qty is not None and gp_qty >= int(target_qty)
+        logger.info(
+            "[MockStateManager] PA_GP completion(memory): ord_id=%s gp_qty=%s qty=%s complete=%s",
+            ord_id,
+            gp_qty,
+            target_qty,
+            is_complete,
+        )
+        if is_complete:
+            logger.info(
+                "[MockStateManager] ord_id=%s qty=%s 생산완료",
+                ord_id,
+                target_qty,
+            )
+        return is_complete
+
     async def publish_subtask_completed(
         self,
         *,
         task_id: str,
         item_id: int | None,
-        subtask: str,
+        subtask_type: str,
         task_type: str | None = None,
     ) -> bool:
         if self._event_bridge is None:
@@ -387,15 +604,15 @@ class MockStateManager:
                 res_id=task_meta.get("res_id"),
                 payload={
                     "task_id": task_id,
-                    "subtask": subtask,
+                    "subtask_type": subtask_type,
                     "task_type": task_type or task_meta.get("task_type"),
                 },
             )
         )
         logger.info(
-            "[MockStateManager] publish_subtask_completed: task=%s subtask=%s item_id=%s",
+            "[MockStateManager] publish_subtask_completed: task=%s subtask_type=%s item_id=%s",
             task_id,
-            subtask,
+            subtask_type,
             item_id if item_id is not None else task_meta.get("item_id"),
         )
         return True
@@ -442,6 +659,8 @@ class MockStateManager:
         if task_id in self._tasks:
             self._tasks[task_id]["status"] = "PROC"
             self._tasks[task_id]["robot_id"] = robot_id
+        robot_meta = self._robots.setdefault(robot_id, {"robot_id": robot_id})
+        robot_meta.update({"task_id": task_id, "status": "PROC"})
         logger.info("[MockStateManager] mark_task_started: task=%s robot=%s", task_id, robot_id)
 
     def update_item_status(
@@ -494,6 +713,13 @@ class MockStateManager:
         if task_id in self._tasks:
             self._tasks[task_id]["status"] = cur_stat
             self._tasks[task_id]["robot_id"] = robot_id
+        robot_meta = self._robots.setdefault(robot_id, {"robot_id": robot_id})
+        robot_meta.update(
+            {
+                "task_id": None if cur_stat in {TxnStat.SUCC.value, TxnStat.FAIL.value} else task_id,
+                "status": "idle" if cur_stat in {TxnStat.SUCC.value, TxnStat.FAIL.value} else cur_stat,
+            }
+        )
         logger.info(
             "[MockStateManager] update_robot_task_state: task=%s robot=%s cur_stat=%s",
             task_id,

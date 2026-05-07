@@ -73,6 +73,7 @@ class EventType(str, Enum):
     SUBTASK_COMPLETED = "SUBTASK_COMPLETED"
     ITEM_STATUS_CHANGED = "ITEM_STATUS_CHANGED"
     TASK_ASSIGNED = "TASK_ASSIGNED"
+    RESOURCE_AVAILABLE = "RESOURCE_AVAILABLE"
     AMR_CHARGED = "AMR_CHARGED"
     AMR_BATTERY_LOW = "AMR_BATTERY_LOW"
 
@@ -83,3 +84,13 @@ class TxnStat(str, Enum):
     PROC = "PROC"
     SUCC = "SUCC"
     FAIL = "FAIL"
+
+## Orchestrator
+class ResourceBindingPolicy(str, Enum):
+    FREE = "FREE"
+    REQUIRED = "REQUIRED"
+
+def get_resource_binding_policy(task_type: TaskType | str | None) -> ResourceBindingPolicy:
+    if task_type in {TaskType.POUR, TaskType.DM, "POUR", "DM"}:
+        return ResourceBindingPolicy.REQUIRED
+    return ResourceBindingPolicy.FREE

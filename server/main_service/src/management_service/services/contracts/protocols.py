@@ -27,7 +27,7 @@ class ITaskManager(Protocol):
     def reserve_rack_slots(self, order_id: int, start_pos: str): 
         ...
     
-    def create_next_task(self, item_info: ItemStatusRecord ,eventMsg: Optional[str] = None) -> List[NextTaskResult]: 
+    async def create_next_task(self, item_info: ItemStatusRecord ,eventMsg: Optional[str] = None) -> List[NextTaskResult]: 
         ...
 
     def reissue_task_on_error(self, item_info: ItemStatusRecord) -> List[NextTaskResult]: 
@@ -37,10 +37,7 @@ class ITaskManager(Protocol):
      ...
 
 class ITaskAllocator(Protocol):
-    def allocate(self, input_data )  :
-        ...
-
-    def update_task_allocation(self, task: AllocateTaskInput, robot_id: str) -> None:
+    async def allocate(self, input_data)  :
         ...
 
 class ITaskExecutor(Protocol):
@@ -117,7 +114,7 @@ class IStateManager(Protocol):
     async def start_production(self, ord_id: int) -> StartProductionOrderAckModel:
         ...
 
-    async def get_item(self, item_id: int) -> Dict[str, Any]:
+    async def get_item(self, item_id: int) -> ItemStatusRecord:
         ...
         
     ##Task Allocator가 사용하는 인터페이스
@@ -139,7 +136,7 @@ class IStateManager(Protocol):
         *,
         task_id: str,
         item_id: int | None,
-        subtask: str,
+        subtask_type: str,
         task_type: str | None = None,
     ) -> bool:
         ...
@@ -159,10 +156,10 @@ class IStateManager(Protocol):
     orders: Dict[int, dict]
     slot_table: Dict[tuple, dict]
 
-    def insert_task_txn(self, task_input: CreateTaskInput) -> int:
+    async def insert_task_txn(self, task_input: CreateTaskInput) -> int:
         ...
     
-    def create_empty_item(self, order_id: int) -> int:
+    async def create_empty_item(self, order_id: int) -> int:
         ...
     
 
