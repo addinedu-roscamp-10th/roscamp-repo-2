@@ -60,6 +60,7 @@ class Container:
         self.task_executor = TaskExecutor(
             adapter=self.adapter,
             state_manager=self.state_manager,
+            event_bridge=self.event_bridge,
         )
         self.orchestrator = Orchestrator(
             event_bridge=self.event_bridge,
