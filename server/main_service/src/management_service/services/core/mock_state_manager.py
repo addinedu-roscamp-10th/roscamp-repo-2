@@ -27,6 +27,17 @@ logger = logging.getLogger(__name__)
 ITEM_AFFINITY_PREDECESSORS = {"MM", "POUR"}
 
 
+def _normalize_task_type(task_type: Any) -> TaskType | None:
+    if isinstance(task_type, TaskType):
+        return task_type
+    if isinstance(task_type, str):
+        try:
+            return TaskType(task_type)
+        except ValueError:
+            return None
+    return None
+
+
 class MockStateManager:
     """StateManager stub that only acknowledges production-start requests."""
 
@@ -510,6 +521,7 @@ class MockStateManager:
             and task_meta is not None
             and not suppress_task_completed
         ):
+            task_type = _normalize_task_type(task_meta.get("task_type"))
             self._event_bridge.publish(
                 Event(
                     event_type=EventType.TASK_COMPLETED,
@@ -520,7 +532,7 @@ class MockStateManager:
                     payload={
                         "task_id": req.task_id,
                         "status": req.new_stat.value,
-                        "task_type": task_meta.get("task_type"),
+                        "task_type": task_type,
                     },
                 )
             )
@@ -588,13 +600,14 @@ class MockStateManager:
         task_id: str,
         item_id: int | None,
         subtask_type: str,
-        task_type: str | None = None,
+        task_type: TaskType | None = None,
     ) -> bool:
         if self._event_bridge is None:
             return False
 
         task_key = task_id if task_id.startswith("task_") else f"task_{task_id}"
         task_meta = self._tasks.get(task_key, {})
+        payload_task_type = task_type or _normalize_task_type(task_meta.get("task_type"))
         self._event_bridge.publish(
             Event(
                 event_type=EventType.SUBTASK_COMPLETED,
@@ -605,7 +618,7 @@ class MockStateManager:
                 payload={
                     "task_id": task_id,
                     "subtask_type": subtask_type,
-                    "task_type": task_type or task_meta.get("task_type"),
+                    "task_type": payload_task_type,
                 },
             )
         )

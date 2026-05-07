@@ -40,31 +40,13 @@ class FlowStatus(str, Enum):
     PICK = "PICK"
     READY_TO_SHIP = "READY_TO_SHIP"
 
-
-## TaskAllocator 
-class EquipTaskType(str, Enum):
-    MM     = "MM"
-    POUR   = "POUR"
-    DM     = "DM"
-    PP     = "PP"
-    ToINSP = "ToINSP"
-    INSP   = "INSP"
-    PA_GP  = "PA_GP"
-    PA_DP  = "PA_DP"
-    PICK   = "PICK"
-    SHIP   = "SHIP"
-
-class TransTaskType(str, Enum):
-    ToPP   = "ToPP"
-    ToSTRG = "ToSTRG"
-    ToSHIP = "ToSHIP"
-    ToCHG  = "ToCHG"
-
+## Task Allocator
 class TransferPoint(str, Enum):
     CAST_OUT = "CAST_OUT"          # 생산 위치 인계 지점
     PP_CONV_END = "PP_CONV_END"    # 후처리 컨베이어 끝
     STRG_IN = "STRG_IN"            # 적재 구간
     CHG_IN = "CHG_IN"              # 충전 구간
+
 
 
 ## Event Bridge

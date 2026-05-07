@@ -1,9 +1,3 @@
-"""
-task_executor.py
-- 역할: Orchestrator로부터 할당된 Task를 받아 Adapter를 통해 물리적으로 실행하고 결과를 State Manager에 보고함.
-- 핵심 로직: 시퀀스 분해 -> 순차 실행 -> Task 진행 상태 전이 관리 (이벤트 발행은 State Manager 책임)
-- Naming: Pydantic Naming Convention 가이드 준수 (Input/Result 접미사)
-"""
 from __future__ import annotations
 
 import asyncio
@@ -27,7 +21,7 @@ class TaskExecutor:
         self.event_bridge = event_bridge
         self.logger = logging.getLogger(__name__)
         self._waiters_lock = threading.Lock()
-        self._task_waiters: dict[tuple[int, str], list[asyncio.Future[str]]] = defaultdict(list)
+        self._task_waiters: dict[tuple[int, TaskType], list[asyncio.Future[str]]] = defaultdict(list)
         self._subtask_waiters: dict[tuple[int, str], list[asyncio.Future[None]]] = defaultdict(list)
 
         if self.event_bridge is not None:
@@ -42,8 +36,6 @@ class TaskExecutor:
                 "task_executor.subtask_completed_waiters",
             )
         
-        # [Unit Test Scope] 시퀀스 분해 맵 (하드코딩된 가상 데이터)
-        # 실제 운영 시에는 DB(ra_motion_step) 조회 또는 State Manager 를 통해 동적 획득 가능
         self._sequence_map: Dict[TaskType, List[CommandStep]] = {
             # === MAT (Casting Robot) ===
             TaskType.MM: [
@@ -117,7 +109,7 @@ class TaskExecutor:
                 CommandStep(
                     step_id=2,
                     action="WAIT_TASK_COMPLETED",
-                    params={"task_type": TaskType.DM.value},
+                    params={"task_type": TaskType.DM},
                     timeout_sec=600,
                 ),
                 CommandStep(step_id=3, action="ToPP1", params={}),    # PP Zone
@@ -128,7 +120,7 @@ class TaskExecutor:
                 CommandStep(
                     step_id=2,
                     action="WAIT_TASK_COMPLETED",
-                    params={"task_type": TaskType.ToWaitPA.value},
+                    params={"task_type": TaskType.ToWaitPA},
                     timeout_sec=600,
                 ),
                 CommandStep(step_id=3, action="ToSTRG1", params={}),  # STRG Zone
@@ -145,7 +137,7 @@ class TaskExecutor:
                 CommandStep(
                     step_id=2,
                     action="WAIT_TASK_COMPLETED",
-                    params={"task_type": TaskType.PICK.value},
+                    params={"task_type": TaskType.PICK},
                     timeout_sec=600,
                 ),
                 CommandStep(step_id=3, action="ToSHIP", params={}),   # SHIP Zone
@@ -164,7 +156,7 @@ class TaskExecutor:
             ],
         }
 
-    async def execute_task(self, input_data: TaskExecutorInput) -> ExecutionResult:
+    async def execute_task(self, input_data: ExecuteTaskInput) -> ExecutionResult:
         """
         메인 실행 파이프라인
         
@@ -223,7 +215,7 @@ class TaskExecutor:
             # Task가 실패한 경우 전이: PROC -> FAIL
             return await self._handle_error(input_data, str(e), executed_steps)
 
-    async def _pre_check(self, input_data: TaskExecutorInput) -> bool:
+    async def _pre_check(self, input_data: ExecuteTaskInput) -> bool:
         """실행 전 조건 확인 (Mock)"""
         # TODO: 실제 구현 시 res_id 의 상태 (IDLE 등) 체크
         return True
@@ -235,7 +227,7 @@ class TaskExecutor:
             raise ValueError(f"No sequence defined for task_type: {task_type.value}")
         return seq.copy()
 
-    async def _execute_step(self, input_data: TaskExecutorInput, step: CommandStep) -> bool:
+    async def _execute_step(self, input_data: ExecuteTaskInput, step: CommandStep) -> bool:
         """
         단일 단계 실행 및 Adapter를 호출한다.
         
@@ -252,7 +244,7 @@ class TaskExecutor:
             params=step.params
         )
 
-    async def _wait_for_task_completed(self, input_data: TaskExecutorInput, step: CommandStep) -> bool:
+    async def _wait_for_task_completed(self, input_data: ExecuteTaskInput, step: CommandStep) -> bool:
         """특정 task 완료를 기다리기 위해 waiter를 등록하고 대기한다."""
         item_id = input_data.item_id
         if item_id is not None:
@@ -261,10 +253,15 @@ class TaskExecutor:
             raise RuntimeError("WAIT_TASK_COMPLETED requires item_id")
 
         target_task_type = step.params.get("task_type")
-        if not isinstance(target_task_type, str) or not target_task_type.strip():
+        if isinstance(target_task_type, str):
+            try:
+                target_task_type = TaskType(target_task_type)
+            except ValueError as exc:
+                raise RuntimeError("WAIT_TASK_COMPLETED requires params.task_type") from exc
+        if not isinstance(target_task_type, TaskType):
             raise RuntimeError("WAIT_TASK_COMPLETED requires params.task_type")
 
-        key = (item_id, target_task_type.strip())
+        key = (item_id, target_task_type)
         loop = asyncio.get_running_loop()  # 현재 스레드에서 돌고 있는 event loop를 받아옴
         future: asyncio.Future[str] = loop.create_future()  # future 객체 생성
         with self._waiters_lock:
@@ -298,7 +295,7 @@ class TaskExecutor:
         finally:
             self._remove_waiter(key, future)
 
-    async def _wait_for_subtask_completed(self, input_data: TaskExecutorInput, step: CommandStep) -> bool:
+    async def _wait_for_subtask_completed(self, input_data: ExecuteTaskInput, step: CommandStep) -> bool:
         """특정 subtask 완료를 기다리기 위해 waiter를 등록하고 대기한다."""
         item_id = int(input_data.item_id) if input_data.item_id is not None else None
         if item_id is None:
@@ -337,7 +334,7 @@ class TaskExecutor:
         finally:
             self._remove_subtask_waiter(key, future)
 
-    async def _handle_step_completion(self, input_data: TaskExecutorInput, step: CommandStep) -> None:
+    async def _handle_step_completion(self, input_data: ExecuteTaskInput, step: CommandStep) -> None:
         """특정 subtask 완료 시 StateManager에게 알린다."""
         subtask_type = None
         if input_data.task_type == TaskType.POUR and step.action == "EXECUTE_POUR":
@@ -358,10 +355,10 @@ class TaskExecutor:
             task_id=input_data.task_id,
             item_id=item_id,
             subtask_type=subtask_type,
-            task_type=input_data.task_type.value,
+            task_type=input_data.task_type,
         )
 
-    async def _handle_error(self, input_data: TaskExecutorInput, error_msg: str, steps: int) -> ExecutionResult:
+    async def _handle_error(self, input_data: ExecuteTaskInput, error_msg: str, steps: int) -> ExecutionResult:
         """에러 처리 및 상태 업데이트"""
         self.logger.error(f"[Executor] Task {input_data.task_id} failed: {error_msg}")
         await self.state_manager.update_task_status(
@@ -384,7 +381,7 @@ class TaskExecutor:
         item_id = event.item_id
         payload_task_type = event.payload.get("task_type")
         payload_status = event.payload.get("status", TxnStat.SUCC.value)
-        if item_id is None or payload_task_type is None:
+        if item_id is None or not isinstance(payload_task_type, TaskType):
             return
 
         key = (item_id, payload_task_type)
@@ -427,7 +424,7 @@ class TaskExecutor:
         if not future.done():
             future.set_result(None)
 
-    def _remove_waiter(self, key: tuple[int, str], future: asyncio.Future[str]) -> None:
+    def _remove_waiter(self, key: tuple[int, TaskType], future: asyncio.Future[str]) -> None:
         """task가 끝나는 걸 기다리던 waiter를 제거."""
         with self._waiters_lock:
             futures = self._task_waiters.get(key)

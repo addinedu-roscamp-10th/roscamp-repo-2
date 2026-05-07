@@ -1,7 +1,7 @@
 
 from typing import Protocol, Dict, Any, List, Optional
 
-from .enums import EventType
+from .enums import EventType, TaskType
 from .models import *
 
 
@@ -41,7 +41,7 @@ class ITaskAllocator(Protocol):
         ...
 
 class ITaskExecutor(Protocol):
-    def execute_task(self, TaskExecutorInput):
+    def execute_task(self, ExecuteTaskInput):
         ...
 
 class IAdapter(Protocol):
@@ -137,7 +137,7 @@ class IStateManager(Protocol):
         task_id: str,
         item_id: int | None,
         subtask_type: str,
-        task_type: str | None = None,
+        task_type: TaskType | None = None,
     ) -> bool:
         ...
 

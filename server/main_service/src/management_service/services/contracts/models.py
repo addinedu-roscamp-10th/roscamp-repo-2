@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
-from decimal import Decimal
+from datetime import datetime, timezone
 from typing import Any, Optional,Dict
 from dataclasses import dataclass, field
 from collections.abc import Callable
 
-from pydantic import BaseModel, ConfigDict, Field , field_validator, model_validator
+from pydantic import BaseModel, Field , field_validator, model_validator
 
 
 from .enums import (
@@ -135,7 +134,7 @@ class CommandStep(BaseModel):
     params: Dict[str, Any] = Field(default_factory=dict)
     timeout_sec: int = Field(default=30, ge=1)
 
-class TaskExecutorInput(BaseModel):
+class ExecuteTaskInput(BaseModel):
     task_id: str  # min_length 제거
     res_id: str   # min_length 제거
     task_type: TaskType
@@ -147,14 +146,6 @@ class TaskExecutorInput(BaseModel):
         if not v or not v.strip():  # None/빈문자열/공백만 체크
             raise ValueError("ID cannot be empty")
         return v.strip()
-
-# class ExecuteTaskInput(BaseModel):
-#     task_id: str
-#     robot_id: str
-#     item_id: int
-#     command: str
-#     payload: dict[str, Any] = Field(default_factory=dict)
-
 
 class ExecutionResult(BaseModel):
     """실행 완료 후 반환되는 결과값 ([동사][명사]Result 규칙)"""
@@ -177,7 +168,7 @@ class AllocateTaskInput(BaseModel):
     req_res_type: str | None = None
     req_res_id: str | None = None
     zone_nm: str | None = None
-    task_type: str | None = None
+    task_type: TaskType | None = None
 
 class AssignTaskRobotInput(BaseModel):
     task_id: str
@@ -186,6 +177,7 @@ class AssignTaskRobotInput(BaseModel):
 
 class AllocateTaskResult(BaseModel):
     success: bool
+    req_res_type: str | None = None
     robot_id: str | None = None
     reason: str | None = None
 
