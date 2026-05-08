@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import defaultdict, deque
+import heapq
+from itertools import count
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -40,6 +42,9 @@ logger = logging.getLogger(__name__)
 class _PendingTask:
     task: NextTaskResult
     item_info: ItemStatusRecord
+
+
+_PrioritizedPendingTask = tuple[int, int, _PendingTask]
 
 class Orchestrator(IOrchestrator):
     def __init__(
@@ -82,7 +87,8 @@ class Orchestrator(IOrchestrator):
             "orchestrator.amr_battery_low",
         )
 
-        self._pending_tasks: dict[str, deque[_PendingTask]] = defaultdict(deque)
+        self._pending_tasks: dict[str, list[_PrioritizedPendingTask]] = defaultdict(list)
+        self._pending_task_seq = count()  # 같은 priority 작업의 FIFO 순서 보장용
 
     async def start_production(self, ord_ids: list[int]) -> "StartProductionBatchAckModel":
         """생산 시작 진입점."""
@@ -228,19 +234,20 @@ class Orchestrator(IOrchestrator):
 
     async def _process_pending_bucket(self, req_res_type: str) -> None:
         """해당 자원 타입의 대기 작업들을 처리한다."""
-        bucket = self._pending_tasks.get(req_res_type)
+        bucket = self._pending_tasks.pop(req_res_type, None)  # 해당 자원에 해당하는 pending queue pop
         if not bucket:
             return
 
-        for _ in range(len(bucket)):
-            pending_task = bucket.popleft()
+        pending_tasks: list[_PendingTask] = []  # 임시 작업 큐
+        while bucket:
+            _, _, pending_task = heapq.heappop(bucket)  # queue에서 우선순위대로 꺼내서
+            pending_tasks.append(pending_task)  # pending tasks에 넣고
+
+        for pending_task in pending_tasks:  # pending task를 하나씩 할당 -> 실행
             await self._allocate_and_execute(
                 pending_task.task,
                 pending_task.item_info,
             )
-
-        if not bucket: # 빈 bucket 정리
-            self._pending_tasks.pop(req_res_type, None)
 
     async def _allocate_and_execute(
         self,
@@ -269,11 +276,12 @@ class Orchestrator(IOrchestrator):
 
         # 할당 실패 시 pending task에 append 후 나중에 할당 -> 실행
         req_res_type = allocation_result.req_res_type
-        self._pending_tasks[req_res_type].append(
+        self._push_pending_task(
+            req_res_type,
             _PendingTask(
                 task=task,
                 item_info=item_info,
-            )
+            ),
         )
         logger.info(
             "pending task queued: txn_id=%s item_id=%s req_res_type=%s reason=%s",
@@ -281,6 +289,13 @@ class Orchestrator(IOrchestrator):
             item_info.item_id,
             req_res_type,
             allocation_result.reason,
+        )
+
+    def _push_pending_task(self, req_res_type: str, pending_task: _PendingTask) -> None:
+        """task를 pending bucket에 추가한다."""
+        heapq.heappush(
+            self._pending_tasks[req_res_type],
+            (-pending_task.task.priority, next(self._pending_task_seq), pending_task),
         )
 
     def _resolve_req_res_id(
