@@ -124,23 +124,23 @@ class MockStateManager:
                 "zone_nm": None,
                 "result": None,
             }
-            self._tasks[f"task_{equip_task_txn_id}"] = {
-                "ord_id": ord_id,
-                "item_id": item_id,
-                "txn_id": equip_task_txn_id,
-                "status": "QUE",
-                "task_type": "MM",
-                "res_id": "PAT",
-            }
+            # self._tasks[f"task_{equip_task_txn_id}"] = {
+            #     "ord_id": ord_id,
+            #     "item_id": item_id,
+                # "txn_id": equip_task_txn_id,
+                # "status": "QUE",
+                # "task_type": "MM",
+                # "res_id": "PAT",
+            # }
             item_ids.append(item_id)
-            equip_task_txn_ids.append(equip_task_txn_id)
+            # equip_task_txn_ids.append(equip_task_txn_id)
 
         return StartProductionOrderAckModel(
             ord_id=ord_id,
             accepted=True,
             reason=f"Accepted by MockStateManager. created_items={len(item_ids)}",
             item_ids=item_ids,
-            equip_task_txn_ids=equip_task_txn_ids,
+            equip_task_txn_ids=[],
         )
 
     def _start_production_db(self, ord_id: int) -> StartProductionOrderAckModel:
