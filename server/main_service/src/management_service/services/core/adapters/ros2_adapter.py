@@ -1,174 +1,255 @@
-"""ROS2 어댑터 — Manufacturing / Stacking / Transport Service 지령.
+"""
+TATAdapter
+==========
+상위 모듈의 (robot_id, pose_name, action_type) 명령을
+실제 좌표 + ROS2 action goal로 매핑하여 전송하는 어댑터.
 
-V6 정책 (2026-04-14):
-- Server ↔ HW(RPi5/RPi4) 의 정식 채널은 ROS2 DDS
-- 개발/배포 모두 Ubuntu 24.04 + ROS2 Jazzy 환경
-
-활성화 방법:
-1. `sudo apt install ros-jazzy-rclpy ros-jazzy-geometry-msgs ros-jazzy-nav2-msgs`
-2. management Python venv 에 시스템 site-packages 사용 또는 source workspace
-3. `MGMT_ROS2_ENABLED=1` 환경변수 설정
-
-토픽/액션 표준:
-- AMR navigate:  /{robot_id}/nav_goal  (std_msgs/String, JSON)
-                 → RPi amr_executor 가 Nav2 NavigateToPose Action 으로 변환
-- AMR cmd:       /{robot_id}/cmd       (std_msgs/String, JSON)
-                 → pick/place/charge 등 범용 명령
-
-Command 종류:
-- navigate  → nav_goal 토픽 publish
-- pick      → cmd 토픽 publish
-- place     → cmd 토픽 publish
-- charge    → nav_goal(HOME)
-
-@MX:WARN: import rclpy 는 lazy. 모듈 로드 시점 충돌 회피.
+- 외부 pose 테이블(YAML)에서 `pose_name → (x, y, theta)` 변환
+- robot_id 별 namespace 분리: e.g. /TAT1/navigate_to_pose, /TAT2/dock_robot
+- action_type 별 ActionSpec 등록으로 (액션 이름·메시지 타입·goal 빌더)를 묶어 관리
+- send_command 는 호출 즉시 PyFuture 를 반환하므로
+  여러 로봇에 동시 명령 디스패치가 가능하다.
 """
 
 from __future__ import annotations
 
-import json
-import logging
-import os
+import math
 import threading
-from typing import Any
+from concurrent.futures import Future as PyFuture
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Dict, Tuple, Type
 
-logger = logging.getLogger(__name__)
+import yaml
+import rclpy
+from rclpy.action import ActionClient
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.node import Node
+from action_msgs.msg import GoalStatus
+from geometry_msgs.msg import PoseStamped
+from nav2_msgs.action import NavigateToPose, DockRobot
+from pydantic import BaseModel
 
-ROS2_ENABLED = os.environ.get("MGMT_ROS2_ENABLED", "0") in ("1", "true", "yes")
 
-# command → nav_goal 토픽 사용 여부
-_NAV_COMMANDS = {"navigate", "charge"}
+# ─── 결과 모델 ──────────────────────────────────────────────────
+class SendCommandResult(BaseModel):
+    """send_command() 단일 동작 실행 결과."""
+    succeeded: bool
+    message: str
 
 
-class Ros2Adapter:
-    """ROS2 publisher/action 어댑터.
+# ─── pose 로딩 / 변환 ────────────────────────────────────────────
+@dataclass(frozen=True)
+class Pose2D:
+    """2D pose. x, y in meter / theta in radian."""
+    x: float
+    y: float
+    theta: float
 
-    MGMT_ROS2_ENABLED=1 설정 시 rclpy 를 init 하고 DDS 통신 활성화.
-    ROS2 미활성 시에는 no-op accepted 로 테스트/시뮬레이션을 허용한다.
-    """
 
-    name = "ros2"
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._rclpy = None  # type: ignore[var-annotated]
-        self._node: Any = None
-        self._publishers: dict[str, Any] = {}  # topic → Publisher
-
-        if ROS2_ENABLED:
-            self._init_rclpy()
-        else:
-            logger.info("Ros2Adapter: MGMT_ROS2_ENABLED 미설정 — no-op dispatch 모드.")
-
-    def _init_rclpy(self) -> None:
+def load_pose_table(path: str | Path) -> Dict[str, Pose2D]:
+    """YAML 파일에서 pose 테이블을 로드한다."""
+    with open(path, "r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f) or {}
+    table: Dict[str, Pose2D] = {}
+    for name, val in raw.items():
         try:
-            import rclpy  # type: ignore[import-not-found]
-            from rclpy.node import Node  # type: ignore[import-not-found]
+            table[name] = Pose2D(x=float(val["x"]), y=float(val["y"]), theta=float(val["theta"]))
+        except (KeyError, TypeError) as e:
+            raise ValueError(f"invalid pose entry for '{name}': {val}") from e
+    return table
 
-            rclpy.init(args=None)
-            self._rclpy = rclpy
-            self._node = Node("casting_management_executor")
-            logger.info("Ros2Adapter: rclpy 초기화 완료 (node=casting_management_executor)")
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Ros2Adapter: rclpy 초기화 실패: %s", exc)
-            self._rclpy = None
 
-    def dispatch(
-        self,
-        item_id: int,
-        robot_id: str,
-        command: str,
-        payload: bytes,
-        state_machine: Any = None,
-    ) -> tuple[bool, str]:
-        """command 별 라우팅.
+def _yaw_to_quaternion(yaw: float) -> Tuple[float, float, float, float]:
+    """평면 yaw(rad) → quaternion(x, y, z, w)."""
+    half = yaw * 0.5
+    return (0.0, 0.0, math.sin(half), math.cos(half))
 
-        state_machine 파라미터는 legacy compatibility 용으로만 남겨두며 사용하지 않는다.
+
+def _make_pose_stamped(node: Node, pose: Pose2D, frame_id: str = "map") -> PoseStamped:
+    qx, qy, qz, qw = _yaw_to_quaternion(pose.theta)
+    ps = PoseStamped()
+    ps.header.frame_id = frame_id
+    ps.header.stamp = node.get_clock().now().to_msg()
+    ps.pose.position.x = pose.x
+    ps.pose.position.y = pose.y
+    ps.pose.position.z = 0.0
+    ps.pose.orientation.x = qx
+    ps.pose.orientation.y = qy
+    ps.pose.orientation.z = qz
+    ps.pose.orientation.w = qw
+    return ps
+
+
+# ─── action_type 별 매핑 ─────────────────────────────────────────
+@dataclass(frozen=True)
+class ActionSpec:
+    name: str                # 액션 이름 템플릿 ({robot_id} 자리)
+    action_type: Type        # 메시지 클래스
+    goal_builder: Callable   # goal 만드는 함수
+
+
+# 얘는 보내는 방식이 dock pose랑 달라서 수정해야함
+def _build_navigate_goal(node: Node, pose: Pose2D) -> NavigateToPose.Goal:
+    goal = NavigateToPose.Goal()
+    goal.pose = _make_pose_stamped(node, pose)
+    return goal
+
+
+def _build_dock_goal(node: Node, pose: Pose2D) -> DockRobot.Goal:
+    goal = DockRobot.Goal()
+    goal.use_dock_id = False
+    goal.dock_pose = _make_pose_stamped(node, pose)
+    goal.dock_type = ""
+    goal.navigate_to_staging_pose = True
+    return goal
+
+
+# ─── 어댑터 ─────────────────────────────────────────────────────
+class TATAdapter(Node):
+    """상위 모듈 명령을 ROS2 action goal로 변환하여 전송 (비블록)."""
+
+    _ACTIONS: Dict[str, ActionSpec] = {
+        "navigate": ActionSpec(
+            name="/{robot_id}/navigate_to_pose",
+            action_type=NavigateToPose,
+            goal_builder=_build_navigate_goal,
+        ),
+        "dock": ActionSpec(
+            name="/{robot_id}/dock_robot",
+            action_type=DockRobot,
+            goal_builder=_build_dock_goal,
+        ),
+        # "undock": ActionSpec()  # 추가 예정
+    }
+
+    def __init__(self, pose_table_path: str | Path, node_name: str = "tat_adapter") -> None:
+        super().__init__(node_name)
+        self._pose_table: Dict[str, Pose2D] = load_pose_table(pose_table_path)
+        self._action_clients: Dict[str, ActionClient] = {}
+        # ReentrantCallbackGroup: 여러 액션 콜백이 동시에 fire 되어도 처리 가능.
+        # 기본 MutuallyExclusive 면 콜백이 직렬화되어 동시 디스패치 효과가 반감됨.
+        self._cb_group = ReentrantCallbackGroup()
+
+        # 백그라운드 spin: 호출자 스레드를 점유하지 않고 ROS 콜백을 계속 처리
+        self._ros_executor = MultiThreadedExecutor()
+        self._ros_executor.add_node(self)
+        self._spin_thread = threading.Thread(target=self._ros_executor.spin, daemon=True)
+        self._spin_thread.start()
+
+    # ── lifecycle ────────────────────────────────────────────
+    def shutdown(self) -> None:
+        """spin 스레드 정리 후 노드 파괴. 종료 시 반드시 호출."""
+        self._ros_executor.shutdown()
+        self._spin_thread.join(timeout=2.0)
+        self.destroy_node()
+
+    # ── public ───────────────────────────────────────────────
+    def send_command(self,
+                     robot_id: str,
+                     pose_name: str,
+                     action_type: str,
+                     wait_server_sec: float = 5.0) -> "PyFuture[SendCommandResult]":
         """
+        명령을 비동기로 디스패치하고 즉시 PyFuture 반환.
 
-        payload_str = payload.decode("utf-8", errors="replace") if payload else ""
+        호출자 사용법:
+          fut = adapter.send_command("TAT1", "ToINSP", "navigate")
+          # ... 다른 일 (예: TAT2 명령 디스패치) ...
+          result = fut.result(timeout=60)            # 결과를 원하는 시점에 회수
+          # 또는 콜백:
+          fut.add_done_callback(lambda f: print(f.result()))
+        """
+        py_future: PyFuture[SendCommandResult] = PyFuture()
+
+        # 1) 입력 검증 (즉시 반환)
+        if pose_name not in self._pose_table:
+            py_future.set_result(SendCommandResult(succeeded=False,
+                                                   message=f"unknown pose_name: {pose_name}"))
+            return py_future
+        if action_type not in self._ACTIONS:
+            py_future.set_result(SendCommandResult(succeeded=False,
+                                                   message=f"unsupported action_type: {action_type}"))
+            return py_future
+
+        spec = self._ACTIONS[action_type]
+        pose = self._pose_table[pose_name]
+        action_name = spec.name.format(robot_id=robot_id)
+
+        # 2) ActionClient 준비 (서버 발견은 첫 호출 시에만 실제 대기)
+        client = self._get_client(action_name, spec.action_type)
+        if not client.wait_for_server(timeout_sec=wait_server_sec):
+            py_future.set_result(SendCommandResult(
+                succeeded=False,
+                message=f"action server unavailable: {action_name}",
+            ))
+            return py_future
+
+        # 3) goal 송신 → 콜백 체인 (블록 없이 곧장 반환)
+        goal_msg = spec.goal_builder(self, pose)
+        send_goal_future = client.send_goal_async(goal_msg)
+        send_goal_future.add_done_callback(
+            lambda f: self._on_goal_response(f, action_name, robot_id, pose_name, action_type, py_future)
+        )
+        return py_future
+
+    # ── private: 콜백 체인 ───────────────────────────────────
+    def _on_goal_response(self,
+                          rclpy_fut,
+                          action_name: str,
+                          robot_id: str,
+                          pose_name: str,
+                          action_type: str,
+                          py_future: "PyFuture[SendCommandResult]") -> None:
         try:
-            payload_dict = json.loads(payload_str) if payload_str else {}
-        except json.JSONDecodeError:
-            payload_dict = {}
+            goal_handle = rclpy_fut.result()
+        except Exception as e:
+            py_future.set_result(SendCommandResult(succeeded=False,
+                                                   message=f"send_goal exception: {e}"))
+            return
 
-        # ROS2 publish (활성 시)
-        ros2_ok, ros2_msg = self._publish_ros2(
-            item_id,
-            robot_id,
-            command,
-            payload_str,
-            payload_dict,
+        if goal_handle is None or not goal_handle.accepted:
+            py_future.set_result(SendCommandResult(
+                succeeded=False,
+                message=f"goal rejected by {action_name}",
+            ))
+            return
+
+        # goal 수락됨 → 결과 future 에 콜백 다시 등록
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(
+            lambda f: self._on_result(f, robot_id, pose_name, action_type, py_future)
         )
 
-        if not ros2_ok and not ROS2_ENABLED:
-            return (True, f"noop_dispatch: {command} (ROS2 비활성)")
-        if not ros2_ok:
-            return (False, ros2_msg)
-
-        return (True, ros2_msg)
-
-    def _publish_ros2(
-        self,
-        item_id: int,
-        robot_id: str,
-        command: str,
-        payload_str: str,
-        payload_dict: dict,
-    ) -> tuple[bool, str]:
-        """ROS2 토픽 publish. 미활성 시 (False, 메시지) 반환."""
-        if not ROS2_ENABLED or self._rclpy is None or self._node is None:
-            return (
-                False,
-                "ros2_not_available: MGMT_ROS2_ENABLED=1 + rclpy 환경 필요.",
-            )
-
-        # command 에 따라 토픽 선택
-        if command in _NAV_COMMANDS:
-            # navigate/charge → /{robot_id}/nav_goal
-            robot_ns = robot_id.lower().replace("-", "")
-            topic = f"/{robot_ns}/nav_goal"
-            data = json.dumps(
-                {
-                    "command": command,
-                    "target": payload_dict.get("target", "HOME"),
-                    "x": payload_dict.get("x", 0.0),
-                    "y": payload_dict.get("y", 0.0),
-                    "item_id": item_id,
-                }
-            )
-        else:
-            # pick/place/기타 → /{robot_id}/cmd
-            topic = f"/{robot_id}/cmd"
-            data = payload_str or command
-
+    def _on_result(self,
+                   rclpy_fut,
+                   robot_id: str,
+                   pose_name: str,
+                   action_type: str,
+                   py_future: "PyFuture[SendCommandResult]") -> None:
         try:
-            from std_msgs.msg import String  # type: ignore[import-not-found]
+            status = rclpy_fut.result().status
+        except Exception as e:
+            py_future.set_result(SendCommandResult(succeeded=False,
+                                                   message=f"get_result exception: {e}"))
+            return
 
-            with self._lock:
-                pub = self._publishers.get(topic)
-                if pub is None:
-                    pub = self._node.create_publisher(String, topic, 10)
-                    self._publishers[topic] = pub
-            msg = String()
-            msg.data = data
-            pub.publish(msg)
-            logger.info("Ros2Adapter publish %s: cmd=%s item=%s", topic, command, item_id)
-            return (True, f"ros2_published {topic}")
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Ros2Adapter dispatch 예외: %s", exc)
-            return (False, f"ros2_error: {exc}")
+        if status == GoalStatus.STATUS_SUCCEEDED:
+            py_future.set_result(SendCommandResult(
+                succeeded=True,
+                message=f"{robot_id} {action_type} → {pose_name} succeeded",
+            ))
+        else:
+            py_future.set_result(SendCommandResult(
+                succeeded=False,
+                message=f"{robot_id} {action_type} not succeeded (status={status})",
+            ))
 
-    def close(self) -> None:
-        if self._node is not None:
-            try:
-                self._node.destroy_node()
-            except Exception:  # noqa: BLE001
-                pass
-        if self._rclpy is not None:
-            try:
-                self._rclpy.shutdown()
-            except Exception:  # noqa: BLE001
-                pass
-        self._node = None
-        self._rclpy = None
+    def _get_client(self, action_name: str, action_type: Type) -> ActionClient:
+        if action_name not in self._action_clients:
+            self._action_clients[action_name] = ActionClient(
+                self, action_type, action_name,
+                callback_group=self._cb_group,
+            )
+        return self._action_clients[action_name]
