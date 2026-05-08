@@ -131,12 +131,9 @@ class ManagementServicer(
         self.pattern_query_service = container.pattern_query_service
         self.production_order_query_service = container.production_order_query_service
         self.schedule_query_service = container.schedule_query_service
-        self.rfid_service = container.rfid_service
-
         self.event_bridge = container.event_bridge
         self.state_manager = container.state_manager
 
-        self.image_forwarder = container.image_forwarder
         self.execution_monitor = container.execution_monitor
 
         self.amr_battery = container.amr_battery
@@ -225,6 +222,7 @@ def serve() -> None:
     orchestrator_thread = OrchestratorThread()
     servicer.orchestrator_thread = orchestrator_thread
 
+    container.start()
     server.start()
     logger.info("Management Service listening on %s [%s]", bind_addr, scheme)
 
@@ -232,6 +230,7 @@ def serve() -> None:
     def _stop(_signum, _frame):
         logger.info("Shutting down...")
         orchestrator_thread.stop()
+        container.close()
         server.stop(grace=5)
 
     signal.signal(signal.SIGINT, _stop)

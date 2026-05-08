@@ -1,5 +1,4 @@
 import logging
-import os
 
 from services.legacy.execution_monitor import ExecutionMonitor
 from services.core.orchestrator import Orchestrator
@@ -10,12 +9,8 @@ from services.core.adapter import Adapter
 from services.core.traffic_manager import TrafficManager
 from services.core.mock_state_manager import MockStateManager
 from services.core.event_bridge import EventBridge
-
-from services.core.adapters.vision.ai_client import AIServerConfig, AIUploader
-from services.core.adapters.vision.image_forwarder import ForwarderConfig, ImageForwarder
-from services.core.adapters.vision.image_sink import sink as image_sink
-from services.core.adapters.sensors.rfid_service import RfidService
-from services.core.adapters.robotics.amr_battery import AmrBatteryService
+from services.core.adapters.ros2_runtime import Ros2Runtime
+from services.core.adapters.amr_state_monitor import AmrStateMonitorService
 
 from services.query.item_query_service import ItemQueryService
 from services.query.pattern_query_service import PatternQueryService
@@ -26,23 +21,6 @@ from services.core.pattern_command_service import PatternCommandService
 
 logger = logging.getLogger(__name__)
 
-def _build_image_forwarder():
-    """ImageForwarder 를 구성. AI Server 설정이 없으면 None 반환 → 훅 비활성."""
-    ai_cfg = AIServerConfig.from_env()
-    if not ai_cfg.enabled:
-        logger.info("image_forwarder 비활성: AI Server 환경변수 미설정")
-        return None
-    fwd = ImageForwarder(
-        config=ForwarderConfig.from_env(),
-        sink_latest=image_sink.latest,
-        uploader=AIUploader(ai_cfg),
-    )
-    fwd.start()
-    logger.info(
-        "image_forwarder 활성: spool=%s batch=%.1fs", fwd.cfg.spool_dir, fwd.cfg.batch_interval_sec
-    )
-    return fwd
-
 class Container:
     """Dependency Injection Container
 
@@ -51,12 +29,12 @@ class Container:
     """
     def __init__(self):
         logger.info("Initializing Dependency Container...")
+        self._started = False
 
         self.event_bridge = EventBridge()
-        self.state_manager = MockStateManager(event_bridge=self.event_bridge)
+        self.state_manager = MockStateManager(event_bridge=self.event_bridge, enable_persistence=True)
         self.task_manager = TaskManager(sm=self.state_manager)
         self.task_allocator = TaskAllocator(state_manager=self.state_manager)
-        self.adapter = Adapter()
         self.task_executor = TaskExecutor(
             adapter=self.adapter,
             state_manager=self.state_manager,
@@ -76,17 +54,38 @@ class Container:
         self.production_order_query_service = ProductionOrderQueryService()
         self.schedule_query_service = ScheduleQueryService()
         self.pattern_command_service = PatternCommandService()
-        self.rfid_service = RfidService()
         
-        # 3. Vision / Monitor Adapters
-        self.image_forwarder = _build_image_forwarder()
-        self.execution_monitor = ExecutionMonitor(
-            image_forwarder=self.image_forwarder,
-        )
+        self.execution_monitor = ExecutionMonitor()
 
-        # 4. Robotics Adapters
-        self.amr_battery = AmrBatteryService()
-        self.amr_battery.start()
+        # adapters
+        self.ros2_runtime = Ros2Runtime()
+        self.adapter = Adapter(ros2_runtime=self.ros2_runtime)
+        self.amr_state_monitor = AmrStateMonitorService(state_manager=self.state_manager)
+        self.amr_battery = self.amr_state_monitor
+
+    def start(self) -> None:
+        """서버 시작 시 adapter들을 실행한다."""
+        if self._started:
+            return
+        logger.info("Starting Dependency Container resources...")
+        self.ros2_runtime.start()  # ros2 multi thread 시작
+        self.adapter.start()
+        self.amr_state_monitor.start()
+        self._started = True
+
+    def close(self) -> None:
+        """서버 종료 시 실행 중인 adapter들을 정리한다."""
+        if not self._started:
+            return
+        logger.info("Stopping Dependency Container resources...")
+        try:
+            self.amr_state_monitor.stop()
+        finally:
+            try:
+                self.adapter.close()
+            finally:
+                self.ros2_runtime.shutdown()
+                self._started = False
 
 # Singleton Container Instance
 container = Container()
