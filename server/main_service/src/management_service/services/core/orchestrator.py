@@ -8,7 +8,7 @@ import heapq
 from itertools import count
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from services.contracts.models import (
     StartProductionBatchAckModel,
@@ -342,7 +342,46 @@ class Orchestrator(IOrchestrator):
             res_id=res_id,
             item_id=str(item_info.item_id),
             task_type=task.task_type,
+            payload=self._build_execute_payload(task, item_info),
         )
+
+    def _build_execute_payload(
+        self,
+        task: NextTaskResult,
+        item_info: ItemStatusRecord,
+    ) -> dict[str, Any]:
+        """어댑터가 필요로 하는 정보들을 넣어준다."""
+        payload: dict[str, Any] = {"item_id": item_info.item_id}
+
+        if item_info.ptn_id is not None:
+            payload["ptn_loc_id"] = item_info.ptn_id
+
+        if task.strg_loc:
+            payload["strg_loc"] = task.strg_loc
+            strg_loc_id = self._strg_loc_id(task.strg_loc)
+            if strg_loc_id is not None:
+                payload["strg_loc_id"] = strg_loc_id
+
+        return payload
+
+    @staticmethod
+    def _strg_loc_id(strg_loc: str) -> int | None:
+        """"MAT가 필요로 하는 strg loc id를 넣어준다."""
+        try:
+            return int(strg_loc)
+        except (TypeError, ValueError):
+            pass
+
+        try:
+            row_text, col_text = str(strg_loc).split("-", maxsplit=1)
+            row = int(row_text)
+            col = int(col_text)
+        except (TypeError, ValueError):
+            return None
+
+        if row < 1 or col < 1 or col > 6:
+            return None
+        return (row - 1) * 6 + col
 
     def _build_rejected_ack(self, ord_id: int, reason: str) -> "StartProductionOrderAckModel":
         """start_production 예외 발생 시 rejected ack를 생성한다."""
