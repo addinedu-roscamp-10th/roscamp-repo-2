@@ -5,7 +5,7 @@ from services.core.orchestrator import Orchestrator
 from services.core.task_manager import TaskManager
 from services.core.task_allocator import TaskAllocator
 from services.core.task_executor import TaskExecutor
-from services.core.adapter import Adapter
+from services.core.adapter_router import AdapterRouter
 from services.core.traffic_manager import TrafficManager
 from services.core.mock_state_manager import MockStateManager
 from services.core.event_bridge import EventBridge
@@ -35,6 +35,8 @@ class Container:
         self.state_manager = MockStateManager(event_bridge=self.event_bridge, enable_persistence=True)
         self.task_manager = TaskManager(sm=self.state_manager)
         self.task_allocator = TaskAllocator(state_manager=self.state_manager)
+        self.ros2_runtime = Ros2Runtime()
+        self.adapter = AdapterRouter(ros2_runtime=self.ros2_runtime)
         self.task_executor = TaskExecutor(
             adapter=self.adapter,
             state_manager=self.state_manager,
@@ -58,8 +60,6 @@ class Container:
         self.execution_monitor = ExecutionMonitor()
 
         # adapters
-        self.ros2_runtime = Ros2Runtime()
-        self.adapter = Adapter(ros2_runtime=self.ros2_runtime)
         self.amr_state_monitor = AmrStateMonitorService(state_manager=self.state_manager)
         self.amr_battery = self.amr_state_monitor
 

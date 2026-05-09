@@ -155,6 +155,11 @@ class ExecutionResult(BaseModel):
     error_code: Optional[str] = None
     completed_at: datetime = Field(default_factory=datetime.now)
 
+class AdapterResult(BaseModel):
+    success: bool
+    message: str = ""
+    payload: Dict[str, Any] = Field(default_factory=dict)
+
 class UpdateTaskStatusInput(BaseModel):
     """State Manager 로 보낼 Task 진행 상태 업데이트 요청 ([동사][명사]Input 규칙)"""
     task_id: str

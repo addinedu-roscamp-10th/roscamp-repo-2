@@ -40,68 +40,51 @@ class TaskExecutor:
         self._sequence_map: Dict[TaskType, List[CommandStep]] = {
             # === MAT (Casting Robot) ===
             TaskType.MM: [
-                CommandStep(step_id=1, action="MOLD_P1_PICK", params={"speed": 50}),
-                CommandStep(step_id=2, action="GRIPPER_CLOSE", params={"speed": 50}),
-                CommandStep(step_id=3, action="MOLD_P1_PATTERNING", params={"speed": 50}),
-                CommandStep(step_id=4, action="MOLD_P1_DROP", params={"speed": 50}),
-                CommandStep(step_id=5, action="GRIPPER_OPEN", params={"speed": 50}),
-                CommandStep(step_id=6, action="GO_HOME", params={}),
+                CommandStep(step_id=1, action="pattern_pick_action", params={}),
+                CommandStep(step_id=2, action="die_stamp_action", params={}),
+                CommandStep(step_id=3, action="pattern_return_action", params={}),
+                CommandStep(step_id=4, action="return_to_base_action", params={}),
             ],
             TaskType.POUR: [
-                CommandStep(step_id=1, action="POUR_PREPARE", params={"speed": 50}),
-                CommandStep(step_id=2, action="PICK_KETTLE", params={"speed": 50}),
-                CommandStep(step_id=3, action="MOVE_TO_POUR_POSITION", params={"speed": 50}),
-                CommandStep(step_id=4, action="EXECUTE_POUR", params={"speed": 30, "hold_sec": 10}),
-                CommandStep(step_id=5, action="RETURN_KETTLE", params={"speed": 50}),
-                CommandStep(step_id=6, action="GO_HOME", params={"speed": 50}),
+                CommandStep(step_id=1, action="crucible_pick_action", params={}),
+                CommandStep(step_id=2, action="metal_pour_action", params={}),
+                CommandStep(step_id=3, action="crucible_return_action", params={}),
+                CommandStep(step_id=4, action="return_to_base_action", params={}),
             ],
             TaskType.DM: [
-                CommandStep(step_id=1, action="DEMOLD_APPROACH", params={"speed": 50}),
-                CommandStep(step_id=2, action="DEMOLD_PICK", params={"speed": 50}),
-                CommandStep(step_id=3, action="GRIPPER_CLOSE", params={"speed": 50}),
-                CommandStep(step_id=4, action="DEMOLD_DROP", params={"speed": 50}),
-                CommandStep(step_id=5, action="GRIPPER_OPEN", params={"speed": 50}),
-                CommandStep(step_id=6, action="GO_HOME", params={}),
+                CommandStep(step_id=1, action="casting_pick_action", params={}),
+                CommandStep(step_id=2, action="tat_load_action", params={}),
+                CommandStep(step_id=3, action="return_to_base_action", params={}),
             ],
             # === PAT (Logistics Robot) ===
+            # dld 후 GP 적재
             TaskType.PA_GP: [
-                CommandStep(step_id=1, action="APPROACH", params={"floor": 3, "cell": 1, "speed": 30}),
-                CommandStep(step_id=2, action="GRIPPER_CLOSE", params={"speed": 50}),
-                CommandStep(step_id=3, action="PLACE", params={"floor": 3, "cell": 1, "speed": 30}),
-                CommandStep(step_id=4, action="GRIPPER_OPEN", params={"speed": 50}),
-                CommandStep(step_id=5, action="GO_HOME", params={}),
+                CommandStep(step_id=1, action="pat_pick_action", params={}),
+                CommandStep(step_id=2, action="pat_place_storage_action", params={}),
             ],
+            # dld 후 DP 적재
             TaskType.PA_DP: [
-                CommandStep(step_id=1, action="APPROACH", params={"floor": 1, "cell": 1, "speed": 30}),
-                CommandStep(step_id=2, action="GRIPPER_CLOSE", params={"speed": 50}),
-                CommandStep(step_id=3, action="DEFECT_DROP", params={"speed": 30}),
-                CommandStep(step_id=4, action="GRIPPER_OPEN", params={"speed": 50}),
-                CommandStep(step_id=5, action="GO_HOME", params={}),
+                CommandStep(step_id=1, action="pat_pick_action", params={}),
+                CommandStep(step_id=2, action="pat_defect_drop_action", params={}),
             ],
+            # ld 출고
             TaskType.PICK: [
-                CommandStep(step_id=1, action="APPROACH", params={"floor": 3, "cell": 1, "speed": 30}),
-                CommandStep(step_id=2, action="GRIPPER_CLOSE", params={"speed": 50}),
-                CommandStep(step_id=3, action="PLACE", params={"floor": 3, "cell": 1, "speed": 30}),
-                CommandStep(step_id=4, action="GRIPPER_OPEN", params={"speed": 50}),
-                CommandStep(step_id=5, action="GO_HOME", params={}),
+                CommandStep(step_id=1, action="pat_retrieve_action", params={}),
             ],
+            # ld SHIP은 현재 없음
             TaskType.SHIP: [
-                CommandStep(step_id=1, action="APPROACH", params={"floor": 1, "cell": 1, "speed": 30}),
-                CommandStep(step_id=2, action="GRIPPER_CLOSE", params={"speed": 50}),
-                CommandStep(step_id=3, action="PLACE", params={"zone": "SHIP", "speed": 30}),
-                CommandStep(step_id=4, action="GRIPPER_OPEN", params={"speed": 50}),
-                CommandStep(step_id=5, action="GO_HOME", params={}),
+                CommandStep(step_id=1, action="pat_retrieve_action", params={}),
             ],
             # === TAT (AMR) ===
             TaskType.ToPP: [
-                CommandStep(step_id=1, action="ToCAST1", params={}),  # Casting zone 상차 대기 장소
+                CommandStep(step_id=1, action="dock_robot", params={"pose_name": "ToCAST1"}),  # Casting zone 상차 대기 장소
                 CommandStep(
                     step_id=2,
                     action="WAIT_TASK_COMPLETED",
                     params={"task_type": TaskType.DM},
                     timeout_sec=600,
                 ),
-                CommandStep(step_id=3, action="ToPP1", params={}),    # PP Zone 하차 대기 장소
+                CommandStep(step_id=3, action="dock_robot", params={"pose_name": "ToPP1"}),    # PP Zone 하차 대기 장소
                 # 외부 이벤트 일단 주석 처리
                 # CommandStep(
                 #     step_id=4,
@@ -109,53 +92,55 @@ class TaskExecutor:
                 #     params={"subtask_type": "button_pushed"},
                 #     timeout_sec=600,
                 # ),
-                CommandStep(step_id=4, action="ToCHG", params={}),
+                CommandStep(step_id=4, action="dock_robot", params={"pose_name": "ToCHG"}),
             ],
             TaskType.ToSTRG: [
-                CommandStep(step_id=1, action="ToINSP", params={}),   # 컨베이어 상차 대기 장소
+                CommandStep(step_id=1, action="dock_robot", params={"pose_name": "ToINSP"}),   # 컨베이어 상차 대기 장소
                 CommandStep(
                     step_id=2,
                     action="WAIT_TASK_COMPLETED",
                     params={"task_type": TaskType.ToWaitPA},
                     timeout_sec=600,
                 ),
-                CommandStep(step_id=3, action="ToSTRG1", params={}),  # STRG zone 하차 대기 장소
+                CommandStep(step_id=3, action="dock_robot", params={"pose_name": "ToSTRG1"}),  # STRG zone 하차 대기 장소
                 CommandStep(
                     step_id=4,
                     action="WAIT_SUBTASK_COMPLETED",
                     params={"subtask_type": "pa_dld_done"},
                     timeout_sec=600,
                 ),
-                CommandStep(step_id=5, action="ToCHG", params={}),
+                CommandStep(step_id=5, action="dock_robot", params={"pose_name": "ToCHG"}),
             ],
             TaskType.ToSHIP: [
-                CommandStep(step_id=1, action="ToSTRG2", params={}),  # STRG Zone 상차 대기 장소
+                CommandStep(step_id=1, action="dock_robot", params={"pose_name": "ToSTRG2"}),  # STRG Zone 상차 대기 장소
                 CommandStep(
                     step_id=2,
                     action="WAIT_TASK_COMPLETED",
                     params={"task_type": TaskType.PICK},
                     timeout_sec=600,
                 ),
-                CommandStep(step_id=3, action="ToSHIP", params={}),   # SHIP Zone 하차 대기 장소
-                CommandStep(step_id=4, action="ToCHG", params={}),
+                CommandStep(step_id=3, action="dock_robot", params={"pose_name": "ToSHIP"}),   # SHIP Zone 하차 대기 장소
+                CommandStep(step_id=4, action="dock_robot", params={"pose_name": "ToCHG"}),
             ],
             TaskType.ToCHG: [
-                CommandStep(step_id=1, action="ToCHG", params={}),   # Charging Zone
+                CommandStep(step_id=1, action="dock_robot", params={"pose_name": "ToCHG"}),   # Charging Zone
             ],
             
             # === CONV (Conveyor Belt) ===
-            # 후처리 시작 -> RFID 신호가 종료 조건
+            # 후처리 시작 -> pyqt 후처리 UI의 버튼 클릭이 종료 조건
             TaskType.PP: [
+                CommandStep(step_id=1, action="NOOP", params={})
                 # 외부 이벤트 임시 주석 처리
                 # CommandStep(
                 #     step_id=1,
                 #     action="WAIT_SUBTASK_COMPLETED",
-                #     params={"subtask_type": "rfid_scanned"},
+                #     params={"subtask_type": "pyqt 후처리 UI에서 clicked"},
                 #     timeout_sec=600,
                 # ),
             ],
             # 컨베이어 이동 후 이미지 수신이 종료 조건
             TaskType.ToINSP: [
+                CommandStep(step_id=1, action="NOOP", params={})
                 # 외부 이벤트 임시 주석 처리
                 # CommandStep(
                 #     step_id=2,
@@ -168,14 +153,15 @@ class TaskExecutor:
             TaskType.INSP: [
                 CommandStep(step_id=1, action="AI_INFERENCE_REQUEST", params={}),
             ],
-            # 컨베이어 재가동은 INSP(AI 추론 끝) 끝난 후에 가동 가능, 가동 4초 뒤가 종료 조건
             TaskType.ToWaitPA: [
-                CommandStep(
-                    step_id=1,
-                    action="WAIT_TASK_COMPLETED",
-                    params={"task_type": TaskType.INSP},
-                    timeout_sec=600,
-                ),
+                CommandStep(step_id=1, action="NOOP", params={}),
+                # 임시 주석 처리
+                # CommandStep(
+                #     step_id=1,
+                #     action="WAIT_TASK_COMPLETED",
+                #     params={"task_type": TaskType.INSP},
+                #     timeout_sec=600,
+                # ),
                 CommandStep(step_id=2, action="CONV_ALLOW_MOVE", params={"duration_sec": 4}),
             ],
         }
@@ -217,18 +203,19 @@ class TaskExecutor:
         try:
             for step in sequence:
                 # 단계 실행
-                success = await self._execute_step(input_data, step)
-                if not success:
-                    raise RuntimeError(f"Adapter failed at step {step.step_id}")
+                step_result = await self._execute_step(input_data, step)
+                if not step_result.success:
+                    raise RuntimeError(step_result.message or f"Adapter failed at step {step.step_id}")
                 
                 executed_steps += 1
                 self.logger.info(f"[Executor] Step {step.step_id} completed")
-                await self._handle_step_completion(input_data, step)
+                await self._handle_step_completion(input_data, step, step_result)
             
             # Task가 성공한 경우 전이: PROC -> SUCC
             await self.state_manager.update_task_status(
                 UpdateTaskStatusInput(task_id=input_data.task_id, new_stat=TxnStat.SUCC)
             )
+            # asyncio.create_task()로 만들어진 코루틴 객체이기 때문에, return은 현재 사용되지 않음
             return ExecutionResult(
                 task_id=input_data.task_id,
                 final_status=TxnStat.SUCC,
@@ -251,21 +238,24 @@ class TaskExecutor:
             raise ValueError(f"No sequence defined for task_type: {task_type.value}")
         return seq.copy()
 
-    async def _execute_step(self, input_data: ExecuteTaskInput, step: CommandStep) -> bool:
+    async def _execute_step(self, input_data: ExecuteTaskInput, step: CommandStep) -> AdapterResult:
         """
         단일 단계 실행 및 Adapter를 호출한다.
         
         특정 선행 단계(task, subtask)를 기다려야할 경우 waiter를 만들고 완료 event를 기다린다.
         """
         if step.action == "WAIT_TASK_COMPLETED":
-            return await self._wait_for_task_completed(input_data, step)
+            await self._wait_for_task_completed(input_data, step)
+            return AdapterResult(success=True, message="wait_task_completed")
         if step.action == "WAIT_SUBTASK_COMPLETED":
-            return await self._wait_for_subtask_completed(input_data, step)
-
+            await self._wait_for_subtask_completed(input_data, step)
+            return AdapterResult(success=True, message="wait_subtask_completed")
+        if step.action == "NOOP": # 테스트용 fake action
+            return AdapterResult(success=True, message="noop")
         return await self.adapter.send_command(
             res_id=input_data.res_id,
             action=step.action,
-            params={**step.params, **input_data.payload}
+            params={**step.params, **input_data.payload},
         )
 
     async def _wait_for_task_completed(self, input_data: ExecuteTaskInput, step: CommandStep) -> bool:
@@ -368,18 +358,26 @@ class TaskExecutor:
         finally:
             self._remove_subtask_waiter(key, future)
 
-    async def _handle_step_completion(self, input_data: ExecuteTaskInput, step: CommandStep) -> None:
+    async def _handle_step_completion(
+        self,
+        input_data: ExecuteTaskInput,
+        step: CommandStep,
+        step_result: AdapterResult,
+    ) -> None:
         """특정 subtask 완료 시 StateManager에게 알린다."""
         subtask_type = None
-        if input_data.task_type == TaskType.POUR and step.action == "EXECUTE_POUR":
+        pose_name = step.params.get("pose_name")
+        if input_data.task_type == TaskType.POUR and step.action == "metal_pour_action":
             subtask_type = "pour"
-        elif input_data.task_type == TaskType.ToPP and step.action == "ToCAST1":
+        elif input_data.task_type == TaskType.ToPP and step.action == "dock_robot" and pose_name == "ToCAST1":
             subtask_type = "topp"
-        elif input_data.task_type == TaskType.ToSTRG and step.action == "ToINSP":
+        elif input_data.task_type == TaskType.ToSTRG and step.action == "dock_robot" and pose_name == "ToINSP":
             subtask_type = "tostrg"
-        elif input_data.task_type == TaskType.ToSTRG and step.action == "ToSTRG1":
+        elif input_data.task_type == TaskType.ToSTRG and step.action == "dock_robot" and pose_name == "ToSTRG1":
             subtask_type = "tostrg_dld"
-        elif input_data.task_type in {TaskType.PA_GP, TaskType.PA_DP} and step.action == "GRIPPER_OPEN":
+        elif input_data.task_type == TaskType.PA_GP and step.action == "pat_place_storage_action":
+            subtask_type = "pa_dld_done"
+        elif input_data.task_type == TaskType.PA_DP and step.action == "pat_defect_drop_action":
             subtask_type = "pa_dld_done"
         if subtask_type is None:
             return

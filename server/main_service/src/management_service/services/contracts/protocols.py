@@ -47,7 +47,7 @@ class ITaskExecutor(Protocol):
 class IAdapter(Protocol):
     
     ##Task Executor가 사용하는 인터페이스
-    async def send_command(self, res_id: str, action: str, params: Dict) -> bool: 
+    async def send_command(self, res_id: str, action: str, params: Dict) -> AdapterResult: 
         ...
 
 
