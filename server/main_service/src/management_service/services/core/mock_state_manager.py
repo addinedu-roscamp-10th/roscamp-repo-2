@@ -1,13 +1,12 @@
 """Minimal in-memory StateManager stub for the refactor phase.
 
-This module intentionally avoids any DB or ORM dependency. During the current
-core-structure refactor, Management only needs to acknowledge StartProduction
-requests and keep the rest of the pipeline dormant.
+This module keeps orchestration state in memory and optionally mirrors runtime
+state changes through a persistence repository. SQLAlchemy/schema mapping stays
+outside this module.
 """
 
 from __future__ import annotations
 
-from datetime import datetime
 import logging
 from typing import Any
 
@@ -38,10 +37,30 @@ def _normalize_task_type(task_type: Any) -> TaskType | None:
     return None
 
 
+def _strg_loc_id(strg_loc: Any | None) -> int | None:
+    if strg_loc is None:
+        return None
+    try:
+        return int(strg_loc)
+    except (TypeError, ValueError):
+        pass
+
+    try:
+        row_text, col_text = str(strg_loc).split("-", maxsplit=1)
+        row = int(row_text)
+        col = int(col_text)
+    except (TypeError, ValueError):
+        return None
+
+    if row < 1 or col < 1 or col > 6:
+        return None
+    return (row - 1) * 6 + col
+
+
 class MockStateManager:
     """StateManager stub that only acknowledges production-start requests."""
 
-    def __init__(self, event_bridge=None) -> None:
+    def __init__(self, event_bridge=None, repository=None, enable_persistence: bool = False) -> None:
         self._items: dict[int, dict[str, Any]] = {}
         self._tasks: dict[str, dict[str, Any]] = {}
         self._res_list: dict[str, dict[str, Any]] = {}
@@ -52,46 +71,52 @@ class MockStateManager:
         self._next_item_id = 1000
         self._next_equip_task_txn_id = 2000
         self._db_ready = False
-        self._session_factory = None
-        self._ord_model = None
-        self._ord_detail_model = None
-        self._ord_stat_model = None
-        self._ord_log_model = None
-        self._pattern_model = None
-        self._item_model = None
-        self._equip_task_txn_model = None
+        self._repo = repository
         self._seed_res_pool()
-        try:
-            from db_session import SessionLocal
-            from smart_cast_db.models import EquipTaskTxn, ItemStat, Ord, OrdDetail, OrdLog, OrdStat, Pattern
+        if self._repo is None and enable_persistence:
+            try:
+                from services.persistence.runtime_state_repository import RuntimeStateRepository
 
-            self._session_factory = SessionLocal
-            self._ord_model = Ord
-            self._ord_detail_model = OrdDetail
-            self._ord_stat_model = OrdStat
-            self._ord_log_model = OrdLog
-            self._pattern_model = Pattern
-            self._item_model = ItemStat
-            self._equip_task_txn_model = EquipTaskTxn
+                self._repo = RuntimeStateRepository.from_default_db()
+                self._db_ready = True
+                logger.info("[MockStateManager] DB persistence enabled")
+            except Exception as exc:
+                logger.warning("[MockStateManager] DB persistence unavailable: %s", exc)
+        elif self._repo is not None:
             self._db_ready = True
-            logger.info("[MockStateManager] DB-backed start_production enabled")
-        except Exception as exc:
-            logger.warning("[MockStateManager] DB-backed start_production unavailable: %s", exc)
         logger.info("[MockStateManager] stub mode enabled")
 
     def _seed_res_pool(self) -> None:
-        for res_type in ("TAT", "CONV", "RA_STRG", "RA_CAST"):
-            for idx in range(1, 5):
-                res_id = f"{res_type}_{idx}"
-                self._res_list[res_id] = {
-                    "res_id": res_id,
-                    "res_type": res_type,
-                    "task_id": None,
-                    "item_id": None,
-                    "status": "idle",
-                    "x": float(idx - 1) if res_type == "TAT" else 0.0,
-                    "y": 0.0,
-                }
+        seed_resources = [
+            ("TAT1", "TAT", 0.0, 0.0),
+            ("TAT2", "TAT", 1.0, 0.0),
+            ("TAT3", "TAT", 2.0, 0.0),
+            ("CONV1", "CONV", 0.0, 0.0),
+            ("PAT", "RA_STRG", 0.0, 0.0),
+            ("MAT", "RA_CAST", 0.0, 0.0),
+        ]
+        for res_id, res_type, x, y in seed_resources:
+            self._res_list[res_id] = {
+                "res_id": res_id,
+                "res_type": res_type,
+                "task_id": None,
+                "item_id": None,
+                "status": "idle",
+                "x": x,
+                "y": y,
+            }
+
+    def _safe_repo_call(self, method_name: str, *args, **kwargs):
+        if not self._db_ready or self._repo is None:
+            return None
+        method = getattr(self._repo, method_name, None)
+        if method is None:
+            return None
+        try:
+            return method(*args, **kwargs)
+        except Exception:
+            logger.exception("[MockStateManager] persistence %s failed", method_name)
+            return None
 
     async def start_production(self, ord_id: int) -> StartProductionOrderAckModel:
         """Accept a positive order id and return a deterministic mock ack."""
@@ -106,7 +131,9 @@ class MockStateManager:
         if self._db_ready:
             return self._start_production_db(ord_id)
 
-        target_qty = max(int(self.orders.get(ord_id, {}).get("target", 1) or 1), 1)
+        order_meta = self.orders.get(ord_id, {})
+        target_qty = max(int(order_meta.get("target", 1) or 1), 1)
+        ptn_id = order_meta.get("ptn_loc_id") or order_meta.get("ptn_id")
         item_ids: list[int] = []
         equip_task_txn_ids: list[int] = []
 
@@ -123,6 +150,7 @@ class MockStateManager:
                 "flow_stat": "CREATED",
                 "zone_nm": None,
                 "result": None,
+                "ptn_id": ptn_id,
             }
             # self._tasks[f"task_{equip_task_txn_id}"] = {
             #     "ord_id": ord_id,
@@ -144,137 +172,37 @@ class MockStateManager:
         )
 
     def _start_production_db(self, ord_id: int) -> StartProductionOrderAckModel:
-        if (
-            self._session_factory is None
-            or self._ord_model is None
-            or self._ord_detail_model is None
-            or self._ord_stat_model is None
-            or self._ord_log_model is None
-            or self._pattern_model is None
-            or self._item_model is None
-            or self._equip_task_txn_model is None
-        ):
+        if self._repo is None:
             return StartProductionOrderAckModel(
                 ord_id=ord_id,
                 accepted=False,
                 reason="DB-backed start_production is not fully initialized.",
             )
 
-        with self._session_factory() as db:
-            ord_obj = db.get(self._ord_model, ord_id)
-            if ord_obj is None:
-                return StartProductionOrderAckModel(
-                    ord_id=ord_id,
-                    accepted=False,
-                    reason=f"ord_id={ord_id} not found",
-                )
-            if db.get(self._pattern_model, ord_id) is None:
-                return StartProductionOrderAckModel(
-                    ord_id=ord_id,
-                    accepted=False,
-                    reason=f"pattern for ord_id={ord_id} not registered",
-                )
-            detail = db.query(self._ord_detail_model).filter(self._ord_detail_model.ord_id == ord_id).first()
-            if detail is None or int(detail.qty or 0) <= 0:
-                return StartProductionOrderAckModel(
-                    ord_id=ord_id,
-                    accepted=False,
-                    reason=f"ord_id={ord_id} has no valid qty in ord_detail",
-                )
+        ack = self._repo.start_production(ord_id)
+        if not ack.accepted:
+            return ack
 
-            existing_item = db.query(self._item_model).filter(self._item_model.ord_id == ord_id).first()
-            existing_txn = (
-                db.query(self._equip_task_txn_model)
-                .join(self._item_model, self._item_model.item_stat_id == self._equip_task_txn_model.item_id)
-                .filter(self._item_model.ord_id == ord_id)
-                .first()
-            )
-            if existing_item is not None or existing_txn is not None:
-                return StartProductionOrderAckModel(
-                    ord_id=ord_id,
-                    accepted=False,
-                    reason=f"ord_id={ord_id} already started on line",
-                    item_id=getattr(existing_item, "item_stat_id", None),
-                    equip_task_txn_id=getattr(existing_txn, "txn_id", None),
-                )
-
-            stat = db.query(self._ord_stat_model).filter(self._ord_stat_model.ord_id == ord_id).first()
-            prev_stat = stat.ord_stat if stat is not None else None
-            if stat is None:
-                stat = self._ord_stat_model(ord_id=ord_id, ord_stat="MFG")
-                db.add(stat)
-            else:
-                stat.ord_stat = "MFG"
-                stat.updated_at = datetime.utcnow()
-            if prev_stat != "MFG":
-                db.add(
-                    self._ord_log_model(
-                        ord_id=ord_id,
-                        prev_stat=prev_stat,
-                        new_stat="MFG",
-                        changed_by=None,
-                        )
-                )
-
-            item_ids: list[int] = []
-            equip_task_txn_ids: list[int] = []
-            created_items: list[Any] = []
-            created_txns: list[Any] = []
-
-            for _ in range(int(detail.qty)):
-                new_item = self._item_model(
-                    ord_id=ord_id,
-                    cur_stat="CREATED",
-                    cur_res="PAT",
-                    is_defective=None,
-                )
-                db.add(new_item)
-                db.flush()
-
-                new_item_id = getattr(new_item, "item_id", getattr(new_item, "item_stat_id", None))
-                txn = self._equip_task_txn_model(
-                    res_id="PAT",
-                    task_type="MM",
-                    txn_stat="QUE",
-                    item_id=new_item_id,
-                )
-                db.add(txn)
-                db.flush()
-
-                created_items.append(new_item)
-                created_txns.append(txn)
-                item_ids.append(int(new_item_id))
-                equip_task_txn_ids.append(int(txn.txn_id))
-
-            db.commit()
-            for new_item, txn in zip(created_items, created_txns):
-                db.refresh(new_item)
-                db.refresh(txn)
-                new_item_id = getattr(new_item, "item_id", getattr(new_item, "item_stat_id", None))
-                self._items[new_item_id] = {
-                    "item_id": new_item_id,
-                    "ord_id": ord_id,
-                    "order_id": ord_id,
-                    "flow_stat": getattr(new_item, "cur_stat", "CREATED"),
-                    "zone_nm": getattr(new_item, "cur_res", None),
-                    "result": getattr(new_item, "result", None),
-                }
-                self._tasks[f"task_{txn.txn_id}"] = {
-                    "ord_id": ord_id,
-                    "item_id": new_item_id,
-                    "txn_id": txn.txn_id,
-                    "status": txn.txn_stat,
-                    "res_id": txn.res_id,
-                    "task_type": txn.task_type,
-                }
-
-            return StartProductionOrderAckModel(
-                ord_id=ord_id,
-                accepted=True,
-                reason=f"Production started: {len(item_ids)} items and MM tasks created.",
-                item_ids=item_ids,
-                equip_task_txn_ids=equip_task_txn_ids,
-            )
+        ptn_id = self._safe_repo_call("get_order_ptn_loc_id", ord_id)
+        for item_id, txn_id in zip(ack.item_ids, ack.equip_task_txn_ids):
+            self._items[item_id] = {
+                "item_id": item_id,
+                "ord_id": ord_id,
+                "order_id": ord_id,
+                "flow_stat": "CREATED",
+                "zone_nm": "PAT",
+                "result": None,
+                "ptn_id": ptn_id,
+            }
+            self._tasks[f"task_{txn_id}"] = {
+                "ord_id": ord_id,
+                "item_id": item_id,
+                "txn_id": txn_id,
+                "status": TxnStat.QUE.value,
+                "res_id": "PAT",
+                "task_type": TaskType.MM.value,
+            }
+        return ack
 
     def create_order_with_items(self, ord_id: int, qty: int) -> list[int]:
         item_ids: list[int] = []
@@ -333,7 +261,7 @@ class MockStateManager:
         self._next_equip_task_txn_id += 1
         task_id = f"task_{txn_id}"
         item_meta = self._items.setdefault(task_input.item_id, {"item_id": task_input.item_id})
-        self._tasks[task_id] = {
+        task_meta = {
             "txn_id": txn_id,
             "item_id": task_input.item_id,
             "ord_id": item_meta.get("ord_id") or item_meta.get("order_id"),
@@ -341,7 +269,15 @@ class MockStateManager:
             "status": str(task_input.txn_stat),
             "res_id": task_input.res_id,
             "strg_loc": task_input.strg_loc,
+            "strg_loc_id": _strg_loc_id(task_input.strg_loc),
         }
+        db_txn_id = self._safe_repo_call("sync_task_created", task_meta)
+        if db_txn_id is not None:
+            txn_id = int(db_txn_id)
+            self._next_equip_task_txn_id = max(self._next_equip_task_txn_id, txn_id + 1)
+            task_id = f"task_{txn_id}"
+            task_meta["txn_id"] = txn_id
+        self._tasks[task_id] = task_meta
         return txn_id
 
     async def create_empty_item(self, order_id: int) -> int:
@@ -415,6 +351,7 @@ class MockStateManager:
             task_meta["res_id"] = assign_input.res_id
             task_meta["assignment_status"] = "allocated"
             task_meta["status"] = "allocated"
+            task_meta["task_id"] = task_key
 
         self._res_list.setdefault(assign_input.res_id, {})
         self._res_list[assign_input.res_id].update(
@@ -426,6 +363,9 @@ class MockStateManager:
                 "status": "allocated",
             }
         )
+        if task_meta is not None:
+            self._safe_repo_call("sync_task_status", task_meta)
+        self._safe_repo_call("sync_resource_snapshot", self._res_list[assign_input.res_id])
         logger.info(
             "[MockStateManager] update_task_allocation: task=%s item=%s res=%s",
             assign_input.task_id,
@@ -441,6 +381,7 @@ class MockStateManager:
         suppress_resource_available = False
         assigned_res_id = task_meta.get("res_id") if task_meta is not None else None
         if task_meta is not None:
+            task_meta["task_id"] = task_key
             task_meta["status"] = req.new_stat.value
             if req.error_code is not None:
                 task_meta["error_code"] = req.error_code
@@ -450,14 +391,19 @@ class MockStateManager:
                     item = self._items.setdefault(item_id, {"item_id": item_id})
                     if item.get("flow_stat") == "CREATED":
                         item["flow_stat"] = "CAST"
+                    item["last_task_type"] = task_meta.get("task_type")
+                    item["req_res_id"] = task_meta.get("res_id")
+                    self._safe_repo_call("sync_item_snapshot", item)
                 res_meta = self._res_list.setdefault(assigned_res_id, {"res_id": assigned_res_id})
                 res_meta.update(
                     {
                         "task_id": req.task_id,
                         "item_id": task_meta.get("item_id"),
                         "status": TxnStat.PROC.value,
+                        "task_type": task_meta.get("task_type"),
                     }
                 )
+                self._safe_repo_call("sync_resource_snapshot", res_meta)
             if req.new_stat == TxnStat.SUCC:
                 item_id = task_meta.get("item_id")
                 if item_id is not None:
@@ -468,6 +414,7 @@ class MockStateManager:
                         if task_meta.get("task_type") in ITEM_AFFINITY_PREDECESSORS
                         else None
                     )
+                    self._safe_repo_call("sync_item_snapshot", item)
                 if task_meta.get("task_type") == "ToSTRG":
                     suppress_task_completed = True
                 if previous_status != TxnStat.SUCC.value and task_meta.get("task_type") == "PA_GP":
@@ -482,6 +429,7 @@ class MockStateManager:
                     {
                         "task_id": None,
                         "status": "idle",
+                        "task_type": task_meta.get("task_type"),
                     }
                 )
                 if keep_item_affinity:
@@ -489,6 +437,7 @@ class MockStateManager:
                     suppress_resource_available = True
                 else:
                     res_meta["item_id"] = None
+                self._safe_repo_call("sync_resource_snapshot", res_meta)
 
                 req_res_type = res_meta.get("res_type")
                 if (
@@ -535,6 +484,8 @@ class MockStateManager:
                     },
                 )
             )
+        if task_meta is not None:
+            self._safe_repo_call("sync_task_status", task_meta)
         return True
 
     def _handle_pa_gp_completion(self, task_meta: dict[str, Any]) -> bool:
@@ -542,36 +493,35 @@ class MockStateManager:
         if ord_id is None:
             return False
 
-        if self._db_ready and self._session_factory and self._ord_detail_model and self._ord_stat_model:
-            with self._session_factory() as db:
-                detail = db.query(self._ord_detail_model).filter(self._ord_detail_model.ord_id == ord_id).first()
-                stat = db.query(self._ord_stat_model).filter(self._ord_stat_model.ord_id == ord_id).first()
-                if detail is None or stat is None:
-                    logger.warning(
-                        "[MockStateManager] PA_GP completion without order detail/stat: ord_id=%s",
-                        ord_id,
-                    )
-                    return False
-
-                stat.gp_qty = int(stat.gp_qty or 0) + 1
-                stat.updated_at = datetime.utcnow()
-                db.commit()
-
-                is_complete = stat.gp_qty >= int(detail.qty or 0)
+        db_complete = self._safe_repo_call("increment_order_gp_qty", ord_id)
+        if db_complete is not None:
+            if isinstance(db_complete, dict):
+                complete = bool(db_complete.get("complete"))
+                gp_qty = db_complete.get("gp_qty")
+                target_qty = db_complete.get("qty")
                 logger.info(
                     "[MockStateManager] PA_GP completion: ord_id=%s gp_qty=%s qty=%s complete=%s",
                     ord_id,
-                    stat.gp_qty,
-                    detail.qty,
-                    is_complete,
+                    gp_qty,
+                    target_qty,
+                    complete,
                 )
-                if is_complete:
+                if complete:
                     logger.info(
                         "[MockStateManager] ord_id=%s qty=%s 생산완료",
                         ord_id,
-                        detail.qty,
+                        target_qty,
                     )
-                return is_complete
+                return complete
+
+            logger.info(
+                "[MockStateManager] PA_GP completion: ord_id=%s complete=%s",
+                ord_id,
+                db_complete,
+            )
+            if db_complete:
+                logger.info("[MockStateManager] ord_id=%s 생산완료", ord_id)
+            return bool(db_complete)
 
         order_state = self.orders.setdefault(ord_id, {})
         gp_qty = int(order_state.get("gp_qty", 0)) + 1
@@ -647,6 +597,7 @@ class MockStateManager:
             res_meta["task_id"] = task_id
         if item_id is not None:
             res_meta["item_id"] = item_id
+        self._safe_repo_call("sync_resource_snapshot", res_meta)
 
         self._event_bridge.publish(
             Event(
@@ -670,8 +621,11 @@ class MockStateManager:
     def mark_task_started(self, task_id: str, res_id: str, is_trans: bool) -> None:
         if task_id in self._tasks:
             self._tasks[task_id]["status"] = "PROC"
+            self._tasks[task_id]["task_id"] = task_id
+            self._safe_repo_call("sync_task_status", self._tasks[task_id])
         res_meta = self._res_list.setdefault(res_id, {"res_id": res_id})
         res_meta.update({"task_id": task_id, "status": "PROC"})
+        self._safe_repo_call("sync_resource_snapshot", res_meta)
         logger.info("[MockStateManager] mark_task_started: task=%s res=%s", task_id, res_id)
 
     def update_item_status(
@@ -688,6 +642,7 @@ class MockStateManager:
             item["zone_nm"] = zone_nm
         if result is not None:
             item["result"] = result
+        self._safe_repo_call("sync_item_snapshot", item)
         logger.info(
             "[MockStateManager] update_item_status: item=%s flow_stat=%s zone_nm=%s",
             item_id,
@@ -696,6 +651,15 @@ class MockStateManager:
         )
 
     def update_res_status_memory(self, res_id: str, x: float, y: float, battery_pct: int) -> None:
+        res_meta = self._res_list.setdefault(res_id, {"res_id": res_id})
+        res_meta.update(
+            {
+                "x": x,
+                "y": y,
+                "battery_pct": battery_pct,
+            }
+        )
+        self._safe_repo_call("sync_resource_snapshot", res_meta)
         logger.debug(
             "[MockStateManager] update_res_status_memory: res=%s x=%s y=%s battery=%s",
             res_id,
@@ -712,6 +676,14 @@ class MockStateManager:
         y: float | None = None,
         battery_pct: int | None = None,
     ) -> None:
+        res_meta = self._res_list.setdefault(res_id, {"res_id": res_id})
+        if x is not None:
+            res_meta["x"] = x
+        if y is not None:
+            res_meta["y"] = y
+        if battery_pct is not None:
+            res_meta["battery_pct"] = battery_pct
+        self._safe_repo_call("sync_resource_snapshot", res_meta)
         logger.debug(
             "[MockStateManager] update_amr_runtime_memory: res=%s x=%s y=%s battery=%s",
             res_id,
@@ -723,6 +695,8 @@ class MockStateManager:
     def update_res_task_state(self, task_id: str, res_id: str, cur_stat: str) -> None:
         if task_id in self._tasks:
             self._tasks[task_id]["status"] = cur_stat
+            self._tasks[task_id]["task_id"] = task_id
+            self._safe_repo_call("sync_task_status", self._tasks[task_id])
         res_meta = self._res_list.setdefault(res_id, {"res_id": res_id})
         res_meta.update(
             {
@@ -730,6 +704,7 @@ class MockStateManager:
                 "status": "idle" if cur_stat in {TxnStat.SUCC.value, TxnStat.FAIL.value} else cur_stat,
             }
         )
+        self._safe_repo_call("sync_resource_snapshot", res_meta)
         logger.info(
             "[MockStateManager] update_res_task_state: task=%s res=%s cur_stat=%s",
             task_id,
