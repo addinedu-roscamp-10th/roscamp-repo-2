@@ -9,7 +9,6 @@ import management_pb2  # type: ignore
 import management_pb2_grpc  # type: ignore
 
 from services.legacy.command_queue import queue as command_queue
-from services.core.adapters.vision.image_sink import sink as image_sink
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +40,6 @@ class HardwareRpcMixin:
 
     def WatchCameraFrames(self, request, context):
         # UI live camera streaming is intentionally disabled.
-        # Keep PublishFrames -> image_sink -> AI snapshot path intact.
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details("WatchCameraFrames is disabled")
         return
@@ -68,25 +66,11 @@ class ImagePublisherServicer(management_pb2_grpc.ImagePublisherServiceServicer):
         last_seq = 0
         count = 0
         for frame in request_iterator:
-            try:
-                image_sink.push(
-                    camera_id=frame.camera_id,
-                    encoding=frame.encoding,
-                    width=frame.width,
-                    height=frame.height,
-                    data=frame.data,
-                    sequence=frame.sequence,
-                    captured_at_iso=frame.captured_at.iso8601
-                    if frame.HasField("captured_at")
-                    else "",
-                )
-                last_seq = frame.sequence
-                count += 1
-            except Exception as exc:  # noqa: BLE001
-                logger.exception("ImagePublisher push 실패: %s", exc)
+            last_seq = frame.sequence
+            count += 1
         logger.info("ImagePublisher 스트림 종료: %d frames, last_seq=%d", count, last_seq)
         return management_pb2.ImageAck(
             sequence=last_seq,
             accepted=True,
-            message=f"received {count} frames",
+            message=f"ignored {count} frames",
         )

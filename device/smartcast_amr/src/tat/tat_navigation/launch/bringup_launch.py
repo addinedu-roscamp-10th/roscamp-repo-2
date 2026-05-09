@@ -83,6 +83,11 @@ def generate_launch_description():
         "config",
         "robot_config.yaml",
     )
+    default_map_file = os.path.join(
+        get_package_share_directory("tat_navigation"),
+        "map",
+        "Final_map.yaml",
+    )
 
     return LaunchDescription(
         [
@@ -96,7 +101,7 @@ def generate_launch_description():
                 default_value="",
                 description="Optional namespace override. If empty, the value from robot_config_file is used.",
             ),
-            DeclareLaunchArgument("map", default_value=""),
+            DeclareLaunchArgument("map", default_value=default_map_file),
             DeclareLaunchArgument(
                 "params_file",
                 default_value=os.path.join(
