@@ -35,11 +35,14 @@ import signal
 import sys
 import threading
 import time
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+
+# Python 3.8 (Jetson Orin JetPack default) 호환 — datetime.UTC 는 3.11+ 신규 심볼.
+UTC = timezone.utc
 
 import cv2  # opencv-python (Jetson: apt install python3-opencv)
 import grpc
-from generated import management_pb2 as pb, management_pb2_grpc as pb_grpc
+from generated import management_v2_pb2 as pb, management_v2_pb2_grpc as pb_grpc
 
 logging.basicConfig(
     level=os.environ.get("JETSON_LOG_LEVEL", "INFO"),
@@ -137,7 +140,8 @@ def run_once() -> int:
     """단일 연결 수명 주기. 실패 시 상위 루프가 재연결."""
     camera_id = os.environ.get("JETSON_CAMERA_ID", "CAM-INSP-01")
     channel = _build_channel()
-    stub = pb_grpc.ImagePublisherServiceStub(channel)
+    # V2: PublishFrames 는 ManagementServiceV2 안에 통합됨 (V1 ImagePublisherService 별도 service 폐지).
+    stub = pb_grpc.ManagementServiceV2Stub(channel)
     cap = _open_camera()
     try:
         ack = stub.PublishFrames(_frame_iter(cap, camera_id))
@@ -167,6 +171,16 @@ def _install_signal_handlers() -> None:
 
 def main() -> int:
     _install_signal_handlers()
+    # 2026-05-08: EventGateway client (sole channel to backend EventBridge).
+    # ESP bridge 가 시작 시 INSP_COMPLETED subscribe 를 등록하므로 bridge.start() 전에 init.
+    # EVENT_GATEWAY_ENABLED=0 또는 target 미설정이면 silent skip (기존 직접 RPC 흐름 유지).
+    try:
+        from event_gateway_client import init_singleton as _init_eg
+
+        _init_eg(shutdown_event=SHUTDOWN)
+    except Exception:  # noqa: BLE001
+        log.exception("EventGatewayClient 기동 실패 — 기존 직접 RPC 흐름으로 fallback")
+
     # ESP32 Serial bridge (opt-in via ESP_BRIDGE_ENABLED=1)
     bridge = None
     if os.environ.get("ESP_BRIDGE_ENABLED", "0") in ("1", "true", "yes"):
@@ -198,6 +212,55 @@ def main() -> int:
         )
     else:
         log.info("MGMT_COMMAND_STREAM_ENABLED 미설정 — ConveyorCommand 구독 비활성")
+
+    # 2026-05-06: JETSON_PUBLISH_FRAMES_ENABLED=0 시 frame stream 비활성.
+    # ESP bridge 의 on-demand 캡처(STOPPED hook)와 /dev/video0 점유 충돌을 막기 위해.
+    if os.environ.get("JETSON_PUBLISH_FRAMES_ENABLED", "1") not in ("1", "true", "yes"):
+        log.info(
+            "JETSON_PUBLISH_FRAMES_ENABLED=0 — frame stream 비활성, "
+            "ESP bridge / CommandSubscriber 단독 운영",
+        )
+        # Background camera grabber: 카메라를 항상 open 한 채 latest frame 유지
+        # → ESP STOPPED hook 의 capture_jpeg() 가 cold-start 없이 즉시 grab.
+        # MGMT_CAM_INSP_GST_GRABBER=1 → GStreamer raw MJPG (quality loss 0)
+        # 그렇지 않고 MGMT_CAM_INSP_SAVE_DIR 활성 → cv2 BGR grabber (재인코드)
+        bg_grabber = None
+        gst_grabber = None
+        save_dir_set = bool(os.environ.get("MGMT_CAM_INSP_SAVE_DIR", "").strip())
+        gst_enabled = (
+            os.environ.get("MGMT_CAM_INSP_GST_GRABBER", "0") in ("1", "true", "yes")
+        )
+        if save_dir_set and gst_enabled:
+            try:
+                from capture_inspection import start_gst_background_grabber
+
+                gst_grabber = start_gst_background_grabber()
+            except Exception:  # noqa: BLE001
+                log.exception("GStreamer raw MJPG grabber 기동 실패 — cv2 grabber 로 fallback")
+        if save_dir_set and gst_grabber is None:
+            try:
+                from capture_inspection import start_background_grabber
+
+                bg_grabber = start_background_grabber()
+            except Exception:  # noqa: BLE001
+                log.exception("Background camera grabber 기동 실패")
+        SHUTDOWN.wait()  # SIGTERM/SIGINT 까지 대기
+        if gst_grabber is not None:
+            try:
+                from capture_inspection import stop_gst_background_grabber
+
+                stop_gst_background_grabber()
+            except Exception:  # noqa: BLE001
+                log.exception("GStreamer grabber 종료 실패")
+        if bg_grabber is not None:
+            try:
+                from capture_inspection import stop_background_grabber
+
+                stop_background_grabber()
+            except Exception:  # noqa: BLE001
+                log.exception("Background camera grabber 종료 실패")
+        log.info("bye")
+        return 0
 
     backoff = 1.0
     while not SHUTDOWN.is_set():
