@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from typing import  List
-from contracts.models import *
+import logging
+from typing import List
+from services.contracts.models import *
 from services.contracts.protocols import ITaskManager , IStateManager
+
+logger = logging.getLogger(__name__)
 
 
 class TaskManager(ITaskManager):
@@ -38,19 +41,19 @@ class TaskManager(ITaskManager):
                 assigned += 1
             else:
                 # 랙의 물리적 범위를 벗어난 경우 (예: 3층 6칸을 넘어감)
-                print(f"[경고] 랙 공간 부족: {curr_row}-{curr_col} 위치가 slot_table에 없음")
+                logger.warning("랙 공간 부족: %s-%s 위치가 slot_table에 없음", curr_row, curr_col)
                 break
             
             current_abs_idx += 1 # 다음 절대 칸으로 이동
 
-        print(f"[설정] 주문 {order_id} 구역 예약 완료")
+        logger.info("주문 %s 구역 예약 완료", order_id)
 
     #오더 종료시 오더 적재기준 위치 메모리 해제
     def remove_order_reserve(self, order_id: int):
         """주문이 완전히 종료되면 호출하여 메모리 해제"""
         if order_id in self.order_start_configs:
             del self.order_start_configs[order_id]
-            print(f"[삭제] 주문 {order_id} 설정이 메모리에서 제거되었습니다.")
+            logger.info("주문 %s 설정이 메모리에서 제거되었습니다.", order_id)
 
     #오더 종료 시 Empty 슬롯의 소유권 해제 (Occupied는 유지 - 출고용)
     def remove_order_config(self, order_id: int):
@@ -62,13 +65,13 @@ class TaskManager(ITaskManager):
                     data["status"] = "Empty"
 
     #작업 객체 생성 to orchestrator
-    def create_next_task(self, item_info: ItemStatusRecord, event: str = None) -> List[NextTaskResult]:
+    async def create_next_task(self, item_info: ItemStatusRecord, event: str = None) -> List[NextTaskResult]:
         
         # [B] 일반적인 공정 흐름 (자동 전이)
         # 특별한 외부 조건이 없어도 순서에 따라 다음 작업을 자동으로 뱉어줍니다.
-        #none -> MM -> pour -> dm     -> pp -> toInsp -> Insp ->toWaitPa ->pa gp/dp
-        #                ㄴ> topp    _|     ㄴ>toStgr                   _|
-        print(f"[DATA INPUT] orchestrator에서 create_next_task 호출 발생 : item_ifo {item_info} event {event} ") 
+        #none -> MM -> pour -> dm     -> pp -> toInsp -> Insp
+        #                ㄴ> topp    _|     ㄴ>toStrg -> toWaitPa -> tostrg_dld -> pa gp/dp
+        logger.info("create_next_task 호출: item_info=%s event=%s", item_info, event)
 
         flow_map = {
             # MM이 끝나면 자동으로 POUR로 넘어감
@@ -89,25 +92,30 @@ class TaskManager(ITaskManager):
         # [1] 이벤트 기반 특수 공정 분기 (최우선 처리)
         # 이벤트가 들어오면 last_task_type에 상관없이 즉시 해당 로직을 타고 return합니다.
         if event:
-            if event == "pour":
-                task_results.append(self._create_result(item_info, TaskType.ToPP))
+            # POUR 세부 공정 중
+            if event == "pour": 
+                task_results.append(await self._create_result(item_info, TaskType.ToPP))
                 return task_results
-
+            # ToPP 세부 공정 중 AMR이 src(CASTING 대기장소)에 도착
             elif event == "topp":
-                task_results.append(self._create_result(item_info, TaskType.DM))
+                task_results.append(await self._create_result(item_info, TaskType.DM))
                 return task_results
-
+            # INSP 이후 tostrg 세부 공정 중 AMR이 src(컨베이어 앞 대기장소)에 도착
             elif event == "tostrg":
-                task_results.append(self._create_result(item_info, TaskType.ToWaitPA))
+                task_results.append(await self._create_result(item_info, TaskType.ToWaitPA))
                 return task_results
-
-            elif event == "tostrg_DLD":
+            # AMR bat low
+            elif event == "amr_battery_low":
+                task_results.append(await self._create_result(item_info, TaskType.ToCHG))
+                return task_results
+            # ToSTRG 세부 공정 중 AMR이 src(적재 대기장소)에 도착
+            elif event == "tostrg_dld":
                 if item_info.is_defective:
                     # 1. 불량 보충 아이템 생성 및 MM 태스크 발행 (우선순위 10)
-                    replacement_id = self.sm.create_empty_item(item_info.order_id)
+                    replacement_id = await self.sm.create_empty_item(item_info.order_id)
                     task_results.append(NextTaskResult(
                         item_id=replacement_id, 
-                        txn_id=self.sm.insert_task_txn(CreateTaskInput(item_id=replacement_id, task_type=TaskType.MM)), 
+                        txn_id=await self.sm.insert_task_txn(CreateTaskInput(item_id=replacement_id, task_type=TaskType.MM)),
                         task_type=TaskType.MM, 
                         priority=10
                     ))
@@ -117,23 +125,23 @@ class TaskManager(ITaskManager):
                     for (f, c), data in self.sm.slot_table.items():
                         if data["order_id"] == item_info.order_id and data["status"] == "Reserved":
                             data["status"] = "Empty"  # 소유권(order_id)은 유지, 상태만 초기화
-                            print(f"[슬롯] 불량 발생으로 인한 슬롯 {f}-{c} 복구 (오더 {item_info.order_id} 전용)")
+                            logger.info("불량 발생으로 슬롯 %s-%s 복구 (오더 %s 전용)", f, c, item_info.order_id)
                             break
 
                     # 3. 불량품 배출(PA_DP) 태스크 추가
-                    task_results.append(self._create_result(item_info, TaskType.PA_DP))
+                    task_results.append(await self._create_result(item_info, TaskType.PA_DP))
                 
                 else:
                     # 양품일 경우 정상 적재(PA_GP) 진행
                     # (이후 Orchestrator에서 PA_GP 완료 시 'Occupied'로 변경 처리)
-                    task_results.append(self._create_result(item_info, TaskType.PA_GP))
+                    task_results.append(await self._create_result(item_info, TaskType.PA_GP))
                 
                 return task_results
 
         # [2] 상태 기반 흐름 제어 및 가드 (이벤트가 없을 때 실행)
         # 최초 투입 (신규 MM)
-        if item_info.last_task_type is None:
-            res = self._create_result(item_info, TaskType.MM)
+        if item_info.flow_stat == "CREATED":
+            res = await self._create_result(item_info, TaskType.MM)
             res.priority = 0  # 신규 투입은 가장 낮은 우선순위
             task_results.append(res)
             return task_results
@@ -148,18 +156,18 @@ class TaskManager(ITaskManager):
         if next_type:
             if isinstance(next_type, list):
                 for t in next_type:
-                    task_results.append(self._create_result(item_info, t))
+                    task_results.append(await self._create_result(item_info, t))
             else:
-                task_results.append(self._create_result(item_info, next_type))
+                task_results.append(await self._create_result(item_info, next_type))
 
         return task_results
     
     # txn 생성 to state manager
-    def _create_result(self, item_info, task_type):  #현재 진행된 아이템 정보 , 다은 공정 이름
+    async def _create_result(self, item_info, task_type):  #현재 진행된 아이템 정보 , 다음 공정 이름
         # 트랜잭션 DB 기록 로직 (sm.insert_task_txn 호출 등) 포함
         strg_loc = self._calculate_strg_loc(task_type, item_info) #
         curr_input = CreateTaskInput(item_id=item_info.item_id, task_type=task_type, strg_loc=strg_loc , txn_stat=TxnStat.QUE , res_id =None )
-        curr_txn_id = self.sm.insert_task_txn(curr_input)
+        curr_txn_id = await self.sm.insert_task_txn(curr_input)
 
     
         return NextTaskResult(item_id=item_info.item_id, txn_id=curr_txn_id, task_type=task_type , strg_loc=strg_loc) #proority = 0 
