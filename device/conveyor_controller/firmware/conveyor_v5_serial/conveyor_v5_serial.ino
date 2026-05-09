@@ -1,45 +1,49 @@
 /*
  * Conveyor Belt Controller v5.0 — Serial Bridge (V6 Architecture)
- * Firmware tag: 1.5.1 (2026-04-22 확인 · SPEC-AMR-001 Wave 3 handoff 버튼 포함)
- * Base: conveyor_controller v4.0.0 (성숙한 TOF 센서 로직·anti-crosstalk 재사용)
+ * Firmware tag: 1.7.0 (2026-05-08 — TOF2 코드 완전 제거. TOF1 단일 센서 운영)
+ * Base: conveyor_controller v4.0.0
  *
- * 1.5.1 확인사항 (2026-04-22):
- *   - RFID-RC522 카드 감지 실패 원인 제거 (주기 VersionReg healthcheck 삭제).
- *   - SPEC-AMR-001 Wave 3: 후처리존 A접점 푸시 버튼 (GPIO 33, INPUT_PULLUP)
- *     이미 포함. 버튼 rising edge (뗀 순간) 에서 `HANDOFF_ACK` 토큰 +
- *     {"event":"handoff_ack","zone":"postprocessing",...} JSON 이벤트 발행.
- *     Jetson bridge (jetson_publisher/esp_bridge.py) 가 파싱해
- *     Management gRPC `ReportHandoffAck` 로 전달, public.handoff_acks 에 INSERT.
- *     디바운스 50ms + 연타 병합 500ms.
+ * 1.7.0 (2026-05-08, 사용자 요청):
+ *   - TOF2 관련 코드 완전 제거 (1.5.x 시점 hardware 제거 후 1.6.0 까지 호환용 정의 유지했었음).
+ *     · PIN_TOF2_RX, HardwareSerial tof2, dist2/raw2/det2/det2Start/buf2 globals 삭제
+ *     · readSensors() TOF2 read + anti-crosstalk gating 삭제 (단일 센서이므로 무의미)
+ *     · sim_exit 명령 + simExitUntilMs sticky 삭제
+ *     · status snapshot / boot JSON 의 tof2 필드 삭제
+ *   - 시작 트리거 = PyQt 후처리 작업자 페이지 "후처리 완료" 버튼 → 3 초 후 `start` 명령
+ *     (POST /api/management/conveyor/CONV-01/start → ExecuteCommand → CommandSubscriber
+ *      → Serial "start\n" → handleCommand("start") → motorOn + ST_RUNNING).
+ *   - 정지 트리거 = TOF1 (카메라 앞) 감지 → motorOff + ST_STOPPED + "STOPPED\n" 토큰.
+ *     RUN_DURATION_MS=12000ms 는 *safety fallback* — TOF1 미감지 시 자동 정지로 cast 누락/
+ *     센서 고장 보호. Cast 정상 운반 시 절대 fire 하지 않음 (TOF1 detect 가 먼저 일어남).
  *
- * 1.5.0 (2026-04-17):
- *   - RFID-RC522 가 UID 외에 NDEF Text 레코드도 파싱하여 JSON 이벤트에 포함.
- *     페이지 4~15 (48 바이트) 에서 Text Record 감지 → UTF-8 텍스트 추출.
- *     논블로킹 (delay 사용 X), 실패해도 UID 이벤트는 항상 발행.
- *     예: {"event":"rfid_tag","uid":"AA:BB:CC:DD","type":"NTAG213","text":"AMR-001"}
- *   - JSON escape helper 로 따옴표/백슬래시/제어문자 안전 처리.
+ * 1.6.0 (2026-05-08): TOF1 위치 변경 (입구→카메라 앞 정지 트리거). 1.7.0 에서 TOF2 잔재 제거.
+ * 1.5.1 (2026-04-22): RC522 카드 감지 실패 원인 제거 (주기 VersionReg healthcheck 삭제) +
+ *                      SPEC-AMR-001 Wave 3 후처리존 핸드오프 버튼 (GPIO 33, INPUT_PULLUP).
+ * 1.5.0 (2026-04-17): RC522 NDEF Text 레코드 파싱 + JSON 이벤트.
  *
  * v4.0 → v5.0 주요 변경점:
  *   1) WiFi/MQTT 기본 비활성 (#define ENABLE_WIFI_MQTT 0).
  *      Jetson Image Publisher 와 **USB Serial** (/dev/ttyUSB0 @ 115200) 로만 통신.
  *   2) ST_STOPPED 의 5초 타임아웃 자동 탈출 제거.
  *      → Jetson 의 "RUN\n" (또는 camera_ok/inspect_done) 수신 시에만 POST_RUN 진입.
- *   3) Serial 프로토콜 토큰 추가 (기존 JSON event 는 그대로 유지, 디버깅 용):
+ *   3) Serial 프로토콜 토큰:
  *        ESP → Jetson: BOOT / STOPPED / STARTED / DONE / PONG / STATE:<name>
- *        Jetson → ESP: RUN / STOP / PING / STATUS / camera_ok / inspect_done
+ *        Jetson → ESP: start / RUN / STOP / PING / STATUS / camera_ok / inspect_done
  *
- * v4.0 과 동일하게 유지:
- *   - TOF250 (Taidacent) x2 ASCII @ 9600: TOF1=GPIO16 (진입), TOF2=GPIO17 (카메라 앞)
+ * 핀 배선 (1.7.0):
+ *   - TOF250 (Taidacent) x1 ASCII @ 9600: TOF1=GPIO32 (카메라 앞 정지 트리거)
  *   - Motor L298N: ENA=GPIO25 (PWM), IN1=GPIO26, IN2=GPIO27
- *   - Debounce (DEBOUNCE_MS=500ms), Anti-crosstalk gating (raw2 && !raw1),
- *     MIN_RUN_MS=1000ms (motor start 후 TOF2 false trigger 차단)
+ *   - Handoff button: GPIO33 (INPUT_PULLUP)
+ *   - RC522 RFID: VSPI (SCK=18, MISO=19, MOSI=23, SS=5, RST=22)
+ *   - Debounce (DEBOUNCE_MS=100ms), MIN_RUN_MS=1000ms (motor start 후 TOF1 false trigger 차단)
  *
- * State flow:
- *   IDLE → (TOF1 감지) → RUNNING
- *        → (TOF2 감지, MIN_RUN_MS 경과 후) → STOPPED + "STOPPED\n" TX
+ * State flow (1.7.0):
+ *   IDLE → (Jetson "start\n" RX) → motorOn() → RUNNING + "STATE:RUNNING" + "STARTED" 토큰
+ *        → (TOF1 감지 && MIN_RUN_MS 경과) → STOPPED + "STOPPED\n" TX  [정상 경로]
+ *        → (RUN_DURATION_MS 경과 시 TOF1 미감지) → STOPPED + "STOPPED\n" [safety fallback]
  *        → (Jetson "RUN\n" RX) → POST_RUN + "STARTED\n" TX
  *        → (POST_RUN_MS=4000ms 경과) → CLEARING + "DONE\n" TX
- *        → (TOF2 clear) → IDLE
+ *        → (TOF1 clear) → IDLE
  */
 
 #include <HardwareSerial.h>
@@ -58,12 +62,14 @@
   unsigned long lastHeartbeat = 0;
 #endif
 
-// === Pin Definitions (v4.0 동일) ===
+// === Pin Definitions ===
 static const int PIN_MOTOR_ENA = 25;
 static const int PIN_MOTOR_IN1 = 26;
 static const int PIN_MOTOR_IN2 = 27;
-static const int PIN_TOF1_RX   = 16;
-static const int PIN_TOF2_RX   = 17;
+// 2026-04-29: PIN_TOF1_RX 16 → 32 변경 (원 GPIO16 라인 hardware 단선 우회)
+// 2026-05-08: TOF1 센서 위치 입구 → 카메라 앞 이동 (배선 GPIO32 그대로). 정지 트리거.
+// 2026-05-08 (1.7.0): TOF2 코드 완전 제거 — 핀 정의 / Serial 인스턴스 / globals 모두 삭제.
+static const int PIN_TOF1_RX   = 32;
 
 // === RFID-RC522 (VSPI 고정 배선, 2026-04-17 확정) ===
 static const char* RFID_SPI_NAME = "VSPI";
@@ -80,16 +86,27 @@ static const int PIN_HANDOFF_BUTTON = 33;
 static const unsigned long HANDOFF_DEBOUNCE_MS = 50;   // 물리 디바운스
 static const unsigned long HANDOFF_MIN_GAP_MS  = 500;  // 연타 병합 (동일 이벤트 처리)
 
-// === Config (v4.0 동일) ===
+// === Config ===
 static const long TOF_BAUD = 9600;
-static const int  DETECT_MIN_MM = 1;
-static const int  DETECT_MAX_MM = 30;
+// 2026-05-08 (1.7.0): TOF1 detect 범위 확장 (라이브 측정 결과 기반).
+//   라이브 cast 운반 시 raw_mm 이 1~2 mm 사이 toggle 됨 → 종전 (MIN=2) 에선
+//   raw_mm=1 인 시점에 미감지로 처리 → DEBOUNCE_MS=100ms 못 채워 STOPPED 트리거 누락 →
+//   safety timeout (12 초) 까지 운행. MIN_MM=0 으로 낮춰 cast 가 sensor 에 가까워도
+//   안정적 detect. MAX_MM 은 50→80 (sensor 마운트 거리 ~70mm 환경 수용 — 코멘트 정합).
+static const int  DETECT_MIN_MM = 0;
+static const int  DETECT_MAX_MM = 80;
 static const int  MOTOR_SPEED   = 180;
 static const unsigned long POST_RUN_MS     = 4000;  // v5: 사용자 요구 4초
 static const unsigned long CLEAR_TIMEOUT_MS = 5000;
 static const unsigned long REPORT_MS       = 300;
-static const unsigned long DEBOUNCE_MS     = 500;
+static const unsigned long DEBOUNCE_MS     = 100;  // 2026-05-06: 500→100ms 단축 (고속 통과 대응)
 static const unsigned long MIN_RUN_MS      = 1000;
+// 2026-05-08 (1.7.0): RUN_DURATION_MS 는 safety fallback 전용.
+//   정상 경로 = "start" 명령 → 모터 ON → ST_RUNNING → TOF1 (카메라 앞) detect → STOPPED.
+//   TOF1 미감지 시에도 RUN_DURATION_MS 후 자동 정지 → cast 누락 / 센서 고장 보호.
+//   라이브 측정: cast 운반 시간 4~6 초 → safety margin 6 초 = 12 초 fallback.
+//   Cast 가 정상 운반된다면 이 타임아웃은 절대 fire 하지 않음 (TOF1 detect 가 먼저).
+static const unsigned long RUN_DURATION_MS = 12000;
 static const unsigned long RFID_REINIT_MS        = 3000;   // 리더 lost 시 재초기화 간격
 static const unsigned long RFID_HEALTHCHECK_MS   = 2000;
 static const unsigned long RFID_TAG_HOLD_MS      = 700;
@@ -104,24 +121,27 @@ const char* ST_NAME[] = {"IDLE", "RUNNING", "STOPPED", "POST_RUN", "CLEARING"};
 
 // === Globals ===
 HardwareSerial tof1(1);
-HardwareSerial tof2(2);
 MFRC522 rfid(PIN_RFID_SS, PIN_RFID_RST);  // v1.5.1: 생성자에서 핀 설정 (독립 스니펫과 동일)
 
 State state = ST_IDLE;
 unsigned long stateStart = 0;
 unsigned long lastReport = 0;
 
-int dist1 = -1, dist2 = -1;
-bool det1 = false, det2 = false;
-bool raw1 = false, raw2 = false;
-unsigned long det1Start = 0, det2Start = 0;
+int dist1 = -1;
+bool det1 = false;
+bool raw1 = false;
+unsigned long det1Start = 0;
 int objCount = 0;
+
+// 2026-05-07 (sim sticky): sim_entry 가 readSensors 의 실 TOF1 덮어쓰기에 의해
+// 즉시 무력화되는 문제 우회. 명령 수신 시 5 초간 raw1 강제 유지.
+unsigned long simEntryUntilMs = 0;
+static const unsigned long SIM_HOLD_MS = 5000;
 
 bool visionResultReceived = false;
 String visionResult = "";
 
 String buf1 = "";
-String buf2 = "";
 
 bool rfidReaderReady = false;
 byte activeRfidVersion = 0;
@@ -294,6 +314,11 @@ bool initRfid() {
   rfid.PCD_Init(); // 생성자에 전달한 SS/RST 핀 사용
   delay(50);
 
+  // 2026-05-07 (SPEC-RFID-001): 안테나 게인을 default(33dB) → max(48dB) 로 상향.
+  // 이전 standalone 검증(Confluence 30539816)은 default 동작했으나 production 환경의
+  // 모터/전원 노이즈 + 안테나 주변 metal 영향으로 인식 거리가 짧아질 수 있음.
+  rfid.PCD_SetAntennaGain(MFRC522::RxGain_max);
+
   byte version = rfid.PCD_ReadRegister(MFRC522::VersionReg);
   if (version == 0x00 || version == 0xFF) {
     publishJson("{\"event\":\"rfid_reader\",\"status\":\"not_found\"}");
@@ -322,6 +347,13 @@ bool initRfid() {
 
 void pollRfid() {
   unsigned long now = millis();
+  // 2026-05-07 (SPEC-RFID-001 디버그): polling/detection 카운터.
+  // 1초마다 {"event":"rfid_dbg","poll":N,"detect":N} 출력 → main loop 실제 빈도 + 카드 인식 여부 진단.
+  static unsigned long dbgLastMs = 0;
+  static unsigned long dbgPollCount = 0;
+  static unsigned long dbgPresentCount = 0;
+  static unsigned long dbgReadCount = 0;
+  dbgPollCount++;
 
   if (!rfidReaderReady) {
     if (now - lastRfidInitAttemptMs >= RFID_REINIT_MS) {
@@ -334,12 +366,30 @@ void pollRfid() {
   // RC522 가 PICC_IsNewCardPresent 자체로 상태 확인되므로 별도 헬스체크 불필요.
   // 필요 시 에러 누적 후 재초기화 로직 추후 추가.
 
-  if (!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial()) {
+  bool present = rfid.PICC_IsNewCardPresent();
+  if (present) dbgPresentCount++;
+
+  if (now - dbgLastMs >= 1000) {
+    char dbgBuf[140];
+    snprintf(
+      dbgBuf, sizeof(dbgBuf),
+      "{\"event\":\"rfid_dbg\",\"poll\":%lu,\"present\":%lu,\"read\":%lu,\"gain\":\"max\"}",
+      dbgPollCount, dbgPresentCount, dbgReadCount
+    );
+    publishJson(dbgBuf);
+    dbgLastMs = now;
+    dbgPollCount = 0;
+    dbgPresentCount = 0;
+    dbgReadCount = 0;
+  }
+
+  if (!present || !rfid.PICC_ReadCardSerial()) {
     if (lastRfidUid.length() > 0 && now - lastRfidSeenMs >= RFID_TAG_HOLD_MS) {
       clearRfidTag();
     }
     return;
   }
+  dbgReadCount++;
 
   String uid = uidToString(rfid.uid);
   MFRC522::PICC_Type cardType = rfid.PICC_GetType(rfid.uid.sak);
@@ -419,7 +469,7 @@ void pollHandoffButton() {
   }
 }
 
-// === Sensor Reading (v4.0 anti-crosstalk 포함) ===
+// === Sensor Reading (TOF1 단일 센서, 1.7.0) ===
 void readSensors() {
   unsigned long now = millis();
 
@@ -429,11 +479,8 @@ void readSensors() {
     raw1 = (d1 >= DETECT_MIN_MM && d1 <= DETECT_MAX_MM);
   }
 
-  int d2 = parseTofLine(tof2, buf2);
-  if (d2 >= 0) {
-    dist2 = d2;
-    raw2 = (d2 >= DETECT_MIN_MM && d2 <= DETECT_MAX_MM);
-  }
+  // sim sticky: sim_entry 의 raw1 강제를 일정 시간 유지.
+  if (now < simEntryUntilMs) { raw1 = true; if (dist1 < DETECT_MIN_MM) dist1 = 50; }
 
   if (raw1) {
     if (det1Start == 0) det1Start = now;
@@ -441,16 +488,6 @@ void readSensors() {
   } else {
     det1Start = 0;
     det1 = false;
-  }
-
-  // Anti-crosstalk: TOF1 active 중엔 TOF2 raw 무시 (v4.0 핵심)
-  bool raw2_valid = raw2 && !raw1;
-  if (raw2_valid) {
-    if (det2Start == 0) det2Start = now;
-    if (now - det2Start >= DEBOUNCE_MS) det2 = true;
-  } else {
-    det2Start = 0;
-    det2 = false;
   }
 }
 
@@ -483,23 +520,35 @@ void update() {
 
   switch (state) {
     case ST_IDLE:
-      if (det1) {
-        motorOn();
-        publishJson(String("{\"event\":\"entry\",\"dist\":") + dist1 + "}");
-        setState(ST_RUNNING);
-      }
+      // 2026-05-08: TOF1 입구 진입 트리거 폐기. ST_IDLE 에서는 외부 "start" 명령만 대기.
+      // PyQt "후처리 완료" 버튼 → 3 초 카운트다운 → POST /api/management/conveyor/CONV-01/start
+      // → ExecuteCommand → CommandSubscriber → "start\n" Serial → handleCommand("start") →
+      // motorOn() + setState(ST_RUNNING).
       break;
 
     case ST_RUNNING:
-      if (elapsed < MIN_RUN_MS) break;
-      if (det2) {
+      // 2026-05-08: 정상 경로 = TOF1 (카메라 앞) detect → 모터 정지.
+      // MIN_RUN_MS guard: motor on 직후 raw1 잔재 / debounce 미경과 false trigger 방어.
+      // RUN_DURATION_MS guard: TOF1 미감지 시 안전 자동 정지 (cast 누락 / 센서 고장 보호).
+      if (det1 && elapsed >= MIN_RUN_MS) {
         motorOff();
         visionResultReceived = false;
         visionResult = "";
-        publishJson(String("{\"event\":\"exit\",\"dist\":") + dist2
+        publishJson(String("{\"event\":\"exit\",\"trigger\":\"tof1_at_camera\","
+                           "\"dist\":") + dist1 + ",\"elapsed_ms\":" + elapsed
                     + ",\"inspection\":\"requested\"}");
         setState(ST_STOPPED);
-        publishToken("STOPPED");  // ★ Jetson bridge 트리거
+        publishToken("STOPPED");  // ★ Jetson bridge 트리거 → 캡처 + auto_run delay
+      } else if (elapsed >= RUN_DURATION_MS) {
+        motorOff();
+        visionResultReceived = false;
+        visionResult = "";
+        publishJson(String("{\"event\":\"exit\",\"trigger\":\"safety_timeout\","
+                           "\"elapsed_ms\":") + elapsed
+                    + ",\"warn\":\"tof1_not_detected\","
+                    + "\"inspection\":\"requested\"}");
+        setState(ST_STOPPED);
+        publishToken("STOPPED");
       }
       break;
 
@@ -526,27 +575,29 @@ void update() {
 
     case ST_POST_RUN:
       if (elapsed >= POST_RUN_MS) {
-        publishJson(String("{\"event\":\"post_done\",\"tof2_det\":")
-                    + (det2 ? "true" : "false") + "}");
+        publishJson(String("{\"event\":\"post_done\",\"tof1_det\":")
+                    + (det1 ? "true" : "false") + "}");
         publishToken("DONE");  // ★ 4초 구동 완료
         setState(ST_CLEARING);
       }
       break;
 
     case ST_CLEARING:
-      if (!det2) {
+      // 2026-05-08 (1.7.0): TOF1 (카메라 앞) clear 까지 대기 — cast 가 카메라 앞을
+      // 통과해야 IDLE 복귀. CLEAR_TIMEOUT_MS 는 sensor 상시 detect (cast stuck 등) 보호.
+      if (!det1) {
         motorOff();
         publishJson(String("{\"event\":\"cycle_done\",\"count\":") + objCount + "}");
-        raw1 = raw2 = false;
-        det1 = det2 = false;
-        det1Start = det2Start = 0;
+        raw1 = false;
+        det1 = false;
+        det1Start = 0;
         setState(ST_IDLE);
       } else if (elapsed >= CLEAR_TIMEOUT_MS) {
         motorOff();
-        publishJson("{\"event\":\"clear_timeout\",\"warn\":\"tof2_stuck\"}");
-        raw1 = raw2 = false;
-        det1 = det2 = false;
-        det1Start = det2Start = 0;
+        publishJson("{\"event\":\"clear_timeout\",\"warn\":\"tof1_stuck\"}");
+        raw1 = false;
+        det1 = false;
+        det1Start = 0;
         setState(ST_IDLE);
       }
       break;
@@ -568,7 +619,14 @@ void handleCommand(const String& cmd, const String& source) {
     sendStatus();
   }
   else if (cmd == "STOP" || cmd == "stop") {
+    // 1.5.2 (2026-04-29): STOP 명령에서 raw/det/detStart 동시 클리어.
+    // 미클리어 시 sim_entry 잔재(raw1=true)로 인해 다음 update() 사이클에 즉시 ST_RUNNING 재진입.
     motorOff();
+    raw1 = false;
+    det1 = false;
+    det1Start = 0;
+    visionResultReceived = false;
+    visionResult = "";
     setState(ST_IDLE);
   }
   else if (cmd == "RFID_SCAN" || cmd == "rfid_scan") {
@@ -580,28 +638,38 @@ void handleCommand(const String& cmd, const String& source) {
     emitHandoffAck("sim");
     Serial.println("{\"ack\":\"sim_ack\"}");
   }
-  else if (cmd == "start") {          // v4 호환 (수동 시작)
-    motorOn(); setState(ST_RUNNING);
+  else if (cmd == "start") {
+    // 2026-05-08 (1.7.0): PyQt "후처리 완료" 버튼 → 3 초 후 새 시작 트리거.
+    // ST_RUNNING 진입 전에 TOF1 잔재 detect 클리어 — sim_entry sticky / 이전 cycle clear
+    // 누락으로 인해 motor on 직후 즉시 ST_STOPPED 진입하는 false trigger 방어.
+    raw1 = false;
+    det1 = false;
+    det1Start = 0;
+    simEntryUntilMs = 0;
+    visionResultReceived = false;
+    visionResult = "";
+    motorOn();
+    setState(ST_RUNNING);
+    publishToken("STARTED");  // ★ Jetson 에 모터 시작 통지 (state STATE:RUNNING 외 추가 신호)
   }
   else if (cmd == "reset") {
     motorOff();
     objCount = 0;
-    raw1 = raw2 = false;
-    det1 = det2 = false;
-    det1Start = det2Start = 0;
+    raw1 = false;
+    det1 = false;
+    det1Start = 0;
+    simEntryUntilMs = 0;
     visionResultReceived = false;
     visionResult = "";
     setState(ST_IDLE);
   }
   else if (cmd == "sim_entry") {
+    // 1.7.0: sim_entry 는 ST_RUNNING 중 TOF1 detect 시뮬레이션 (정지 트리거 시뮬).
+    // 1.5.x 시점 의 sim_exit 는 TOF2 시뮬이었으나 1.7.0 에서 삭제됨.
     raw1 = true; det1 = true; dist1 = 50;
     det1Start = millis() - DEBOUNCE_MS;
+    simEntryUntilMs = millis() + SIM_HOLD_MS;
     Serial.println("{\"ack\":\"sim_entry\"}");
-  }
-  else if (cmd == "sim_exit") {
-    raw2 = true; det2 = true; dist2 = 50;
-    det2Start = millis() - DEBOUNCE_MS;
-    Serial.println("{\"ack\":\"sim_exit\"}");
   }
   else if (cmd.length() > 0) {
     Serial.print("ERR:unknown_cmd:");
@@ -634,8 +702,7 @@ void sendStatus() {
   snprintf(buf, sizeof(buf),
     "{\"state\":\"%s\",\"elapsed\":%lu,\"motor\":%s,"
     "\"range\":{\"min\":%d,\"max\":%d},"
-    "\"tof1\":{\"mm\":%d,\"det\":%s},"
-    "\"tof2\":{\"mm\":%d,\"det\":%s},"
+    "\"tof1\":{\"mm\":%d,\"det\":%s,\"role\":\"camera_stop\"},"
     "\"rfid\":{\"ready\":%s,\"spi\":\"%s\",\"ss\":%u,"
     "\"rst\":%u,\"uid\":\"%s\",\"type\":\"%s\",\"text\":\"%s\",\"version\":\"0x%02X\"},"
     "\"count\":%d}",
@@ -643,7 +710,6 @@ void sendStatus() {
     motorRunning ? "true" : "false",
     DETECT_MIN_MM, DETECT_MAX_MM,
     dist1, det1 ? "true" : "false",
-    dist2, det2 ? "true" : "false",
     rfidReaderReady ? "true" : "false",
     RFID_SPI_NAME,
     PIN_RFID_SS,
@@ -663,7 +729,6 @@ void setup() {
   Serial.setTimeout(100);
 
   tof1.begin(TOF_BAUD, SERIAL_8N1, PIN_TOF1_RX, -1);
-  tof2.begin(TOF_BAUD, SERIAL_8N1, PIN_TOF2_RX, -1);
 
   pinMode(PIN_MOTOR_IN1, OUTPUT);
   pinMode(PIN_MOTOR_IN2, OUTPUT);
@@ -679,9 +744,11 @@ void setup() {
 
   delay(500);
   Serial.println();
-  Serial.println("BOOT:conveyor_v5_serial 1.5.1");
-  publishJson("{\"boot\":\"conveyor_v5.0\",\"tof1\":16,\"tof2\":17,"
+  Serial.println("BOOT:conveyor_v5_serial 1.7.0");
+  publishJson("{\"boot\":\"conveyor_v5.0_1.7.0\","
+              "\"tof1\":{\"pin\":32,\"role\":\"camera_stop\"},"
               "\"tof_baud\":9600,\"proto\":\"serial_only\","
+              "\"start_trigger\":\"command:start\","
               "\"rfid\":{\"spi\":\"VSPI\",\"sck\":18,\"miso\":19,"
               "\"mosi\":23,\"ss\":5,\"rst\":22,\"ndef\":\"text\"},"
               "\"handoff\":{\"pin\":33,\"pull\":\"up\","
