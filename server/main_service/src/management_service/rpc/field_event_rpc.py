@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 import grpc
 import management_pb2  # type: ignore
-
-from services.core.adapters.sensors.rfid_service import RfidServiceError
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +99,7 @@ class FieldEventRpcMixin:
         zone = request.zone or "postprocessing"
         source_device = request.source_device or "unknown"
         idempotency_key = request.idempotency_key or None
-        now_utc = datetime.now(UTC)
+        now_utc = datetime.now()
 
         if idempotency_key:
             dup_db = SessionLocal()
@@ -158,34 +156,9 @@ class FieldEventRpcMixin:
         )
 
     def ReportRfidScan(self, request, context):
-        try:
-            result = self.rfid_service.report_scan(
-                reader_id=request.reader_id,
-                zone=request.zone or None,
-                raw_payload=request.raw_payload,
-                scanned_at_iso=request.scanned_at.iso8601 or None,
-                idempotency_key=request.idempotency_key or None,
-            )
-        except RfidServiceError as exc:
-            context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
-            context.set_details(str(exc))
-            return management_pb2.RfidScanAck()
-
-        item_cur_stat = ""
-        ord_id_int = 0
-        pp_options_proto: list[management_pb2.PpOptionView] = []
-        if result.accepted and result.item_id:
-            item_cur_stat, ord_id_int, pp_options_proto = _build_rfid_ack_details(result.item_id)
-
-        return management_pb2.RfidScanAck(
-            accepted=result.accepted,
-            item_id=result.item_id,
-            parse_status=result.parse_status,
-            reason=result.reason,
-            item_cur_stat=item_cur_stat,
-            ord_id=ord_id_int,
-            pp_options=pp_options_proto,
-        )
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("ReportRfidScan is disabled")
+        return management_pb2.RfidScanAck()
 
     def ReportConveyorEvent(self, request, context):
         from services.legacy.handoff_pipeline import apply_tof1, apply_tof2
