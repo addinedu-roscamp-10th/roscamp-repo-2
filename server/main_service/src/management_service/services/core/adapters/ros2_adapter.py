@@ -1,135 +1,75 @@
 """
 TATAdapter
 ==========
-상위 모듈의 (robot_id, pose_name, action_type) 명령을
-실제 좌표 + ROS2 action goal로 매핑하여 전송하는 어댑터.
+task_executor 가 호출하는 IAdapter 구현체 중 TAT(AMR) 전용.
 
-- 외부 pose 테이블(YAML)에서 `pose_name → (x, y, theta)` 변환
-- robot_id 별 namespace 분리: e.g. /TAT1/navigate_to_pose, /TAT2/dock_robot
-- action_type 별 ActionSpec 등록으로 (액션 이름·메시지 타입·goal 빌더)를 묶어 관리
-- send_command 는 호출 즉시 PyFuture 를 반환하므로
-  여러 로봇에 동시 명령 디스패치가 가능하다.
+- task_executor → adapter.send_command(res_id, action, params: dict) → AdapterResult
+- 좌표 / goal pose 는 로봇 내부에 저장되어 있으므로 어댑터는 dock_id (= pose_name) 만 전달
+- res_id 별 namespace 분리: e.g. /TAT1/dock_robot, /TAT2/dock_robot
+- send_command 는 async 메서드. 호출 즉시 await 가능, 동시 디스패치 가능.
 """
 
 from __future__ import annotations
 
-import math
+import asyncio
 import threading
 from concurrent.futures import Future as PyFuture
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Callable, Dict, Tuple, Type
+from typing import Callable, Dict, Type
 
-import yaml
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from action_msgs.msg import GoalStatus
-from geometry_msgs.msg import PoseStamped
-from nav2_msgs.action import NavigateToPose, DockRobot
-from pydantic import BaseModel
+from nav2_msgs.action import DockRobot
 
-
-# ─── 결과 모델 ──────────────────────────────────────────────────
-class SendCommandResult(BaseModel):
-    """send_command() 단일 동작 실행 결과."""
-    succeeded: bool
-    message: str
-
-
-# ─── pose 로딩 / 변환 ────────────────────────────────────────────
-@dataclass(frozen=True)
-class Pose2D:
-    """2D pose. x, y in meter / theta in radian."""
-    x: float
-    y: float
-    theta: float
-
-
-def load_pose_table(path: str | Path) -> Dict[str, Pose2D]:
-    """YAML 파일에서 pose 테이블을 로드한다."""
-    with open(path, "r", encoding="utf-8") as f:
-        raw = yaml.safe_load(f) or {}
-    table: Dict[str, Pose2D] = {}
-    for name, val in raw.items():
-        try:
-            table[name] = Pose2D(x=float(val["x"]), y=float(val["y"]), theta=float(val["theta"]))
-        except (KeyError, TypeError) as e:
-            raise ValueError(f"invalid pose entry for '{name}': {val}") from e
-    return table
-
-
-def _yaw_to_quaternion(yaw: float) -> Tuple[float, float, float, float]:
-    """평면 yaw(rad) → quaternion(x, y, z, w)."""
-    half = yaw * 0.5
-    return (0.0, 0.0, math.sin(half), math.cos(half))
-
-
-def _make_pose_stamped(node: Node, pose: Pose2D, frame_id: str = "map") -> PoseStamped:
-    qx, qy, qz, qw = _yaw_to_quaternion(pose.theta)
-    ps = PoseStamped()
-    ps.header.frame_id = frame_id
-    ps.header.stamp = node.get_clock().now().to_msg()
-    ps.pose.position.x = pose.x
-    ps.pose.position.y = pose.y
-    ps.pose.position.z = 0.0
-    ps.pose.orientation.x = qx
-    ps.pose.orientation.y = qy
-    ps.pose.orientation.z = qz
-    ps.pose.orientation.w = qw
-    return ps
+from services.contracts.models import AdapterResult
 
 
 # ─── action_type 별 매핑 ─────────────────────────────────────────
 @dataclass(frozen=True)
 class ActionSpec:
-    name: str                # 액션 이름 템플릿 ({robot_id} 자리)
-    action_type: Type        # 메시지 클래스
-    goal_builder: Callable   # goal 만드는 함수
+    name: str                # 액션 이름 템플릿 ({res_id} 자리)
+    action_type: Type        # 액션 메시지 클래스
+    goal_builder: Callable   # (params: dict) → goal 만드는 함수
 
 
-# 얘는 보내는 방식이 dock pose랑 달라서 수정해야함
-def _build_navigate_goal(node: Node, pose: Pose2D) -> NavigateToPose.Goal:
-    goal = NavigateToPose.Goal()
-    goal.pose = _make_pose_stamped(node, pose)
-    return goal
+def _build_dock_goal(params: dict) -> DockRobot.Goal:
+    """
+    dock_id 방식 goal 생성. 좌표는 로봇 내부 dock DB에서 조회한다.
 
+    필수 params:
+        pose_name: 로봇 내부에 등록된 dock id
+    """
+    pose_name = params.get("pose_name")
+    if not pose_name:
+        raise ValueError("dock_robot requires params['pose_name']")
 
-def _build_dock_goal(node: Node, pose: Pose2D) -> DockRobot.Goal:
     goal = DockRobot.Goal()
-    goal.use_dock_id = False
-    goal.dock_pose = _make_pose_stamped(node, pose)
-    goal.dock_type = ""
+    goal.use_dock_id = True
+    goal.dock_id = pose_name
     goal.navigate_to_staging_pose = True
     return goal
 
 
 # ─── 어댑터 ─────────────────────────────────────────────────────
 class TATAdapter(Node):
-    """상위 모듈 명령을 ROS2 action goal로 변환하여 전송 (비블록)."""
+    """task_executor → ROS2 action server (TAT 전용) 어댑터."""
 
     _ACTIONS: Dict[str, ActionSpec] = {
-        "navigate": ActionSpec(
-            name="/{robot_id}/navigate_to_pose",
-            action_type=NavigateToPose,
-            goal_builder=_build_navigate_goal,
-        ),
-        "dock": ActionSpec(
-            name="/{robot_id}/dock_robot",
+        "dock_robot": ActionSpec(
+            name="/{res_id}/dock_robot",
             action_type=DockRobot,
             goal_builder=_build_dock_goal,
         ),
-        # "undock": ActionSpec()  # 추가 예정
+        # "undock_robot": ActionSpec(...)  # 추가 예정
     }
 
-    def __init__(self, pose_table_path: str | Path, node_name: str = "tat_adapter") -> None:
+    def __init__(self, node_name: str = "tat_adapter") -> None:
         super().__init__(node_name)
-        self._pose_table: Dict[str, Pose2D] = load_pose_table(pose_table_path)
         self._action_clients: Dict[str, ActionClient] = {}
-        # ReentrantCallbackGroup: 여러 액션 콜백이 동시에 fire 되어도 처리 가능.
-        # 기본 MutuallyExclusive 면 콜백이 직렬화되어 동시 디스패치 효과가 반감됨.
         self._cb_group = ReentrantCallbackGroup()
 
         # 백그라운드 spin: 호출자 스레드를 점유하지 않고 ROS 콜백을 계속 처리
@@ -145,105 +85,100 @@ class TATAdapter(Node):
         self._spin_thread.join(timeout=2.0)
         self.destroy_node()
 
-    # ── public ───────────────────────────────────────────────
-    def send_command(self,
-                     robot_id: str,
-                     pose_name: str,
-                     action_type: str,
-                     wait_server_sec: float = 5.0) -> "PyFuture[SendCommandResult]":
-        """
-        명령을 비동기로 디스패치하고 즉시 PyFuture 반환.
+    # ── public (IAdapter 구현) ───────────────────────────────
+    async def send_command(self,
+                           res_id: str,
+                           action: str,
+                           params: dict,
+                           wait_server_sec: float = 5.0) -> AdapterResult:
+        """task_executor 가 await 하는 비동기 진입점."""
+        py_fut = self._dispatch(res_id, action, params, wait_server_sec)
+        return await asyncio.wrap_future(py_fut)
 
-        호출자 사용법:
-          fut = adapter.send_command("TAT1", "ToINSP", "navigate")
-          # ... 다른 일 (예: TAT2 명령 디스패치) ...
-          result = fut.result(timeout=60)            # 결과를 원하는 시점에 회수
-          # 또는 콜백:
-          fut.add_done_callback(lambda f: print(f.result()))
-        """
-        py_future: PyFuture[SendCommandResult] = PyFuture()
+    # ── private: 디스패치 + 콜백 체인 ─────────────────────────
+    def _dispatch(self,
+                  res_id: str,
+                  action: str,
+                  params: dict,
+                  wait_server_sec: float) -> "PyFuture[AdapterResult]":
+        py_future: PyFuture[AdapterResult] = PyFuture()
 
-        # 1) 입력 검증 (즉시 반환)
-        if pose_name not in self._pose_table:
-            py_future.set_result(SendCommandResult(succeeded=False,
-                                                   message=f"unknown pose_name: {pose_name}"))
-            return py_future
-        if action_type not in self._ACTIONS:
-            py_future.set_result(SendCommandResult(succeeded=False,
-                                                   message=f"unsupported action_type: {action_type}"))
+        # 1) 입력 검증
+        if action not in self._ACTIONS:
+            py_future.set_result(AdapterResult(
+                success=False, message=f"unsupported action: {action}"
+            ))
             return py_future
 
-        spec = self._ACTIONS[action_type]
-        pose = self._pose_table[pose_name]
-        action_name = spec.name.format(robot_id=robot_id)
+        spec = self._ACTIONS[action]
+        try:
+            goal_msg = spec.goal_builder(params)
+        except ValueError as e:
+            py_future.set_result(AdapterResult(success=False, message=str(e)))
+            return py_future
 
-        # 2) ActionClient 준비 (서버 발견은 첫 호출 시에만 실제 대기)
+        action_name = spec.name.format(res_id=res_id)
+
+        # 2) ActionClient 준비
         client = self._get_client(action_name, spec.action_type)
         if not client.wait_for_server(timeout_sec=wait_server_sec):
-            py_future.set_result(SendCommandResult(
-                succeeded=False,
-                message=f"action server unavailable: {action_name}",
+            py_future.set_result(AdapterResult(
+                success=False, message=f"action server unavailable: {action_name}"
             ))
             return py_future
 
         # 3) goal 송신 → 콜백 체인 (블록 없이 곧장 반환)
-        goal_msg = spec.goal_builder(self, pose)
         send_goal_future = client.send_goal_async(goal_msg)
         send_goal_future.add_done_callback(
-            lambda f: self._on_goal_response(f, action_name, robot_id, pose_name, action_type, py_future)
+            lambda f: self._on_goal_response(f, action_name, res_id, action, py_future)
         )
         return py_future
 
-    # ── private: 콜백 체인 ───────────────────────────────────
     def _on_goal_response(self,
                           rclpy_fut,
                           action_name: str,
-                          robot_id: str,
-                          pose_name: str,
-                          action_type: str,
-                          py_future: "PyFuture[SendCommandResult]") -> None:
+                          res_id: str,
+                          action: str,
+                          py_future: "PyFuture[AdapterResult]") -> None:
         try:
             goal_handle = rclpy_fut.result()
         except Exception as e:
-            py_future.set_result(SendCommandResult(succeeded=False,
-                                                   message=f"send_goal exception: {e}"))
-            return
-
-        if goal_handle is None or not goal_handle.accepted:
-            py_future.set_result(SendCommandResult(
-                succeeded=False,
-                message=f"goal rejected by {action_name}",
+            py_future.set_result(AdapterResult(
+                success=False, message=f"send_goal exception: {e}"
             ))
             return
 
-        # goal 수락됨 → 결과 future 에 콜백 다시 등록
+        if goal_handle is None or not goal_handle.accepted:
+            py_future.set_result(AdapterResult(
+                success=False, message=f"goal rejected by {action_name}"
+            ))
+            return
+
         result_future = goal_handle.get_result_async()
         result_future.add_done_callback(
-            lambda f: self._on_result(f, robot_id, pose_name, action_type, py_future)
+            lambda f: self._on_result(f, res_id, action, py_future)
         )
 
     def _on_result(self,
                    rclpy_fut,
-                   robot_id: str,
-                   pose_name: str,
-                   action_type: str,
-                   py_future: "PyFuture[SendCommandResult]") -> None:
+                   res_id: str,
+                   action: str,
+                   py_future: "PyFuture[AdapterResult]") -> None:
         try:
             status = rclpy_fut.result().status
         except Exception as e:
-            py_future.set_result(SendCommandResult(succeeded=False,
-                                                   message=f"get_result exception: {e}"))
+            py_future.set_result(AdapterResult(
+                success=False, message=f"get_result exception: {e}"
+            ))
             return
 
         if status == GoalStatus.STATUS_SUCCEEDED:
-            py_future.set_result(SendCommandResult(
-                succeeded=True,
-                message=f"{robot_id} {action_type} → {pose_name} succeeded",
+            py_future.set_result(AdapterResult(
+                success=True, message=f"{res_id} {action} succeeded"
             ))
         else:
-            py_future.set_result(SendCommandResult(
-                succeeded=False,
-                message=f"{robot_id} {action_type} not succeeded (status={status})",
+            py_future.set_result(AdapterResult(
+                success=False, message=f"{res_id} {action} not succeeded (status={status})"
             ))
 
     def _get_client(self, action_name: str, action_type: Type) -> ActionClient:

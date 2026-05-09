@@ -2,31 +2,58 @@ from __future__ import annotations
 
 import json
 import threading
-from typing import Any, TYPE_CHECKING
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from services.core.adapters.ros2_runtime import Ros2Runtime
 
 
-TAT_DOCK_ACTION = "dock_robot"
+# ─── action_type 별 매핑 ─────────────────────────────────────────
+@dataclass(frozen=True)
+class ActionSpec:
+    """action 이름 하나가 요구하는 ROS2 action 정보."""
+    name_fmt: str            # 액션 이름 템플릿 ({robot_id} 자리)
+    action_attr: str         # 어댑터 인스턴스 속성 이름 (lazy import 결과 보관)
+    goal_builder: Callable   # (action_cls, params: dict) → goal
 
-TAT_POSE_NAMES = {
-    "ToCAST1",
-    "ToPP1",
-    "ToINSP",
-    "ToSTRG1",
-    "ToSTRG2",
-    "ToSHIP",
-    "ToCHG1",
-}
+
+def _build_dock_goal(action_cls: Any, params: dict) -> Any:
+    """
+    nav2_msgs/DockRobot goal 생성. 좌표는 로봇 내부 dock DB에서 조회.
+
+    필수 params:
+        pose_name: 로봇 내부에 등록된 dock id
+    """
+    pose_name = str(params.get("pose_name") or "")
+    if not pose_name:
+        raise ValueError("dock_robot requires params['pose_name']")
+
+    goal = action_cls.Goal()
+    goal.use_dock_id = True
+    goal.dock_id = pose_name
+    goal.dock_type = ""
+    goal.navigate_to_staging_pose = True
+    return goal
 
 
 class TATAdapter:
-    """AMR(이송) Ros2 action client."""
-    def __init__(
-        self,
-        ros2_runtime: Ros2Runtime | None = None,
-    ) -> None:
+    """AMR(이송) ROS2 action client."""
+
+    _ACTIONS: Dict[str, ActionSpec] = {
+        "dock_robot": ActionSpec(
+            name_fmt="/{robot_id}/dock_robot",
+            action_attr="_dock_action",
+            goal_builder=_build_dock_goal,
+        ),
+        # "undock_robot": ActionSpec(
+        #     name_fmt="/{robot_id}/undock_robot",
+        #     action_attr="_undock_action",
+        #     goal_builder=_build_undock_goal,
+        # ),
+    }
+
+    def __init__(self, ros2_runtime: Ros2Runtime | None = None) -> None:
         self._ros2_runtime = ros2_runtime
         self._node: Any | None = None
         self._callback_group: Any | None = None
@@ -38,7 +65,7 @@ class TATAdapter:
 
     @classmethod
     def supports(cls, action: str) -> bool:
-        return action == TAT_DOCK_ACTION
+        return action in cls._ACTIONS
 
     def start(self) -> None:
         if self._started:
@@ -74,7 +101,9 @@ class TATAdapter:
         command: str,
         payload: bytes,
     ) -> tuple[bool, str]:
-        if command != TAT_DOCK_ACTION:
+        # 1) 입력 검증
+        spec = self._ACTIONS.get(command)
+        if spec is None:
             return (False, f"unsupported_tat_command:{command}")
         if not robot_id:
             return (False, "tat_robot_id_required")
@@ -84,27 +113,24 @@ class TATAdapter:
         except json.JSONDecodeError:
             return (False, "invalid_json_payload")
 
+        # 2) 어댑터 시작 (idempotent)
         self.start()
         if not self._started or self._node is None:
             return (False, "tat_adapter_unavailable")
 
-        pose_name = str(params.get("pose_name") or "")
-        if pose_name not in TAT_POSE_NAMES:
-            return (False, f"unsupported_tat_pose:{pose_name}")
+        # 3) goal 생성 (action_attr 으로 lazy-loaded 메시지 클래스 조회)
+        action_cls = getattr(self, spec.action_attr, None)
+        if action_cls is None:
+            return (False, f"tat_action_class_unavailable:{command}")
+        try:
+            goal = spec.goal_builder(action_cls, params)
+        except ValueError as exc:
+            return (False, str(exc))
 
         wait_server_sec = float(params.get("wait_server_sec", 5.0))
         result_timeout_sec = float(params.get("result_timeout_sec", 300.0))
-        goal = self._build_goal(pose_name)
-        action_name = f"/{robot_id}/dock_robot"
-        return self._send_goal(action_name, self._dock_action, goal, wait_server_sec, result_timeout_sec)
-
-    def _build_goal(self, pose_name: str) -> Any:
-        goal = self._dock_action.Goal()
-        goal.use_dock_id = True
-        goal.dock_id = pose_name
-        goal.dock_type = ""
-        goal.navigate_to_staging_pose = True
-        return goal
+        action_name = spec.name_fmt.format(robot_id=robot_id)
+        return self._send_goal(action_name, action_cls, goal, wait_server_sec, result_timeout_sec)
 
     def _send_goal(
         self,
