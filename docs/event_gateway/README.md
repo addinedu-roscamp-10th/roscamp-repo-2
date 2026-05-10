@@ -41,6 +41,19 @@ ESP32 / Jetson / PyQt 의 hardware/UI 신호와 동료 backend EventBridge 사�
 |---|---|---|
 | `INSP_COMPLETED` | 검사 완료 시 backend (state_manager / AI adapter) | `esp_bridge.send_command("start")` 자동 dispatch (출구 방향 컨베이어 ON) |
 
+### PyQt ↔ Backend (양방향, 2026-05-10 추가)
+
+PyQt(Monitoring Service) 측은 backend 와 **EventGateway gRPC 단일 채널** 만 사용. HTTP 호출 없음.
+
+| EventType | 발행 → 수신 | Payload |
+|---|---|---|
+| `HANDOFF_ACK` | PyQt ① 핸드오프 ACK 버튼 → backend | `{zone, source_device, button, amr_id, item_id, ord_id}` |
+| `ITEM_LOOKUP_REQUESTED` | PyQt ② RFID 스캔 버튼 → backend | `{raw_payload}` |
+| `ITEM_LOOKUP_RESULT` | backend → PyQt | `{raw_payload, item_id, ord_id, cur_stat, equip_task_type, cur_res, is_defective, pp_options[]}` |
+| `PP_DONE_REQUESTED` | PyQt ③ 후처리 완료 → backend | `{source_device, button, item_id, rfid_payload}` |
+| `RFID_SCANNED` | Jetson → PyQt (자동 채움) | `{reader_id, raw_payload, uid}` |
+| `TOF1_ENTRY` | Jetson → PyQt (indicator) | `{sensor_id, on, raw_mm}` |
+
 ## 동료 backend 셋업 단계
 
 ### 1. proto 컴파일
