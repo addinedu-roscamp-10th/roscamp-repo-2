@@ -97,23 +97,17 @@ class PpWorkerPage(QWidget):
         self._pp_done_timer = QTimer(self)
         self._pp_done_timer.setInterval(1000)  # 1 초 tick
         self._pp_done_timer.timeout.connect(self._pp_done_tick)
-        # TOF1 indicator polling timer (1.7.0).
-        self._tof1_poll_timer = QTimer(self)
-        self._tof1_poll_timer.setInterval(self.TOF1_POLL_INTERVAL_MS)
-        self._tof1_poll_timer.timeout.connect(self._poll_tof1_state)
-        # RFID payload 자동 채움 polling timer (책임 재배치, 2026-05-08 / 2026-05-09 fix).
-        # 시작 시점으로 초기화 → 시작 이전의 stale 스캔(어제 데이터)은 자동 입력 무시.
-        # 신규 스캔만 _payload_edit 자동 채움.
+        # 2026-05-10: HTTP polling 제거 — EventGateway WatchEvents subscribe 로 통일.
+        #   RFID_SCANNED       → _payload_edit 자동 채움
+        #   TOF1_ENTRY         → indicator 색 갱신
+        #   ITEM_LOOKUP_RESULT → ② 버튼 응답 (item + pp_options)
+        # 시작 시점으로 초기화 → 그 이전의 stale 이벤트 무시.
         import time as _time
 
         self._last_auto_payload_scanned_at: float = _time.time()
-        self._rfid_poll_timer = QTimer(self)
-        self._rfid_poll_timer.setInterval(self.RFID_POLL_INTERVAL_MS)
-        self._rfid_poll_timer.timeout.connect(self._poll_latest_rfid)
+        self._eg_watcher: object | None = None  # WatchEventsThread, 후 setup
         self._build_ui()
-        # 페이지 visible 여부와 무관하게 indicator 가 항상 최신 — page 생성과 동시에 시작.
-        self._tof1_poll_timer.start()
-        self._rfid_poll_timer.start()
+        self._setup_event_gateway_subscribe()
 
         # 매뉴얼 캡처/오프라인 데모 — RFID 스캔 결과를 즉시 시뮬레이션
         import os as _os
@@ -319,87 +313,73 @@ class PpWorkerPage(QWidget):
         self._set_status("로그아웃 완료")
 
     def _on_handoff_ack(self) -> None:
-        try:
-            r = self._api.post_handoff_ack()
-        except Exception as exc:  # noqa: BLE001
-            QMessageBox.critical(self, "핸드오프 실패", str(exc))
-            self._set_status(f"핸드오프 실패: {exc}", ok=False)
-            return
-        if not r:
-            self._set_status("핸드오프 응답 없음 (서버 또는 mock_only 모드)", ok=False)
-            return
-        if r.get("released"):
-            ord_id = r.get("ord_id")
-            item_id = r.get("item_id")
-            self._set_status(
-                f"① 핸드오프 OK — AMR={r.get('amr_id')} item_id={item_id} "
-                f"ord_id={ord_id} pp_task QUE={r.get('pp_task_txn_ids')} → "
-                f"item.cur_stat={r.get('item_cur_stat')}"
-            )
-            # payload 자동 채움
-            if item_id and ord_id:
-                self._payload_edit.setText(f"order_{ord_id}_item_20260417_{item_id}")
-            self._current_item_id = item_id
-            # 2026-05-08 EventGateway channel — PyQt 핸드오프 ACK 버튼 publish.
-            # 하드웨어 GPIO33 버튼과 동일한 의미 (HANDOFF_ACK). 실패 silent.
-            try:
-                from app.clients.event_gateway import publish_event as _publish_eg
+        """① 핸드오프 ACK 버튼 — EventGateway publish 만 (HTTP 호출 제거, 2026-05-10).
 
-                _publish_eg(
-                    event_type="HANDOFF_ACK",
-                    resource_id="CONV1",
-                    payload={
-                        "zone": "postprocessing",
-                        "source_device": "pyqt-pp-worker",
-                        "button": "ui-handoff",
-                        "amr_id": r.get("amr_id") or "",
-                        "item_id": int(item_id) if item_id else 0,
-                        "ord_id": int(ord_id) if ord_id else 0,
-                    },
-                )
-            except Exception:  # noqa: BLE001
-                pass
+        backend 가 HANDOFF_ACK 받아 비즈니스 로직 (AMR routing, pp_task_txn QUE 전이) 처리.
+        결과는 ITEM_LOOKUP_RESULT 또는 별도 EventType 으로 PyQt 가 subscribe (Watch...) 받음.
+        """
+        try:
+            from app.clients.event_gateway import publish_event as _publish_eg
+
+            ok = _publish_eg(
+                event_type="HANDOFF_ACK",
+                resource_id="CONV1",
+                payload={
+                    "zone": "postprocessing",
+                    "source_device": "pyqt-pp-worker",
+                    "button": "ui-handoff",
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._set_status(f"① 핸드오프 publish 예외: {exc}", ok=False)
+            return
+        if ok:
+            self._set_status(
+                "① 핸드오프 ACK publish 됨 — backend 처리 후 ITEM_LOOKUP_RESULT 수신 시 정보 표시",
+                ok=True,
+            )
         else:
             self._set_status(
-                f"① 핸드오프 orphan — 대기 AMR 없음 (reason={r.get('reason')})",
+                "① 핸드오프 publish 실패 (EventGateway 비활성 또는 backend 미가동)",
                 ok=False,
             )
 
     def _on_rfid_scan(self) -> None:
-        """② RFID 스캔 버튼 — payload 로 item + 후처리 옵션 정보 **조회만** (상태 변경 X).
+        """② RFID 스캔 버튼 — EventGateway publish ITEM_LOOKUP_REQUESTED (HTTP 제거, 2026-05-10).
 
-        2026-05-08 책임 재배치: PP→ToINSP 전이는 ③ 후처리 완료 버튼이 담당.
-        본 핸들러는 ``lookup_item_by_rfid`` (read-only) 로 화면 정보 표시만 수행.
+        backend 가 raw_payload 받아 item + pp_options 조회 후 ITEM_LOOKUP_RESULT 로 publish.
+        PyQt 는 _handle_item_lookup_result slot 에서 응답 받아 화면 표시. 상태 변경 X.
         """
         payload = self._payload()
         if not payload:
             self._set_status("RFID payload 입력 필요 (예: order_17_item_20260417_7)", ok=False)
             return
-        try:
-            r = self._api.lookup_item_by_rfid(payload)
-        except Exception as exc:  # noqa: BLE001
-            QMessageBox.critical(self, "RFID 스캔 실패", str(exc))
-            self._set_status(f"② RFID 조회 실패: {exc}", ok=False)
-            return
-        if not r:
-            self._set_status(
-                f"② RFID 매칭 실패 — payload={payload} (item not found)", ok=False,
-            )
-            return
         self._current_payload = payload
-        item = r.get("item") or {}
-        if not item:
-            self._set_status(f"② RFID 응답 형식 오류 — payload={payload}", ok=False)
+        try:
+            from app.clients.event_gateway import publish_event as _publish_eg
+
+            ok = _publish_eg(
+                event_type="ITEM_LOOKUP_REQUESTED",
+                resource_id="CONV1",
+                payload={
+                    "raw_payload": payload,
+                    "source_device": "pyqt-pp-worker",
+                    "button": "ui-rfid-scan",
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._set_status(f"② RFID 조회 publish 예외: {exc}", ok=False)
             return
-        pp_options = r.get("pp_options") or []
-        self._render_item(item)
-        self._render_options(pp_options)
-        self._current_item_id = item.get("item_id")
-        self._set_status(
-            f"② RFID 조회 OK — item_id={item.get('item_id')} "
-            f"cur_stat={item.get('cur_stat')} 옵션={len(pp_options)}건 "
-            "(상태 변경은 ③ 후처리 완료 시점)"
-        )
+        if ok:
+            self._set_status(
+                f"② RFID 조회 publish 됨 — payload={payload}, ITEM_LOOKUP_RESULT 수신 대기",
+                ok=True,
+            )
+        else:
+            self._set_status(
+                "② RFID 조회 publish 실패 (EventGateway 비활성 또는 backend 미가동)",
+                ok=False,
+            )
 
     # ---- 후처리 완료 → 3 초 후 컨베이어 구동 ----
     def _on_pp_done(self) -> None:
@@ -436,13 +416,17 @@ class PpWorkerPage(QWidget):
         self._set_status("③ 후처리 완료 — 카운트다운 취소", ok=True)
 
     def _pp_done_dispatch(self) -> None:
-        """3 초 경과 시점에 실 컨베이어 start 명령 dispatch."""
-        # 2026-05-08 EventGateway channel — 사용자 후처리 완료 의도 publish.
-        # 카운트다운 후 dispatch 시점에 발행 (취소 시 미발행).
+        """③ 후처리 완료 — EventGateway publish PP_DONE_REQUESTED 만 (HTTP 제거, 2026-05-10).
+
+        backend 가 PP_DONE_REQUESTED 받아 ESP32 motor on dispatch + PP→ToINSP 전이 처리.
+        결과 (transition / 컨베이어 ack) 는 backend 의 별도 EventType 또는 ItemEvent stream
+        으로 PyQt 가 받음 (또는 단방향 — 동료 backend 결정).
+        """
+        self._reset_pp_done_ui()
         try:
             from app.clients.event_gateway import publish_event as _publish_eg
 
-            _publish_eg(
+            ok = _publish_eg(
                 event_type="PP_DONE_REQUESTED",
                 resource_id=self.SENSOR_DB_RES_ID,  # "CONV1"
                 payload={
@@ -452,51 +436,17 @@ class PpWorkerPage(QWidget):
                     "rfid_payload": self._current_payload or "",
                 },
             )
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            r = self._api.post_conveyor_start(
-                res_id=self.PP_DONE_RES_ID,
-                item_id=self._current_item_id or 0,
-            )
         except Exception as exc:  # noqa: BLE001
-            QMessageBox.critical(self, "컨베이어 구동 실패", str(exc))
-            self._set_status(f"③ 후처리 완료 → 컨베이어 구동 실패: {exc}", ok=False)
-            self._reset_pp_done_ui()
+            self._set_status(f"③ 후처리 완료 publish 예외: {exc}", ok=False)
             return
-        self._reset_pp_done_ui()
-        if not r:
-            # mock_only / 응답 없음 — 사용자가 의도한 dev 환경일 수 있으므로 ok 표시.
+        if ok:
             self._set_status(
-                "③ 후처리 완료 → 응답 없음 (mock_only / 백엔드 미가동) — 시뮬 모드로 가정",
+                f"③ 후처리 완료 publish 됨 — backend 가 PP→ToINSP 전이 + 컨베이어 모터 ON",
                 ok=True,
-            )
-            return
-        # 2026-05-08 책임 재배치: backend conveyor/start 가 ESP32 dispatch 후
-        # _apply_pp_done_transition 으로 PP→ToINSP 전이 + equip_stat ON 동시 처리.
-        # 응답의 transition dict 를 status 메시지에 함께 표시.
-        transition = r.get("transition") or {}
-        trans_msg = ""
-        if transition:
-            if transition.get("pp_to_toinsp_applied"):
-                trans_msg = (
-                    f" / PP→{transition.get('item_cur_stat_after')} "
-                    f"equip_txn={transition.get('equip_task_txn_id')}"
-                )
-            elif transition.get("pp_to_toinsp_error"):
-                trans_msg = f" / 전이 실패={transition.get('pp_to_toinsp_error')}"
-            elif transition.get("item_cur_stat_before"):
-                trans_msg = (
-                    f" / 전이 skip (cur_stat={transition.get('item_cur_stat_before')!r})"
-                )
-        if r.get("accepted"):
-            self._set_status(
-                f"③ 후처리 완료 → 컨베이어 구동 OK — res={r.get('res_id')} "
-                f"action={r.get('action')}{trans_msg}"
             )
         else:
             self._set_status(
-                f"③ 후처리 완료 → 컨베이어 거부됨 — reason={r.get('reason') or '<empty>'}{trans_msg}",
+                "③ 후처리 완료 publish 실패 (EventGateway 비활성 또는 backend 미가동)",
                 ok=False,
             )
 
@@ -523,59 +473,88 @@ class PpWorkerPage(QWidget):
         self._btn_pp_done.setEnabled(True)
         self._btn_pp_done_cancel.setEnabled(False)
 
-    # ---- TOF1 indicator polling (1.7.0~) ----
-    def _poll_tof1_state(self) -> None:
-        """250ms 마다 backend in-memory sensor state 조회 → indicator 갱신.
+    # ---- EventGateway WatchEvents subscribe (2026-05-10) — HTTP polling 대체 ----
+    def _setup_event_gateway_subscribe(self) -> None:
+        """EventGateway WatchEvents stream 등록 — RFID_SCANNED / TOF1_ENTRY / ITEM_LOOKUP_RESULT.
 
-        Jetson publisher 가 status snapshot edge 에서 push 하므로 backend 응답은
-        가장 최신 상태. publisher 가 ESP_BRIDGE_CONVEYOR_RES_ID="CONV1" (DB schema)
-        로 push 하므로 SENSOR_DB_RES_ID="CONV1" 로 polling.
-        응답 실패 (mock_only / 백엔드 미가동) 시 조용히 skip.
+        QThread + pyqtSignal(dict) → main thread slot. GUI 변경은 slot 에서.
+        EVENT_GATEWAY_TARGET 미설정 시 silent skip.
         """
         try:
-            r = self._api.get_sensor_state(res_id=self.SENSOR_DB_RES_ID, sensor_id="tof1")
-        except Exception:  # noqa: BLE001 — 네트워크 실패는 indicator 갱신만 skip, page 동작 무영향
+            from app.clients.event_gateway import WatchEventsThread
+        except Exception:  # noqa: BLE001
             return
-        if not isinstance(r, dict):
+        try:
+            self._eg_watcher = WatchEventsThread(
+                event_types=["RFID_SCANNED", "TOF1_ENTRY", "ITEM_LOOKUP_RESULT"],
+                consumer="pyqt-pp-worker",
+            )
+            self._eg_watcher.event_received.connect(self._on_event_gateway_event)
+            self._eg_watcher.start()
+        except Exception:  # noqa: BLE001 — 비활성 또는 셋업 실패는 silent (UX 영향 X)
+            self._eg_watcher = None
+
+    def _on_event_gateway_event(self, decoded: dict) -> None:
+        """WatchEvents stream 이 emit 한 단일 이벤트 — main thread slot.
+
+        decoded keys: event_type, resource_id, source, idempotency_key, payload.
+        EventType 별 분기 후 GUI 위젯 갱신.
+        """
+        et = decoded.get("event_type")
+        payload = decoded.get("payload") or {}
+        if et == "RFID_SCANNED":
+            self._handle_rfid_scanned_event(payload)
+        elif et == "TOF1_ENTRY":
+            self._handle_tof1_entry_event(payload)
+        elif et == "ITEM_LOOKUP_RESULT":
+            self._handle_item_lookup_result(payload)
+
+    def _handle_rfid_scanned_event(self, payload: dict) -> None:
+        """RFID_SCANNED → _payload_edit 자동 채움.
+
+        보호:
+            - 시작 시각 이전 stale 무시 (occurred_at_unix 또는 _last_auto_payload_scanned_at).
+            - 동일 raw_payload 중복 진입 무시.
+        """
+        raw_payload = str(payload.get("raw_payload") or "").strip()
+        if not raw_payload:
             return
-        on = bool(r.get("on", False))
-        # 현재 setter property 와 다를 때만 stylesheet 재적용 (불필요한 paint 방어)
+        # scanned_at 비교 (있으면) — 시작 이전 stale 차단
+        scanned_at = payload.get("scanned_at_unix") or payload.get("scanned_at")
+        if isinstance(scanned_at, (int, float)):
+            if scanned_at <= self._last_auto_payload_scanned_at:
+                return
+            self._last_auto_payload_scanned_at = float(scanned_at)
+        self._payload_edit.setText(raw_payload)
+        self._payload_edit.repaint()
+        self._set_status(
+            f"RFID 자동 입력: {raw_payload} — ② RFID 스캔 버튼을 눌러 정보 조회",
+            ok=True,
+        )
+
+    def _handle_tof1_entry_event(self, payload: dict) -> None:
+        """TOF1_ENTRY → indicator 색 갱신 (ON edge 만 publish 예정)."""
+        on = bool(payload.get("on", True))  # publish 가 ON edge 라 default True
         if self._tof1_indicator_dot.property("on") != on:
             self.set_tof1_state(on)
 
-    # ---- RFID payload 자동 채움 polling (책임 재배치, 2026-05-08~) ----
-    def _poll_latest_rfid(self) -> None:
-        """1 초마다 backend `/api/rfid/<reader_id>/latest` 조회 → _payload_edit 자동 채움.
-
-        Source: state_manager.record_rfid_scan 가 successful scan 시 in-memory store 갱신.
-        Jetson esp_bridge → backend gRPC → record_rfid_scan → latest store → 본 timer 가 가져옴.
-
-        보호 가드:
-            - `_payload_edit.hasFocus()` 시: 사용자 수동 편집 중 → 자동 덮어쓰기 skip
-            - `scanned_at == self._last_auto_payload_scanned_at`: 동일 스캔 재진입 → skip
-            - 응답 실패 (mock_only / 백엔드 미가동) 시: 조용히 skip
-        """
-        try:
-            r = self._api.get_latest_rfid_for_reader(self.RFID_READER_ID)
-        except Exception:  # noqa: BLE001
+    def _handle_item_lookup_result(self, payload: dict) -> None:
+        """ITEM_LOOKUP_RESULT → ② RFID 스캔 버튼 응답 (item + pp_options) 표시."""
+        item = payload.get("item") or {}
+        pp_options = payload.get("pp_options") or []
+        if not item:
+            self._set_status(
+                f"② RFID 매칭 실패 — payload={self._current_payload}",
+                ok=False,
+            )
             return
-        if not isinstance(r, dict):
-            return
-        payload = r.get("payload")
-        scanned_at = r.get("scanned_at")
-        if not payload or scanned_at is None:
-            return
-        # 시작 시각 이후 새 스캔만 자동 입력 (stale 무시 + 동일 스캔 중복 방지).
-        if scanned_at <= self._last_auto_payload_scanned_at:
-            return
-        self._last_auto_payload_scanned_at = scanned_at
-        self._payload_edit.setText(str(payload))
-        # 2026-05-09 fix: 사용자가 다른 위젯에 focus 두고 있을 때도 즉시 화면 갱신.
-        # repaint() 는 동기 paint 호출 — Qt event loop 의 paint 큐 대기 회피.
-        self._payload_edit.repaint()
+        self._render_item(item)
+        self._render_options(pp_options)
+        self._current_item_id = item.get("item_id")
         self._set_status(
-            f"RFID 자동 입력: {payload} — ② RFID 스캔 버튼을 눌러 정보 조회",
-            ok=True,
+            f"② RFID 조회 OK — item_id={item.get('item_id')} "
+            f"cur_stat={item.get('cur_stat')} 옵션={len(pp_options)}건 "
+            "(상태 변경은 ③ 후처리 완료 시점)"
         )
 
     # ---- TOF1 indicator setter (외부 worker 가 호출, 1.7.0~) ----
