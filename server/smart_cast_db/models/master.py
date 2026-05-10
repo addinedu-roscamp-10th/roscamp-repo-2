@@ -99,7 +99,7 @@ class ProductOrderPatternMaster(Base):
 class Res(Base):
     __tablename__ = "res"
     __table_args__ = (
-        CheckConstraint("res_type IN ('RA', 'CONV', 'TAT')", name="chk_res_type"),
+        CheckConstraint("res_type IN ('PAT', 'MAT', 'CONV', 'TAT')", name="chk_res_type"),
         {"schema": SCHEMA},
     )
 
