@@ -6,6 +6,19 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+MANAGEMENT_ARGS=()
+
+case "${1:-}" in
+  "")
+    ;;
+  ros)
+    MANAGEMENT_ARGS=("ros")
+    ;;
+  *)
+    echo "✗ 잘못된 인자: ${1:-} (허용값: ros)"
+    exit 1
+    ;;
+esac
 
 open_terminal() {
   local title="$1"
@@ -30,11 +43,16 @@ open_terminal() {
   fi
 }
 
+management_command="$ROOT/scripts/run-management.sh"
+if [ "${#MANAGEMENT_ARGS[@]}" -gt 0 ]; then
+  management_command+=" ${MANAGEMENT_ARGS[*]}"
+fi
+
 if open_terminal "smartcast-backend" "$ROOT/scripts/run-backend.sh"; then
-  open_terminal "smartcast-management" "$ROOT/scripts/run-management.sh"
+  open_terminal "smartcast-management" "$management_command"
   open_terminal "smartcast-pyqt" "$ROOT/scripts/run-pyqt.sh"
   open_terminal "smartcast-web" "$ROOT/scripts/run-web.sh"
-  echo "→ GUI 터미널 창 4개 시작 (backend / management / pyqt / web)"
+  echo "→ GUI 터미널 창 4개 시작 (backend / management / pyqt / web, management ROS2=$([ "${#MANAGEMENT_ARGS[@]}" -gt 0 ] && echo enabled || echo disabled))"
   echo "  중단:    ./scripts/stop-all.sh"
 else
   mkdir -p "$ROOT/logs"
