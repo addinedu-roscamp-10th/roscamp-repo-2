@@ -95,8 +95,8 @@ class MockStateManager:
             ("TAT2", "TAT", 0.0, 0.0, 65),
             ("TAT3", "TAT", 0.0, 0.0, 50),
             ("CONV1", "CONV", 0.0, 0.0, 100),
-            ("PAT", "RA_STRG", 0.0, 0.0, 100),
-            ("MAT", "RA_CAST", 0.0, 0.0, 100),
+            ("PAT", "PAT", 0.0, 0.0, 100),
+            ("MAT", "MAT", 0.0, 0.0, 100),
         ]
         for res_id, res_type, x, y, battery_pct in seed_resources:
             self._res_list[res_id] = {

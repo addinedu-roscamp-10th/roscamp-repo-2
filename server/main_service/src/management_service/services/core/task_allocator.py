@@ -74,10 +74,10 @@ def _get_required_resource_type(
         return "CONV"
 
     if task_type in PAT_TASKS:
-        return "RA_STRG"
+        return "PAT"
 
     if task_type in MAT_TASKS:
-        return "RA_CAST"
+        return "MAT"
 
     return None
 
