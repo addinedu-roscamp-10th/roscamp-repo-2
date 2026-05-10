@@ -70,8 +70,8 @@ class TaskManager(ITaskManager):
         # [B] 일반적인 공정 흐름 (자동 전이)
         # 특별한 외부 조건이 없어도 순서에 따라 다음 작업을 자동으로 뱉어줍니다.
         #none -> MM -> pour -> dm     -> pp -> toInsp -> Insp
-        #                ㄴ> topp    _|     ㄴ>toStrg -> toWaitPa -> tostrg_dld -> pa gp/dp
-        logger.info("create_next_task 호출: item_info=%s event=%s", item_info, event)
+        #                ㄴ> topp    _|     ㄴ>toStrg -> ToPAWait -> tostrg_dld -> pa gp/dp
+        #logger.info("create_next_task 호출: item_info=%s event=%s", item_info, event)
 
         flow_map = {
             # MM이 끝나면 자동으로 POUR로 넘어감
@@ -85,6 +85,9 @@ class TaskManager(ITaskManager):
             
             # 이송(ToINSP)이 끝나면 자동으로 INSP(검사) 시작
             TaskType.ToINSP: TaskType.INSP,
+
+            # 추론(INSP)이 끝나면, 자동으로 ToPAWait 시작
+            TaskType.INSP: TaskType.ToPAWait,
         }
         
         task_results = []
@@ -101,12 +104,37 @@ class TaskManager(ITaskManager):
                 task_results.append(await self._create_result(item_info, TaskType.DM))
                 return task_results
             # INSP 이후 tostrg 세부 공정 중 AMR이 src(컨베이어 앞 대기장소)에 도착
-            elif event == "tostrg":
-                task_results.append(await self._create_result(item_info, TaskType.ToWaitPA))
-                return task_results
+            #elif event == "tostrg":
+            #    task_results.append(await self._create_result(item_info, TaskType.ToPAWait))
+            #    return task_results
+            
             # AMR bat low
-            elif event == "amr_battery_low":
-                task_results.append(await self._create_result(item_info, TaskType.ToCHG))
+            # elif event == "amr_battery_low_DM": #tochg = 10 dm =15 topp =15
+            #    task_results.append(NextTaskResult(
+            #            item_id=item_info.item_id, 
+            #            txn_id=await self.sm.insert_task_txn(CreateTaskInput(item_id=item_info.item_id, task_type=TaskType.DM)),
+            #            task_type=TaskType.DM, 
+            #            priority=15
+            #        ))
+            #    return task_results
+            
+            elif event == "amr_battery_low_ToPP": #tochg = 10 dm =15 topp =15
+                task_results.append(NextTaskResult(
+                        item_id=item_info.item_id, 
+                        txn_id=await self.sm.insert_task_txn(CreateTaskInput(item_id=item_info.item_id, task_type=TaskType.ToPP)),
+                        task_type=TaskType.ToPP, 
+                        priority=15
+                    ))
+                return task_results
+            
+            elif event == "amr_battery_low_ToCHG": #tochg = 10 dm =15 topp =15   주차자리 정하기
+                chg_loc = self.sm.get_empty_charger() ####사용가능한 주차 자리 1개 반환
+                task_results.append(NextTaskResult(
+                        item_id=item_info.item_id, 
+                        txn_id=await self.sm.insert_task_txn(CreateTaskInput(item_id=item_info.item_id, task_type=TaskType.ToCHG , chg_loc=chg_loc)),
+                        task_type=TaskType.ToCHG, 
+                        priority=10
+                    ))
                 return task_results
             # ToSTRG 세부 공정 중 AMR이 src(적재 대기장소)에 도착
             elif event == "tostrg_dld":
@@ -114,7 +142,7 @@ class TaskManager(ITaskManager):
                     # 1. 불량 보충 아이템 생성 및 MM 태스크 발행 (우선순위 10)
                     replacement_id = await self.sm.create_empty_item(item_info.order_id)
                     task_results.append(NextTaskResult(
-                        item_id=replacement_id, 
+                        item_id=item_info.item_id, 
                         txn_id=await self.sm.insert_task_txn(CreateTaskInput(item_id=replacement_id, task_type=TaskType.MM)),
                         task_type=TaskType.MM, 
                         priority=10
@@ -147,9 +175,9 @@ class TaskManager(ITaskManager):
             return task_results
 
         # 특정 공정 완료 후 다음 이벤트 대기를 위해 흐름을 끊는 구간
-        stop_states = [TaskType.POUR, TaskType.INSP, TaskType.ToWaitPA]
-        if item_info.last_task_type in stop_states:
-            return []
+        #stop_states = [TaskType.POUR,TaskType.PP, TaskType.INSP, TaskType.ToPAWait]
+        #if item_info.last_task_type in stop_states:
+        #    return []
 
         
         next_type = flow_map.get(item_info.last_task_type)
@@ -163,14 +191,14 @@ class TaskManager(ITaskManager):
         return task_results
     
     # txn 생성 to state manager
-    async def _create_result(self, item_info, task_type):  #현재 진행된 아이템 정보 , 다음 공정 이름
+    async def _create_result(self, item_info: ItemStatusRecord, task_type: TaskType)-> NextTaskResult:  #현재 진행된 아이템 정보 , 다음 공정 이름
         # 트랜잭션 DB 기록 로직 (sm.insert_task_txn 호출 등) 포함
-        strg_loc = self._calculate_strg_loc(task_type, item_info) #
-        curr_input = CreateTaskInput(item_id=item_info.item_id, task_type=task_type, strg_loc=strg_loc , txn_stat=TxnStat.QUE , res_id =None )
+        item_info.strg_loc = self._calculate_strg_loc(task_type, item_info) #
+        curr_input = CreateTaskInput(item_id=item_info.item_id, task_type=task_type,  txn_stat=TxnStat.QUE , res_id =None )
         curr_txn_id = await self.sm.insert_task_txn(curr_input)
 
     
-        return NextTaskResult(item_id=item_info.item_id, txn_id=curr_txn_id, task_type=task_type , strg_loc=strg_loc) #proority = 0 
+        return NextTaskResult(item_id=item_info.item_id, txn_id=curr_txn_id, task_type=task_type ) #proority = 0 
     
     
     #적재위치계산 
@@ -178,7 +206,7 @@ class TaskManager(ITaskManager):
         if item_info.is_defective:
             return "DEFECTIVE_ZONE"
         
-        if task_type == TaskType.ToWaitPA:
+        if task_type == TaskType.ToPAWait:
             # slot_table을 순회할 때 row, col 순서로 정렬하여 가장 빠른 칸을 찾음
             sorted_slots = sorted(self.sm.slot_table.items()) 
             for (f, c), data in sorted_slots:
@@ -189,5 +217,5 @@ class TaskManager(ITaskManager):
                 if data["order_id"] == item_info.order_id and data["status"] == "Empty":
                     data["status"] = "Reserved"
                     return f"{f}-{c}"
-        return None
+        return item_info.strg_loc
     

@@ -86,7 +86,11 @@ class Orchestrator(IOrchestrator):
             self.on_amr_bat_low,
             "orchestrator.amr_battery_low",
         )
-
+        self.event_bridge.subscribe(
+            EventType.ARM_RETURN_COMPLETED,
+            self.on_arm_return_completed,
+            "orchestrator.arm_return_completed",
+        )
         self._pending_tasks: dict[str, list[_PrioritizedPendingTask]] = defaultdict(list)
         self._pending_task_seq = count()  # 같은 priority 작업의 FIFO 순서 보장용
 
@@ -195,18 +199,44 @@ class Orchestrator(IOrchestrator):
         item_id = event.item_id
         if item_id is None:
             raise ValueError("AMR_BATTERY_LOW requires item_id")
-        res_id = event.res_id
-        if res_id is None:
-            raise ValueError("AMR_BATTERY_LOW requires res_id")
+        amr_id = event.payload.get("amr_id")
+        if amr_id is None:
+            raise ValueError("AMR_BATTERY_LOW requires amr_id")
+        
+        arm_id = event.payload.get("arm_id")
+        if arm_id is None:
+            raise ValueError("AMR_BATTERY_LOW requires arm_id")
 
-        logger.warning("battery low event received: res_id=%s item_id=%s", res_id, item_id)
-        await self._schedule_next_task(
-            ScheduleNextTaskInput(
-                item_id=item_id,
-                planning_event="amr_battery_low",
-                req_res_id=res_id,
+        logger.warning("battery low event received: amr_id=%s arm_id=%s item_id=%s", amr_id, arm_id, item_id)
+        
+        #executor 작업 중지 -> 로봇팔은 상차하려던거 멈추고 어디 내려둠 + 베이스 위치로
+        await self.task_executor.handle_emergency_return(item_id, amr_id , arm_id)
+
+
+
+    async def on_arm_return_completed(self, event: Event) -> None:
+            """로봇팔이 아이템 복구를 완료했을 때 호출되는 콜백 (이벤트 구독에 의해 실행)"""
+            item_id = event.item_id
+            amr_id = event.payload.get("amr_id")
+            arm_id = event.payload.get("arm_id")
+
+            logger.info("[ OK ] arm_return_completed 이벤트 : 복구 완료 확인.")
+
+            await self._schedule_next_task( #TOPP 생성
+                ScheduleNextTaskInput(
+                    item_id=item_id,
+                    planning_event="amr_battery_low_ToPP", 
+                    req_res_id=None,
+                )
             )
-        )
+
+            await self._schedule_next_task( #TOCHG 생성
+                ScheduleNextTaskInput(
+                    item_id=item_id,
+                    planning_event="amr_battery_low_ToCHG", 
+                    req_res_id=amr_id,
+                )
+            )
 
     async def _schedule_next_task(
         self,
@@ -326,7 +356,7 @@ class Orchestrator(IOrchestrator):
                 item_info,
                 req_res_id=req_res_id,
             ),
-            zone_nm=task.strg_loc,
+            zone_nm=item_info.strg_loc,
             task_type=task.task_type,
         )
 
@@ -356,9 +386,9 @@ class Orchestrator(IOrchestrator):
         if item_info.ptn_id is not None:
             payload["ptn_loc_id"] = item_info.ptn_id
 
-        if task.strg_loc:
-            payload["strg_loc"] = task.strg_loc
-            strg_loc_id = self._strg_loc_id(task.strg_loc)
+        if item_info.strg_loc:
+            payload["strg_loc"] = item_info.strg_loc
+            strg_loc_id = self._strg_loc_id(item_info.strg_loc)
             if strg_loc_id is not None:
                 payload["strg_loc_id"] = strg_loc_id
 

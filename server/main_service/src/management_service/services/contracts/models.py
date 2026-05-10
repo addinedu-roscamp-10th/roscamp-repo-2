@@ -83,12 +83,12 @@ class ItemStatusRecord(BaseModel): #ok -> tm
     flow_stat: Optional[str] = None
     is_defective: bool = False
     ptn_id: Optional[int] = None
+    strg_loc: Optional[str] = None
+    ship_loc: Optional[str] = None
 
 class CreateTaskInput(BaseModel): #tm -> sm
     item_id: int
     task_type: TaskType
-    strg_loc: Optional[str] = None
-    #ship_loc: Optional[str] = None
     txn_stat: str = "que"
     res_id : Optional[int] = None
 
@@ -98,7 +98,8 @@ class NextTaskResult(BaseModel): # tm -> ok
     txn_id: int
     task_type: TaskType
     priority: int = 5
-    strg_loc: Optional[str] = None
+    #strg_loc: Optional[str] = None
+    chg_loc : Optional[str] = None #1-1,1-2,1-3  TOCHG 일때 할당받는 주차 자리
 
 
 ## Event bridge

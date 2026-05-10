@@ -32,7 +32,7 @@ CONVEYOR_TASKS = {
     TaskType.PP,
     TaskType.INSP,
     TaskType.ToINSP,
-    TaskType.ToWaitPA,
+    TaskType.ToPAWait,
 }
 
 TRANSPORT_TASKS = {

@@ -342,6 +342,6 @@ class ExecutionMonitor:
         self._last_alert[key] = now_mono
 
         msg = f"Item {item_id} stage={stage} elapsed={elapsed:.0f}s > SLA {sla:.0f}s"
-        logger.warning("SLA 위반 감지: %s", msg)
+        #logger.warning("SLA 위반 감지: %s", msg)
 
         return self._make_event(item_id, stage, robot_id, message=f"sla_timeout:{sla:.0f}s")

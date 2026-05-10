@@ -7,6 +7,8 @@ outside this module.
 
 from __future__ import annotations
 
+import asyncio
+from datetime import datetime
 import logging
 from typing import Any
 
@@ -105,6 +107,8 @@ class MockStateManager:
                 "x": x,
                 "y": y,
             }
+        # 충전소 상태 정보 (메모리 관리용)
+        self.charger_slots = {'CHG_01': 'EMPTY', 'CHG_02': 'EMPTY'}
 
     def _safe_repo_call(self, method_name: str, *args, **kwargs):
         if not self._db_ready or self._repo is None:
@@ -117,6 +121,101 @@ class MockStateManager:
         except Exception:
             logger.exception("[MockStateManager] persistence %s failed", method_name)
             return None
+
+        # 충전소 상태 정보 (메모리 관리용)
+        self.charger_slots = {'CHG_01': 'EMPTY', 'CHG_02': 'EMPTY'}
+
+    
+    async def force_battery_emergency_test(self, amr_id="TAT1", item_id=1005):
+        """
+        5초 대기 후, 배터리 방전 이벤트를 강제로 발행하여 
+        오케스트레이터의 비상 복구 로직이 트리거되는지 테스트합니다.
+        """
+        logger.info(f"[Test] 비상 시뮬레이션 예약: 5초 뒤 {amr_id} 배터리 방전 이벤트 발생")
+        
+        # 1. 5초 대기
+        await asyncio.sleep(5)
+        arm_id = "MAT"
+        
+        # 2. 비상 이벤트 생성
+        emergency_event = Event(
+            event_type=EventType.AMR_BATTERY_LOW,
+            item_id=item_id,
+            payload={
+                "battery_pct": 25,
+                "condition": "BATTERY_LOW",
+                "amr_id": amr_id,
+                "arm_id": arm_id,
+            }
+        )
+        
+        # 3. 클래스 내부의 self._event_bridge를 사용하여 이벤트 발행
+        if self._event_bridge:
+            self._event_bridge.publish(emergency_event)
+            logger.warning(f"[Test] 5초 경과: {amr_id} 배터리 방전 이벤트 퍼블리시 완료!")
+        else:
+            logger.error("[Test] 이벤트 브리지가 설정되지 않아 이벤트를 쏠 수 없습니다.")
+
+# 2. 배터리 업데이트 및 이벤트 발행 로직
+    async def update_amr_runtime_memory(
+        self,
+        res_id: str,
+        *,
+        x: float | None = None,
+        y: float | None = None,
+        battery_pct: int | None = None,
+    ) -> None:
+        """배터리 수신(1단계) 및 조건 만족 시 이벤트 발행(2단계)"""
+        res_meta = self._res_list.get(res_id)
+        if not res_meta:
+            return
+
+        if x is not None: res_meta["x"] = x
+        if y is not None: res_meta["y"] = y
+        
+        if battery_pct is not None:
+            res_meta["battery_pct"] = battery_pct
+            
+            # 방전 감지 (30% 미만) 및 중복 이벤트 방지(condition 체크)
+            if battery_pct < 30 and res_meta.get("condition") == "NORMAL":
+                res_meta["condition"] = "BATTERY_LOW"
+                logger.warning("[MockStateManager] AMR %s 배터리 부족 감지 (%s%%)", res_id, battery_pct)
+                
+                #여기서 res_id 로 item_id 찾고 그 item_id 가지고 있는 arm res_id 찾기
+                arm_id = "MAT"
+                # 오케스트레이터가 구독 중인 이벤트 브리지로 발행 (2단계)
+                if self._event_bridge:
+                    self._event_bridge.publish(
+                        Event(
+                            event_type=EventType.AMR_BATTERY_LOW, # Enums에 해당 타입이 있다고 가정
+                            item_id=res_meta.get("item_id"),      # 현재 물고 있는 아이템 ID
+                            amr_id=res_id,
+                            arm_id=arm_id,
+                            payload={
+                                "battery_pct": battery_pct,
+                                "condition": "BATTERY_LOW"
+                            }
+                        )
+                    )
+
+    # 3. 빈 충전소 찾기 메서드 추가
+    def get_empty_charger(self) -> str | None:
+        """충전 가능한 슬롯 반환"""
+        """for slot, state in self.charger_slots.items():
+            if state == 'EMPTY':
+                return slot
+        return None"""
+        #임시로
+        return "1-1"
+
+    # 4. 트랜잭션 실패(Rollback) 처리를 위한 txn 업데이트 요청 함수
+    async def update_txn_fail_for_rollback(self, item_id: int) -> None:
+        """스매에게 txn업데이트요청('fail') - 시나리오 6단계 반영"""
+        # 해당 아이템의 flow_stat을 CAST로 원복 (재시작 준비)
+        if item_id in self._items:
+            self._items[item_id]["flow_stat"] = "CAST"
+            logger.info("[MockStateManager] Item %s status rolled back to CAST due to battery low", item_id)
+
 
     async def start_production(self, ord_id: int) -> StartProductionOrderAckModel:
         """Accept a positive order id and return a deterministic mock ack."""
@@ -254,6 +353,7 @@ class MockStateManager:
             flow_stat=item.get("flow_stat"),
             is_defective=bool(item.get("is_defective", False)),
             ptn_id=item.get("ptn_id"),
+            strg_loc=item.get("strg_loc")
         )
 
     async def insert_task_txn(self, task_input: CreateTaskInput) -> int:
@@ -268,8 +368,8 @@ class MockStateManager:
             "task_type": task_input.task_type.value,
             "status": str(task_input.txn_stat),
             "res_id": task_input.res_id,
-            "strg_loc": task_input.strg_loc,
-            "strg_loc_id": _strg_loc_id(task_input.strg_loc),
+            #"strg_loc": task_input.strg_loc,
+            #"strg_loc_id": _strg_loc_id(task_input.strg_loc),
         }
         db_txn_id = self._safe_repo_call("sync_task_created", task_meta)
         if db_txn_id is not None:
