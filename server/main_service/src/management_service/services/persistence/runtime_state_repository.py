@@ -23,7 +23,7 @@ TRANS_TASK_TYPES = {
     TaskType.ToCHG.value,
 }
 EQUIP_TASK_TYPE_ALIASES = {
-    TaskType.ToWaitPA.value: "ToPAWait",
+    TaskType.ToPAWait.value: "ToPAWait",
 }
 
 

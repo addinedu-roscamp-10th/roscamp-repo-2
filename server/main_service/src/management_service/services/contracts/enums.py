@@ -10,7 +10,7 @@ class TaskType(str, Enum):
     DM = "DM"
     PP = "PP"
     INSP = "INSP"
-    ToWaitPA = "ToWaitPA"
+    ToPAWait = "ToPAWait"
     PA_GP = "PA_GP"
     PA_DP = "PA_DP"
     PICK = "PICK"
@@ -58,6 +58,8 @@ class EventType(str, Enum):
     RESOURCE_AVAILABLE = "RESOURCE_AVAILABLE"
     AMR_CHARGED = "AMR_CHARGED"
     AMR_BATTERY_LOW = "AMR_BATTERY_LOW"
+    ARM_RETURN_COMPLETED = "ARM_RETURN_COMPLETED"
+    
 
 ## Task Executor
 class TxnStat(str, Enum):
@@ -78,7 +80,7 @@ def get_resource_binding_policy(task_type: TaskType) -> ResourceBindingPolicy:
         TaskType.DM,
         TaskType.ToINSP,
         TaskType.INSP,
-        TaskType.ToWaitPA,
+        TaskType.ToPAWait,
     }:
         return ResourceBindingPolicy.REQUIRED
     return ResourceBindingPolicy.FREE

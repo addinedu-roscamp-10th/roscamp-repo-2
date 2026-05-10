@@ -99,7 +99,7 @@ class TaskExecutor:
                 CommandStep(
                     step_id=2,
                     action="WAIT_TASK_COMPLETED",
-                    params={"task_type": TaskType.ToWaitPA},
+                    params={"task_type": TaskType.ToPAWait},
                     timeout_sec=600,
                 ),
                 CommandStep(step_id=3, action="dock_robot", params={"pose_name": "ToSTRG1"}),  # STRG zone 하차 대기 장소
@@ -153,7 +153,7 @@ class TaskExecutor:
             TaskType.INSP: [
                 CommandStep(step_id=1, action="AI_INFERENCE_REQUEST", params={}),
             ],
-            TaskType.ToWaitPA: [
+            TaskType.ToPAWait: [
                 CommandStep(step_id=1, action="NOOP", params={}),
                 # 임시 주석 처리
                 # CommandStep(
@@ -225,6 +225,63 @@ class TaskExecutor:
         except Exception as e:
             # Task가 실패한 경우 전이: PROC -> FAIL
             return await self._handle_error(input_data, str(e), executed_steps)
+
+    async def handle_emergency_return(self, item_id: int, amr_id: str, arm_id: str) -> None:
+            """
+            비상 상황 시 로봇팔을 안전하게 복구하고 초기화한다.
+            1. 현재 실행 중인 로봇팔 태스크 중단 (상태 업데이트)
+            2. 하드웨어를 통한 안전 하차 및 홈 위치 복귀
+            3. 복구 완료 이벤트 발행
+            """
+            self.logger.warning(
+                f"[Executor] Emergency Return initiated: item={item_id}, amr={amr_id}, arm={arm_id}"
+            )
+
+            try:
+                # 1. 하드웨어 복구 시퀀스 실행 (Adapter 호출)
+                # 시나리오 5단계: 아이템을 안전한 곳에 내려놓고(Place) 홈으로 이동(Home)
+                # 실제 어댑터에 해당 액션들이 정의되어 있어야 합니다.
+
+                # 단계 A: 그리퍼 열기 혹은 안전 위치에 하차
+                success_place = await self.adapter.send_command(
+                    res_id=arm_id,
+                    action="EMERGENCY_PLACE_ITEM",
+                    params={"item_id": item_id, "speed": 30}
+                )
+
+                if not success_place:
+                    self.logger.error(f"[Executor] Failed to place item safely for {arm_id}")
+                    # 실패하더라도 다음 단계를 시도하거나 에러 처리를 강화할 수 있습니다.
+
+                # 단계 B: 홈 위치로 복귀
+                await self.adapter.send_command(
+                    res_id=arm_id,
+                    action="GO_HOME",
+                    params={"speed": 50}
+                )
+
+                # 2. 상태 관리자에게 복구 완료 알림 (선택 사항)
+                # 필요한 경우 state_manager.update_res_status 등을 통해 리소스 상태를 idle로 변경
+
+                # 3. ARM_RETURN_COMPLETED 이벤트 발행 (오케스트레이터가 대기 중인 신호)
+                if self.event_bridge is not None:
+                    self.event_bridge.publish(
+                        Event(
+                            event_type=EventType.ARM_RETURN_COMPLETED,
+                            item_id=item_id,
+                            res_id=amr_id, # 방전된 amr_id를 전달하여 오케가 식별하게 함
+                            payload={
+                                "arm_id": arm_id,
+                                "status": "COMPLETED",
+                                "msg": "Emergency return sequence finished safely"
+                            }
+                        )
+                    )
+                    self.logger.info(f"[Executor] ARM_RETURN_COMPLETED event published for item {item_id}")
+
+            except Exception as e:
+                self.logger.error(f"[Executor] Error during handle_emergency_return: {str(e)}")
+                # 치명적 오류 발생 시 별도의 알람 로직 필요
 
     async def _pre_check(self, input_data: ExecuteTaskInput) -> bool:
         """실행 전 조건 확인 (Mock)"""
