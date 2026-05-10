@@ -87,7 +87,7 @@ def test_select_resource_balances_distance_and_battery_scores() -> None:
     allocator = _allocator()
     amr_stats = [
         AmrRuntimeState(res_id="TAT1", x=-0.30, y=0.20, bat_pct=80),
-        AmrRuntimeState(res_id="TAT2", x=-0.80, y=0.20, bat_pct=30),
+        AmrRuntimeState(res_id="TAT2", x=-0.80, y=0.20, bat_pct=35),
     ]
 
     selected = allocator._select_resource(
@@ -97,7 +97,7 @@ def test_select_resource_balances_distance_and_battery_scores() -> None:
     )
 
     # TAT1은 더 가깝지만 배터리가 많고, TAT2는 더 멀지만 잔여 배터리가 적다.
-    # req_bat=25 이므로 remain_bat 은 TAT1=55, TAT2=5 이다.
+    # req_bat=30 이므로 remain_bat 은 TAT1=50, TAT2=5 이다.
     # 거리 정규화 결과는 TAT1 dist_score=1.0, TAT2 dist_score=0.0 이다.
     # 배터리 정규화 결과는 TAT1 bat_score=0.0, TAT2 bat_score=1.0 이다.
     # 최종 점수는 TAT1=(0.7*1.0)+(0.3*0.0)=0.7, TAT2=(0.7*0.0)+(0.3*1.0)=0.3 이다.
@@ -109,9 +109,9 @@ def test_select_resource_balances_distance_and_battery_scores_with_three_amrs() 
     # 후보가 3대일 때도 거리/배터리 정규화와 가중합으로 가장 높은 점수를 고른다.
     allocator = _allocator()
     amr_stats = [
-        AmrRuntimeState(res_id="TAT1", x=-0.30, y=0.20, bat_pct=26),
-        AmrRuntimeState(res_id="TAT2", x=-0.55, y=0.20, bat_pct=45),
-        AmrRuntimeState(res_id="TAT3", x=-0.80, y=0.20, bat_pct=30),
+        AmrRuntimeState(res_id="TAT1", x=-0.30, y=0.20, bat_pct=42),
+        AmrRuntimeState(res_id="TAT2", x=-0.55, y=0.20, bat_pct=60),
+        AmrRuntimeState(res_id="TAT3", x=-0.80, y=0.20, bat_pct=35),
     ]
 
     selected = allocator._select_resource(
@@ -120,21 +120,22 @@ def test_select_resource_balances_distance_and_battery_scores_with_three_amrs() 
         amr_stats=amr_stats,
     )
 
-    # dis_result = TAT1: 1.0, TAT2: 0.5, TAT3: 0.0
-    # bat_result = TAT1: 1.0, TAT2: 0.0, TAT3: 0.789...
-    # result = TAT1: 1.0, TAT2: 0.35, TAT3: 0.236...
+    # req_bat=30 이므로 remain_bat 은 TAT1=12, TAT2=30, TAT3=5 이다.
+    # dist_result = TAT1: 1.0, TAT2: 0.5, TAT3: 0.0
+    # bat_result = TAT1: 0.72, TAT2: 0.0, TAT3: 1.0
+    # result = TAT1: 0.916, TAT2: 0.35, TAT3: 0.3
     # best_res_id = TAT1
     assert selected == "TAT1"
 
 
 def test_select_resource_returns_first_available_for_non_amr_resources() -> None:
-    # AMR 정보가 없으면 일반 리소스 할당 규칙대로 첫 번째 가용 리소스를 반환한다.
+    # AMR이 아닌 경우에 일반 리소스 할당 규칙대로 첫 번째 가용 리소스를 반환한다.
     allocator = _allocator()
 
     selected = allocator._select_resource(
-        available_resources=["MAT", "PAT"],
+        available_resources=["MAT1", "MAT2", "MAT3"],
         task_type=TaskType.MM,
         amr_stats=None,
     )
 
-    assert selected == "MAT"
+    assert selected == "MAT1"

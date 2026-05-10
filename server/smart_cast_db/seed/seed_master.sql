@@ -202,8 +202,8 @@ ON CONFLICT (zone_id) DO UPDATE SET
 -- MAT: RA for manufacturing (manufacturing arm tool)
 -- TAT: TAT for transport (transport TAT tool)
 INSERT INTO res (res_id, res_type, model_nm) VALUES
-('PAT',   'RA',   'JetCobot 280 STRG'),
-('MAT',   'RA',   'JetCobot 280 CAST'),
+('PAT',   'PAT',   'JetCobot 280 STRG'),
+('MAT',   'MAT',   'JetCobot 280 CAST'),
 ('CONV1', 'CONV', 'ESP32 Conveyor v5 INSP'),
 ('TAT1',  'TAT',  'PinkyPro'),
 ('TAT2',  'TAT',  'PinkyPro'),
