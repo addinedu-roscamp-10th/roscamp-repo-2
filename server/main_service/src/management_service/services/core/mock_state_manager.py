@@ -15,7 +15,7 @@ from typing import Any
 from ..contracts.enums import EventType
 from ..contracts.enums import TaskType, TxnStat
 from ..contracts.models import (
-    AmrLocationResult,
+    AmrRuntimeState,
     AllocateTaskResInput,
     CreateTaskInput,
     Event,
@@ -88,16 +88,17 @@ class MockStateManager:
             self._db_ready = True
         logger.info("[MockStateManager] stub mode enabled")
 
+    # 개발용 res seed
     def _seed_res_pool(self) -> None:
         seed_resources = [
-            ("TAT1", "TAT", 0.0, 0.0),
-            ("TAT2", "TAT", 1.0, 0.0),
-            ("TAT3", "TAT", 2.0, 0.0),
-            ("CONV1", "CONV", 0.0, 0.0),
-            ("PAT", "RA_STRG", 0.0, 0.0),
-            ("MAT", "RA_CAST", 0.0, 0.0),
+            ("TAT1", "TAT", 0.0, 0.0, 80),
+            ("TAT2", "TAT", 0.0, 0.0, 65),
+            ("TAT3", "TAT", 0.0, 0.0, 50),
+            ("CONV1", "CONV", 0.0, 0.0, 100),
+            ("PAT", "RA_STRG", 0.0, 0.0, 100),
+            ("MAT", "RA_CAST", 0.0, 0.0, 100),
         ]
-        for res_id, res_type, x, y in seed_resources:
+        for res_id, res_type, x, y, battery_pct in seed_resources:
             self._res_list[res_id] = {
                 "res_id": res_id,
                 "res_type": res_type,
@@ -106,6 +107,8 @@ class MockStateManager:
                 "status": "idle",
                 "x": x,
                 "y": y,
+                "battery_pct": battery_pct,
+                "condition": "NORMAL",
             }
         # 충전소 상태 정보 (메모리 관리용)
         self.charger_slots = {'CHG_01': 'EMPTY', 'CHG_02': 'EMPTY'}
@@ -418,12 +421,13 @@ class MockStateManager:
         ]
         return available
 
-    async def get_amr_locations(self) -> list[AmrLocationResult]:
+    async def get_amr_stats(self) -> list[AmrRuntimeState]:
         return [
-            AmrLocationResult(
+            AmrRuntimeState(
                 res_id=res_id,
                 x=float(res_meta.get("x", 0.0)),
                 y=float(res_meta.get("y", 0.0)),
+                bat_pct=int(res_meta["battery_pct"]),
             )
             for res_id, res_meta in sorted(self._res_list.items())
             if res_meta.get("res_type") == "TAT"

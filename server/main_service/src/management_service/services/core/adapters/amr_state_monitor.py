@@ -34,23 +34,23 @@ class AmrStateMonitorNode:
             def __init__(self) -> None:
                 super().__init__("amr_state_monitor")
 
-                self.declare_parameter("robots", ["TAT1", "TAT2", "TAT3"])
-                self.robots = list(self.get_parameter("robots").value)
+                self.declare_parameter("amrs", ["TAT1", "TAT2", "TAT3"])
+                self.amrs = list(self.get_parameter("amrs").value)
                 self.status = {
-                    robot: {"percent": None, "position": None}
-                    for robot in self.robots
+                    amr: {"percent": None, "position": None}
+                    for amr in self.amrs
                 }
                 self.amr_state_subscriptions = []
 
-                for robot in self.robots:
-                    percent_topic = f"/{robot}/battery/percent"
-                    amcl_topic = f"/{robot}/amcl_pose"
+                for amr in self.amrs:
+                    percent_topic = f"/{amr}/battery/percent"
+                    amcl_topic = f"/{amr}/amcl_pose"
 
                     self.amr_state_subscriptions.append(
                         self.create_subscription(
                             Float32,
                             percent_topic,
-                            lambda msg, robot_name=robot: self.percentage_callback(robot_name, msg),
+                            lambda msg, amr_name=amr: self.percentage_callback(amr_name, msg),
                             10,
                         )
                     )
@@ -58,29 +58,29 @@ class AmrStateMonitorNode:
                         self.create_subscription(
                             Pose,
                             amcl_topic,
-                            lambda msg, robot_name=robot: self.amcl_callback(robot_name, msg),
+                            lambda msg, amr_name=amr: self.amcl_callback(amr_name, msg),
                             10,
                         )
                     )
 
-            def percentage_callback(self, robot_name, msg) -> None:
+            def percentage_callback(self, amr_name, msg) -> None:
                 """배터리% 콜백함수."""
                 percent = float(msg.data)
-                self.status[robot_name]["percent"] = percent
-                service.update_status(robot_name, battery=percent) # state manager에 배터리 상태 저장
+                self.status[amr_name]["percent"] = percent
+                service.update_status(amr_name, battery=percent) # state manager에 배터리 상태 저장
                 state_manager.update_amr_runtime_memory(
-                    robot_name.strip(),
+                    amr_name,
                     battery_pct=int(round(percent)),
                 )
 
-            def amcl_callback(self, robot_name, msg) -> None:
+            def amcl_callback(self, amr_name, msg) -> None:
                 """좌표 콜백함수."""
                 x = float(msg.position.x)
                 y = float(msg.position.y)
-                self.status[robot_name]["position"] = [x, y]
-                service.update_status(robot_name, x=x, y=y) # state manager에 좌표 저장
+                self.status[amr_name]["position"] = [x, y]
+                service.update_status(amr_name, x=x, y=y) # state manager에 좌표 저장
                 state_manager.update_amr_runtime_memory(
-                    robot_name.strip(),
+                    amr_name,
                     x=x,
                     y=y,
                 )
@@ -127,13 +127,13 @@ class AmrStateMonitorService:
 
     def update_status(
         self,
-        robot_name: str,
+        amr_name: str,
         *,
         battery: float | None = None,
         x: float | None = None,
         y: float | None = None,
     ) -> None:
-        res_id = robot_name.strip()
+        res_id = amr_name
         with self._lock:
             current = self._cache.get(res_id, AmrStatus(id=res_id))
             location = current.location
