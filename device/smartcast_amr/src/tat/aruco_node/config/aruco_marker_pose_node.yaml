@@ -10,5 +10,3 @@
     aruco_dictionary: DICT_4X4_100
     marker_length: 0.05
     target_marker_id: 0
-    camera_matrix_path: ~/tat/src/tat/aruco_node/config/calibration_matrix.npy
-    distortion_coeffs_path: ~/tat/src/tat/aruco_node/config/distortion_coefficients.npy

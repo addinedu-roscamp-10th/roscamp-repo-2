@@ -1,8 +1,12 @@
 <?xml version='1.0'?>
 <launch>
     <arg name="params_file" default="$(find-pkg-share aruco_node)/config/aruco_marker_pose_node.yaml"/>
+    <arg name="camera_matrix_path" default="$(find-pkg-share aruco_node)/config/calibration_matrix.npy"/>
+    <arg name="distortion_coeffs_path" default="$(find-pkg-share aruco_node)/config/distortion_coefficients.npy"/>
 
     <node pkg="aruco_node" exec="aruco_marker_pose_node" name="aruco_marker_pose_node" output="screen">
         <param from="$(var params_file)"/>
+        <param name="camera_matrix_path" value="$(var camera_matrix_path)"/>
+        <param name="distortion_coeffs_path" value="$(var distortion_coeffs_path)"/>
     </node>
 </launch>

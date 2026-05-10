@@ -14,7 +14,10 @@ setup(
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', glob.glob(os.path.join('launch', '*launch.*'))),
-        ('share/' + package_name + '/config', glob.glob(os.path.join('config', '*.yaml'))),
+        (
+            'share/' + package_name + '/config',
+            glob.glob(os.path.join('config', '*.yaml')) + glob.glob(os.path.join('config', '*.npy')),
+        ),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
