@@ -187,10 +187,11 @@ class AllocateTaskResult(BaseModel):
     res_id: str | None = None
     reason: str | None = None
 
-class AmrLocationResult(BaseModel):
+class AmrRuntimeState(BaseModel):
     res_id: str
     x: float
     y: float
+    bat_pct: int
 
 """ dataclass도 여기 포함????"""
 @dataclass

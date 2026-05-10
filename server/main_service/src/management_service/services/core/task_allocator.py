@@ -1,34 +1,55 @@
 from __future__ import annotations
+import logging
 import math
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Sequence
 
-from services.contracts.enums import TaskType, TransferPoint
+from services.contracts.enums import TaskType
 from services.contracts.models import (
     AllocateTaskInput,
     AllocateTaskResult,
     AllocateTaskResInput,
-    AmrLocationResult,
+    AmrRuntimeState,
 )
 
 if TYPE_CHECKING:
     from services.contracts.protocols import IStateManager
 
-# 각 경유지 별 좌표 (tat_nav_pose_master 기준)
-TRANSFER_POINT_COORDS: dict[TransferPoint, tuple[float, float]] = {
-    TransferPoint.CAST_OUT: (-0.256, 0.20),      # ToCAST
-    TransferPoint.PP_CONV_END: (-0.447, -1.05),  # ToPP
-    TransferPoint.STRG_IN: (-0.10, -0.465),      # ToSTRG
-    TransferPoint.CHG_IN: (0.044, 0.095),        # ToCHG1
+logger = logging.getLogger(__name__)
+
+# 각 상차 시작 pose 좌표 (tat_nav_pose_master 기준)
+TRANSFER_POINT_COORDS: dict[str, tuple[float, float]] = {
+    "ToCAST": (-0.256, 0.20),
+    "ToINSP": (-0.67, -0.10),
+    "ToPICK": (-0.223, -0.465),
 }
 
-STORAGE_AND_SHIPPING_TASKS = {
+TASK_BATTERY_THRESHOLDS = {
+    TaskType.ToPP: 30, # src-dest 기준으로 dist가 가장 멈
+    TaskType.ToSTRG: 20, # dist가 가장 가까움
+    TaskType.ToSHIP: 25, # 중간 dist
+}
+
+SRC_POSE = {
+    TaskType.ToPP: "ToCAST",
+    TaskType.ToSTRG: "ToINSP",
+    TaskType.ToSHIP: "ToPICK",
+}
+
+
+MAT_TASKS = {
+    TaskType.MM,
+    TaskType.POUR,
+    TaskType.DM,
+}
+
+PAT_TASKS = {
     TaskType.PA_GP,
     TaskType.PA_DP,
     TaskType.PICK,
     TaskType.SHIP,
 }
 
-CONVEYOR_TASKS = {
+ON_CONVEYOR_TASKS = {
     TaskType.PP,
     TaskType.INSP,
     TaskType.ToINSP,
@@ -49,17 +70,22 @@ def _get_required_resource_type(
     if task_type in TRANSPORT_TASKS:
         return "TAT"
 
-    if task_type in CONVEYOR_TASKS or zone_nm == "INSP":
+    if task_type in ON_CONVEYOR_TASKS:
         return "CONV"
 
-    if zone_nm == "STRG" or task_type in STORAGE_AND_SHIPPING_TASKS:
+    if task_type in PAT_TASKS:
         return "RA_STRG"
 
-    return "RA_CAST"
+    if task_type in MAT_TASKS:
+        return "RA_CAST"
+
+    return None
 
 
 class TaskAllocator:
     """각 task를 어떤 res가 수행할지 결정하고 반환."""
+
+    DEFAULT_BATTERY_THRESHOLD = 30  # task에 설정된 임계치 없을 때
 
     def __init__(self, state_manager: IStateManager):
         self.state_manager = state_manager
@@ -72,69 +98,111 @@ class TaskAllocator:
         )
         await self.state_manager.update_task_allocation(assign_input)
 
-    # 각 src의 좌표 반환
-    def _get_transfer_point(
+    # task별 src pose 이름 반환
+    def _get_src_pose_name(
         self,
         task_type: TaskType | None,
-    ) -> TransferPoint | None:
-        task_to_transfer_point = {
-            TaskType.ToPP: TransferPoint.CAST_OUT,
-            TaskType.ToSTRG: TransferPoint.PP_CONV_END,
-            TaskType.ToSHIP: TransferPoint.STRG_IN,
-            TaskType.ToCHG: TransferPoint.CHG_IN,
-        }
-        return task_to_transfer_point.get(task_type)
+    ) -> str | None:
+        return SRC_POSE.get(task_type)
 
-    # 각 TAT와 src 간의 거리 계산
-    def _get_distance_to_transfer_point(
+    # 각 TAT와 src 간의 dist 계산
+    def _get_distance_to_source_pose(
         self,
-        amr_location: AmrLocationResult,
-        transfer_point: TransferPoint,
+        amr_location: AmrRuntimeState,
+        src_pose_name: str,
     ) -> float:
-        target_x, target_y = TRANSFER_POINT_COORDS[transfer_point]
+        target_x, target_y = TRANSFER_POINT_COORDS[src_pose_name]
         return math.dist((amr_location.x, amr_location.y), (target_x, target_y))
 
-    # 리소스 선택 함수
+    # res 선택 함수
     def _select_resource(
         self,
         available_resources: list[str],
         task_type: TaskType | None,
         zone_nm: str | None = None,
-        amr_locations: list[AmrLocationResult] | None = None,
+        amr_stats: Sequence[AmrRuntimeState] = (),
     ) -> str | None:
-        is_trans = task_type in TRANSPORT_TASKS
-        
-        # TAT(AMR) 선택 로직: 가장 가까운 로봇 선택
-        if amr_locations and is_trans:
-            transfer_point = self._get_transfer_point(task_type)
-            if transfer_point is not None: 
-                available_amr_locations = [
-                    amr_location
-                    for amr_location in amr_locations
-                    if amr_location.res_id in available_resources
-                ]
-                if available_amr_locations:
-                    nearest_amr = min(
-                        available_amr_locations,
-                        key=lambda amr_location: self._get_distance_to_transfer_point(
-                            amr_location,
-                            transfer_point,
-                        ),
-                    )
-                    return nearest_amr.res_id
-            return available_resources[0] if available_resources else None
+        # AMR일 때 bat 및 dist를 점수 기반으로 계산해서 할당
+        if amr_stats:
+            req_bat = TASK_BATTERY_THRESHOLDS.get(task_type, self.DEFAULT_BATTERY_THRESHOLD)
+            
+            # bat 임계치를 만족하는 후보 필터링
+            candidates: list[AmrRuntimeState] = [
+                amr for amr in amr_stats
+                if amr.res_id in available_resources and amr.bat_pct >= req_bat
+            ]
 
-        return available_resources[0] if available_resources else None
+            # 모든 AMR이 bat_threshold 이하면 할당 실패
+            if not candidates:
+                return None
+
+            # 1대 밖에 없으면 바로 반환
+            if len(candidates) == 1:
+                return candidates[0].res_id
+
+            # 2대 이상인 경우 점수 계산
+            src_pose_name = self._get_src_pose_name(task_type)
+            if not src_pose_name:
+                logger.warning(
+                    "src pose mapping missing: task_type=%s",
+                    task_type,
+                )
+                return None
+
+            candidate_stats = []
+            for amr in candidates:
+                dist = self._get_distance_to_source_pose(amr, src_pose_name)
+                remain_bat = amr.bat_pct - req_bat  # 필요한 bat을 뺀 잔여 bat
+                candidate_stats.append({
+                    "res_id": amr.res_id,
+                    "dist": dist,
+                    "remain_bat": remain_bat
+                })
+
+            # 정규화 후 최종 점수 계산(가까울수록, 남는 bat가 적을수록 높은 점수)
+            min_dist = min(s["dist"] for s in candidate_stats)
+            max_dist = max(s["dist"] for s in candidate_stats)
+            min_remain_bat = min(s["remain_bat"] for s in candidate_stats)
+            max_remain_bat = max(s["remain_bat"] for s in candidate_stats)
+
+            best_amr_id = None
+            highest_score = -1.0
+
+            for stats in candidate_stats:
+                # dist 점수 (가까울수록 높음)
+                norm_dist = (
+                    (stats["dist"] - min_dist) / (max_dist - min_dist)
+                    if max_dist > min_dist else 0.0
+                )
+                dist_score = 1.0 - norm_dist
+
+                # bat 점수 (잔여 bat가 적을수록 높음 -> bat 많은 기기를 보존)
+                norm_remain_bat = (
+                    (stats["remain_bat"] - min_remain_bat) / (max_remain_bat - min_remain_bat)
+                    if max_remain_bat > min_remain_bat else 0.0
+                )
+                bat_score = 1.0 - norm_remain_bat
+
+                total_score = (0.7 * dist_score) + (0.3 * bat_score) # dist 70, bat 30
+
+                if total_score > highest_score:
+                    highest_score = total_score
+                    best_amr_id = stats["res_id"]
+
+            return best_amr_id
+
+        # AMR이 아닐 경우에는 첫 번째 res 할당
+        return available_resources[0]
 
     # 메인함수
     async def allocate(
         self,
         task: AllocateTaskInput,
     ) -> AllocateTaskResult:
-        # 입력에 타입이 없으면 allocator가 최종 req_res_type을 해석한다.
+        # 입력에 타입이 없으면 allocator가 req_res_type을 계산
         req_res_type = task.req_res_type or _get_required_resource_type(task.task_type, task.zone_nm)
 
-        # req_res_id가 들어오면 반드시 그 로봇이 할당되도록
+        # req_res_id가 들어오면 반드시 그 res가 할당되도록
         if task.req_res_id:
             await self._update_task_allocation(task, task.req_res_id)
             return AllocateTaskResult(
@@ -153,17 +221,25 @@ class TaskAllocator:
                 reason="no_available_resource",
             )
 
-        amr_locations: list[AmrLocationResult] | None = None
+        amr_stats: list[AmrRuntimeState] = []
         if req_res_type == "TAT":
-            amr_locations = await self.state_manager.get_amr_locations()
+            amr_stats = await self.state_manager.get_amr_stats()
 
         # 최적 리소스 선택
         selected_res_id = self._select_resource(
             available_resources,
             task.task_type,
             task.zone_nm,
-            amr_locations,
+            amr_stats,
         )
+
+        # 가용 가능 AMR이 있지만, bat 임계치를 넘지 못하는 경우
+        if not selected_res_id:
+            return AllocateTaskResult(
+                success=False,
+                req_res_type=req_res_type,
+                reason="no_suitable_resource",
+            )
 
         await self._update_task_allocation(task, selected_res_id)
         return AllocateTaskResult(

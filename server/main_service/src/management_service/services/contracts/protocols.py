@@ -121,7 +121,7 @@ class IStateManager(Protocol):
     async def get_available_resources(self, req_res_type: str) -> list[str]:
         ...
 
-    async def get_amr_locations(self) -> list[AmrLocationResult]:
+    async def get_amr_stats(self) -> list[AmrRuntimeState]:
         ...
 
     async def update_task_allocation(self, assign_input: AllocateTaskResInput) -> None:

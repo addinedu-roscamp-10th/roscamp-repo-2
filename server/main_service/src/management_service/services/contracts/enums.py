@@ -40,15 +40,6 @@ class FlowStatus(str, Enum):
     PICK = "PICK"
     READY_TO_SHIP = "READY_TO_SHIP"
 
-## Task Allocator
-class TransferPoint(str, Enum):
-    CAST_OUT = "CAST_OUT"          # 생산 위치 인계 지점
-    PP_CONV_END = "PP_CONV_END"    # 후처리 컨베이어 끝
-    STRG_IN = "STRG_IN"            # 적재 구간
-    CHG_IN = "CHG_IN"              # 충전 구간
-
-
-
 ## Event Bridge
 class EventType(str, Enum):
     TASK_COMPLETED = "TASK_COMPLETED"
