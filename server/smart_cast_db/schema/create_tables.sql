@@ -68,7 +68,7 @@ CREATE TABLE product_order_pattern_master (
 
 CREATE TABLE res (
     res_id    VARCHAR(10)  PRIMARY KEY,
-    res_type  VARCHAR      NOT NULL CHECK (res_type IN ('RA', 'CONV', 'TAT')),
+    res_type  VARCHAR      NOT NULL CHECK (res_type IN ('PAT', 'MAT', 'CONV', 'TAT')),
     model_nm  VARCHAR      NOT NULL
 );
 
