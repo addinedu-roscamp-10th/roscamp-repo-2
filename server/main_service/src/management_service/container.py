@@ -16,7 +16,7 @@ from services.query.item_query_service import ItemQueryService
 from services.query.pattern_query_service import PatternQueryService
 from services.query.production_order_query_service import ProductionOrderQueryService
 from services.query.schedule_query_service import ScheduleQueryService
-from services.core.pattern_command_service import PatternCommandService
+from services.command.pattern_command_service import PatternCommandService
 
 
 logger = logging.getLogger(__name__)
