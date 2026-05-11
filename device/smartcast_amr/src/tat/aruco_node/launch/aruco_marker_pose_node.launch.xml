@@ -1,12 +1,25 @@
 <?xml version='1.0'?>
 <launch>
+    <arg name="namespace" default=""/>
+    <arg name="frame_prefix" default=""/>
+    <arg name="camera_frame" default=""/>
     <arg name="params_file" default="$(find-pkg-share aruco_node)/config/aruco_marker_pose_node.yaml"/>
     <arg name="camera_matrix_path" default="$(find-pkg-share aruco_node)/config/calibration_matrix.npy"/>
     <arg name="distortion_coeffs_path" default="$(find-pkg-share aruco_node)/config/distortion_coefficients.npy"/>
+
+    <let
+        name="frame_prefix_resolved"
+        value='$(eval "\"$(var frame_prefix)\" if \"$(var frame_prefix)\" else (\"$(var namespace)\" + \"/\" if \"$(var namespace)\" else \"\")")'
+    />
+    <let
+        name="camera_frame_resolved"
+        value='$(eval "\"$(var camera_frame)\" if \"$(var camera_frame)\" else \"$(var frame_prefix_resolved)front_camera_link\"")'
+    />
 
     <node pkg="aruco_node" exec="aruco_marker_pose_node" name="aruco_marker_pose_node" output="screen">
         <param from="$(var params_file)"/>
         <param name="camera_matrix_path" value="$(var camera_matrix_path)"/>
         <param name="distortion_coeffs_path" value="$(var distortion_coeffs_path)"/>
+        <param name="camera_frame" value="$(var camera_frame_resolved)"/>
     </node>
 </launch>
