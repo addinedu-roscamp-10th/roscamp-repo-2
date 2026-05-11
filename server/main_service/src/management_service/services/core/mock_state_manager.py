@@ -62,18 +62,19 @@ def _strg_loc_id(strg_loc: Any | None) -> int | None:
 class MockStateManager:
     """StateManager stub that only acknowledges production-start requests."""
 
-    def __init__(self, event_bridge=None, repository=None, enable_persistence: bool = False) -> None:
+    def __init__(self, event_bridge=None, task_manager=None,repository=None, enable_persistence: bool = False) -> None:
         self._items: dict[int, dict[str, Any]] = {}
         self._tasks: dict[str, dict[str, Any]] = {}
         self._res_list: dict[str, dict[str, Any]] = {}
         self.items = self._items
         self.orders: dict[int, dict[str, Any]] = {}
-        self.slot_table: dict[tuple, dict[str, Any]] = {}
+        
         self._event_bridge = event_bridge
         self._next_item_id = 1000
         self._next_equip_task_txn_id = 2000
         self._db_ready = False
         self._repo = repository
+        self.task_manager = task_manager
         self._seed_res_pool()
         if self._repo is None and enable_persistence:
             try:
@@ -265,6 +266,8 @@ class MockStateManager:
         order_meta = self.orders.get(ord_id, {})
         target_qty = max(int(order_meta.get("target", 1) or 1), 1)
         ptn_id = order_meta.get("ptn_loc_id") or order_meta.get("ptn_id")
+        rack_start_pos = order_meta.get("rack_start_pos")
+
         item_ids: list[int] = []
         equip_task_txn_ids: list[int] = []
 
@@ -282,6 +285,7 @@ class MockStateManager:
                 "zone_nm": None,
                 "result": None,
                 "ptn_id": ptn_id,
+                "strg_loc": None,
             }
             # self._tasks[f"task_{equip_task_txn_id}"] = {
             #     "ord_id": ord_id,
@@ -292,7 +296,8 @@ class MockStateManager:
                 # "res_id": "PAT",
             # }
             item_ids.append(item_id)
-            # equip_task_txn_ids.append(equip_task_txn_id)
+
+            equip_task_txn_ids.append(equip_task_txn_id)
 
         return StartProductionOrderAckModel(
             ord_id=ord_id,
@@ -648,6 +653,15 @@ class MockStateManager:
                         ord_id,
                         target_qty,
                     )
+                    self.task_manager.log_slot_table()
+
+                    if self.task_manager is not None:  
+                        self.task_manager.remove_order_reserve(ord_id)  
+                        self.task_manager.remove_order_config(ord_id)  
+                        #self.task_manager.log_slot_table()
+                    else:  
+                        logger.warning("task_manager is not configured; order cleanup skipped")  
+
                 return complete
 
             logger.info(
@@ -657,6 +671,15 @@ class MockStateManager:
             )
             if db_complete:
                 logger.info("[MockStateManager] ord_id=%s 생산완료", ord_id)
+
+                if self.task_manager is not None:  
+                    self.task_manager.remove_order_reserve(ord_id) 
+                    self.task_manager.remove_order_config(ord_id)
+                    #self.task_manager.log_slot_table()  
+                else:  
+                    logger.warning("task_manager is not configured; order cleanup skipped")  
+
+
             return bool(db_complete)
 
         order_state = self.orders.setdefault(ord_id, {})
@@ -677,6 +700,15 @@ class MockStateManager:
                 ord_id,
                 target_qty,
             )
+
+            if self.task_manager is not None:  
+                self.task_manager.remove_order_reserve(ord_id)  
+                self.task_manager.remove_order_config(ord_id)
+                #self.task_manager.log_slot_table()  
+            else: 
+                logger.warning("task_manager is not configured; order cleanup skipped")  
+
+
         return is_complete
 
     async def publish_subtask_completed(
@@ -848,3 +880,57 @@ class MockStateManager:
             res_id,
             cur_stat,
         )
+    #적재 위치 업뎃 함수 - 아직 구현 안함 - 틀만 있음
+    async def update_item_storage_location(self, item_id: int, strg_loc: str) -> None:
+        item = self._items.setdefault(item_id, {"item_id": item_id})
+        item["strg_loc"] = strg_loc
+
+        self._safe_repo_call(
+            "update_item_storage_location",
+            item_id,
+            strg_loc,
+        )
+
+        logger.info(
+            "[MockStateManager] item storage location saved: item=%s strg_loc=%s",
+            item_id,
+            strg_loc,
+        )
+
+    #주문 수량만큼 공간이 충분하면 가장 작은 위치를 반환
+    async def get_empty_start_slot(self, target_qty: int) -> str | None:
+        """
+        DB 기준으로 빈 적재 슬롯을 조회하고,
+        주문 수량만큼 공간이 충분하면 가장 작은 위치를 반환한다.
+        """
+        #return "1-4" #db 읽고 반환하는거라 일단 강제 할당
+        db_slots = self._safe_repo_call("get_storage_slots")
+
+        if db_slots is None:
+            logger.warning("[MockStateManager] DB slot 조회 실패 또는 repo 없음")
+            return None
+
+        empty_slots = [
+            (int(slot["row"]), int(slot["col"]))
+            for slot in db_slots
+            if slot.get("status") == "Empty"
+            and slot.get("order_id") is None
+        ]
+
+        empty_slots.sort()
+
+        if len(empty_slots) < target_qty:
+            return None
+
+        row, col = empty_slots[0]
+        return f"{row}-{col}" 
+        
+        
+    
+    #DB의 적재 슬롯 테이블 조회.
+    def get_storage_slots(self) -> list[dict]:
+        """
+        DB의 적재 슬롯 테이블 조회.
+        예: rack_slot_master 또는 storage_slot 테이블.
+        """
+        ...

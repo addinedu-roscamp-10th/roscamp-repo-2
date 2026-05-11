@@ -12,41 +12,87 @@ logger = logging.getLogger(__name__)
 
 class TaskManager(ITaskManager):
     MAX_COL = 6
+    MAX_ROW = 3
     
     def __init__(self, sm:IStateManager):
         self.sm = sm
         self.order_start_configs = {}#오더별로 할당된 적재 기준 위치
+        self.slot_table: dict[tuple[int, int], dict] = {}  # 메모리 상의 보관랙
+
+        self._init_slot_table()
         #self.order_assigned_counts = {}#오더별로 할당된 양품 개수를 관리
 
-        
+    def _init_slot_table(self):
+        """3x6 적재 슬롯 초기화"""
+        for row in range(1, self.MAX_ROW + 1):
+            for col in range(1, self.MAX_COL + 1):
+                self.slot_table[(row, col)] = {
+                    "status": "Empty",
+                    "order_id": None,
+                }
+
+        self.slot_table[(1, 1)]["status"] = "Used"
+        self.slot_table[(1, 2)]["status"] = "Used"
+        self.slot_table[(1, 3)]["status"] = "Used"
+
+
     #오더 투입시 해당 오더가 사용할 적재 공간 예약
-    def reserve_rack_slots(self, order_id: int, start_pos: str):
-        """주문 투입 시 해당 오더가 사용할 슬롯들을 물리적 구조(6칸)에 맞춰 예약"""
-        row, col = map(int, start_pos.split('-'))
-        target_qty = self.sm.orders[order_id]["target"]
-        
+    def reserve_rack_slots(self, order_id: int, start_pos: str, target_qty: int):
+        """주문 투입 시 해당 오더가 사용할 슬롯들을 가상 랙에 예약한다."""
+        row, col = map(int, start_pos.split("-"))
+
         assigned = 0
-        # 시작 위치를 절대 인덱스로 변환 (예: 1-1은 0, 1-6은 5, 2-1은 6)
         current_abs_idx = (row - 1) * self.MAX_COL + (col - 1)
-        
+
         while assigned < target_qty:
-            # 절대 인덱스를 다시 row-col 좌표로 변환 (핵심 수정)
             curr_row = (current_abs_idx // self.MAX_COL) + 1
             curr_col = (current_abs_idx % self.MAX_COL) + 1
-            
+
             pos_key = (curr_row, curr_col)
-            
-            if pos_key in self.sm.slot_table:
-                self.sm.slot_table[pos_key]["order_id"] = order_id
-                assigned += 1
-            else:
-                # 랙의 물리적 범위를 벗어난 경우 (예: 3층 6칸을 넘어감)
+
+            if pos_key not in self.slot_table:
                 logger.warning("랙 공간 부족: %s-%s 위치가 slot_table에 없음", curr_row, curr_col)
                 break
-            
-            current_abs_idx += 1 # 다음 절대 칸으로 이동
 
-        logger.info("주문 %s 구역 예약 완료", order_id)
+            slot = self.slot_table[pos_key]
+
+            if slot.get("status") != "Empty" or slot.get("order_id") is not None:
+                logger.warning("예약 불가 슬롯: %s-%s slot=%s", curr_row, curr_col, slot)
+                break
+
+            slot["order_id"] = order_id
+            slot["status"] = "Reserved"
+
+            assigned += 1
+            current_abs_idx += 1
+
+        logger.info("주문 %s 구역 예약 완료: start=%s target=%s assigned=%s",
+                    order_id, start_pos, target_qty, assigned)
+
+    def log_slot_table(self):
+        """현재 slot_table 상태를 로그 출력"""
+
+        logger.info("============= SLOT TABLE =============")
+
+        for row in range(1, self.MAX_ROW + 1):
+            line = []
+
+            for col in range(1, self.MAX_COL + 1):
+                slot = self.slot_table[(row, col)]
+
+                status = slot["status"]
+                order_id = slot["order_id"]
+
+                if status == "Empty":
+                    text = f"{row}-{col}:EMPTY"
+                else:
+                    text = f"{row}-{col}:{status}(O{order_id})"
+
+                line.append(f"{text:25}")
+
+            logger.info(" ".join(line))
+
+        logger.info("======================================")
 
     #오더 종료시 오더 적재기준 위치 메모리 해제
     def remove_order_reserve(self, order_id: int):
@@ -58,7 +104,7 @@ class TaskManager(ITaskManager):
     #오더 종료 시 Empty 슬롯의 소유권 해제 (Occupied는 유지 - 출고용)
     def remove_order_config(self, order_id: int):
        
-        for (f, c), data in self.sm.slot_table.items():
+        for (f, c), data in self.slot_table.items():
             if data["order_id"] == order_id:
                 if data["status"] in ["Empty", "Reserved"]:
                     data["order_id"] = None
@@ -103,6 +149,7 @@ class TaskManager(ITaskManager):
             elif event == "topp":
                 task_results.append(await self._create_result(item_info, TaskType.DM))
                 return task_results
+            
             # INSP 이후 tostrg 세부 공정 중 AMR이 src(컨베이어 앞 대기장소)에 도착
             #elif event == "tostrg":
             #    task_results.append(await self._create_result(item_info, TaskType.ToPAWait))
@@ -143,9 +190,10 @@ class TaskManager(ITaskManager):
                         chg_loc=chg_loc
                     ))
                 return task_results
+            
             # ToSTRG 세부 공정 중 AMR이 src(적재 대기장소)에 도착
             elif event == "tostrg_dld":
-                if item_info.is_defective:
+                if item_info.is_defective: 
                     # 1. 불량 보충 아이템 생성 및 MM 태스크 발행 (우선순위 10)
                     replacement_id = await self.sm.create_empty_item(item_info.order_id)
                     task_results.append(NextTaskResult(
@@ -157,7 +205,7 @@ class TaskManager(ITaskManager):
 
                     # 2. [Slot Table 반영] 현재 불량 제품이 예약했던 슬롯을 다시 Empty로 변경
                     # item_info 혹은 현재 할당된 slot_table에서 'Reserved' 상태인 내 칸을 찾아 해제합니다.
-                    for (f, c), data in self.sm.slot_table.items():
+                    for (f, c), data in self.slot_table.items():
                         if data["order_id"] == item_info.order_id and data["status"] == "Reserved":
                             data["status"] = "Empty"  # 소유권(order_id)은 유지, 상태만 초기화
                             logger.info("불량 발생으로 슬롯 %s-%s 복구 (오더 %s 전용)", f, c, item_info.order_id)
@@ -200,29 +248,31 @@ class TaskManager(ITaskManager):
     # txn 생성 to state manager
     async def _create_result(self, item_info: ItemStatusRecord, task_type: TaskType)-> NextTaskResult:  #현재 진행된 아이템 정보 , 다음 공정 이름
         # 트랜잭션 DB 기록 로직 (sm.insert_task_txn 호출 등) 포함
-        item_info.strg_loc = self._calculate_strg_loc(task_type, item_info) #
+        item_info.strg_loc = await self._calculate_strg_loc(task_type, item_info) #
         curr_input = CreateTaskInput(item_id=item_info.item_id, task_type=task_type,  txn_stat=TxnStat.QUE , res_id =None )
         curr_txn_id = await self.sm.insert_task_txn(curr_input)
 
     
         return NextTaskResult(item_id=item_info.item_id, txn_id=curr_txn_id, task_type=task_type ) #proority = 0 
     
-    
     #적재위치계산 
-    def _calculate_strg_loc(self, task_type: TaskType, item_info: ItemStatusRecord) -> Optional[str]:
+    async def _calculate_strg_loc(self, task_type: TaskType, item_info: ItemStatusRecord) -> str | None:
         if item_info.is_defective:
             return "DEFECTIVE_ZONE"
         
         if task_type == TaskType.ToPAWait:
-            # slot_table을 순회할 때 row, col 순서로 정렬하여 가장 빠른 칸을 찾음
-            sorted_slots = sorted(self.sm.slot_table.items()) 
-            for (f, c), data in sorted_slots:
-                # 1-7 같은 값이 절대 나올 수 없도록 필터링 가능
-                if c > self.MAX_COL: 
-                    continue 
+            for (row, col), data in sorted(self.slot_table.items()):
+                if data["order_id"] == item_info.order_id and data["status"] == "Reserved":
+                    data["status"] = "Assigned"
 
-                if data["order_id"] == item_info.order_id and data["status"] == "Empty":
-                    data["status"] = "Reserved"
-                    return f"{f}-{c}"
+                    strg_loc = f"{row}-{col}"
+
+                    await self.sm.update_item_storage_location(
+                        item_info.item_id,
+                        strg_loc,
+                    )
+
+                    return strg_loc
+
         return item_info.strg_loc
     

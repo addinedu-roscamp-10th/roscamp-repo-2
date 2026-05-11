@@ -103,6 +103,36 @@ class Orchestrator(IOrchestrator):
 
         for ord_id in ord_ids:
             try:
+                # 주문 수량 확인
+                order_meta = self.state_manager.orders.get(ord_id, {})
+                target_qty = max(int(order_meta.get("target", 1) or 1), 1)
+                self.task_manager.log_slot_table()
+                # TM이 빈 슬롯 찾기
+                start_pos = await self.state_manager.get_empty_start_slot(target_qty)
+
+                if start_pos is None:
+                    result = self._build_rejected_ack(
+                        ord_id,
+                        f"Not enough rack slots. target_qty={target_qty}",
+                )
+                    rejected += 1
+                    results.append(result)
+                    continue
+
+                # 주문 시작 위치 저장
+                self.state_manager.orders.setdefault(ord_id, {})["rack_start_pos"] = start_pos
+
+                # 슬롯 예약
+                self.task_manager.reserve_rack_slots(
+                    order_id=ord_id,
+                    start_pos=start_pos,
+                    target_qty=target_qty,
+                )
+
+                # 로그 출력 추천
+                #self.task_manager.log_slot_table()
+
+                # SM item 생성
                 result = await self.state_manager.start_production(ord_id)
             except Exception as exc:
                 logger.warning("start production failed: ord_id=%s reason=%s", ord_id, exc)
@@ -199,9 +229,9 @@ class Orchestrator(IOrchestrator):
         item_id = event.item_id
         if item_id is None:
             raise ValueError("AMR_BATTERY_LOW requires item_id")
-        amr_id = event.res_id
+        amr_id = event.payload.get("amr_id")
         if amr_id is None:
-            raise ValueError("AMR_BATTERY_LOW requires res_id")
+            raise ValueError("AMR_BATTERY_LOW requires amr_id")
         
         arm_id = event.payload.get("arm_id")
         if arm_id is None:
@@ -217,7 +247,7 @@ class Orchestrator(IOrchestrator):
     async def on_arm_return_completed(self, event: Event) -> None:
             """로봇팔이 아이템 복구를 완료했을 때 호출되는 콜백 (이벤트 구독에 의해 실행)"""
             item_id = event.item_id
-            amr_id = event.res_id
+            amr_id = event.payload.get("amr_id")
 
             logger.info("[ OK ] arm_return_completed 이벤트 : 복구 완료 확인.")
 
@@ -244,9 +274,6 @@ class Orchestrator(IOrchestrator):
         """다음 작업을 생성하고 자원을 할당, 실행한다."""
         item_info = await self.state_manager.get_item(input_data.item_id)
         item_info.last_task_type = input_data.last_task_type
-        if input_data.req_res_id is not None:
-            item_info.req_res_id = input_data.req_res_id
-
         next_tasks = await self.task_manager.create_next_task(
             item_info,
             input_data.planning_event,
@@ -357,7 +384,6 @@ class Orchestrator(IOrchestrator):
                 item_info,
                 req_res_id=req_res_id,
             ),
-            zone_nm=item_info.strg_loc,
             task_type=task.task_type,
         )
 
