@@ -50,9 +50,15 @@ class EventType(str, Enum):
     AMR_CHARGED = "AMR_CHARGED"
     AMR_BATTERY_LOW = "AMR_BATTERY_LOW"
     ARM_RETURN_COMPLETED = "ARM_RETURN_COMPLETED"
-    HANDOFF_ACK = "HANDOFF_ACK" 
+    HANDOFF_ACK = "HANDOFF_ACK"
     PP_DONE_REQUESTED = "PP_DONE_REQUESTED"
-    ITEM_LOOKUP_REQUESTED = "ITEM_LOOKUP_REQUESTED" 
+    ITEM_LOOKUP_REQUESTED = "ITEM_LOOKUP_REQUESTED"
+    # ===== EventGateway external 채널 추가 (PR #7 / PR #8 통합 검증 후, 2026-05-11) =====
+    # PyQt(Monitoring) ↔ Management ↔ Jetson(Vision) 양방향 EventBridge wire 매핑.
+    RFID_SCANNED = "RFID_SCANNED"                     # RC522 스캔 (ESP→Jetson→Backend→PyQt)
+    TOF1_ENTRY = "TOF1_ENTRY"                         # 카메라 앞 진입 (ESP→Jetson→Backend→PyQt)
+    INSP_COMPLETED = "INSP_COMPLETED"                 # 검사 완료 → ESP32 RUN (Backend→Jetson)
+    ITEM_LOOKUP_RESULT = "ITEM_LOOKUP_RESULT"         # ITEM_LOOKUP_REQUESTED 응답 (Backend→PyQt)
 
 ## Task Executor
 class TxnStat(str, Enum):

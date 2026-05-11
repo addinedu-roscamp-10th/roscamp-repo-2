@@ -50,6 +50,7 @@ from rpc.robot_rpc import RobotRpcMixin  # noqa: E402
 from rpc.task_rpc import TaskRpcMixin  # noqa: E402
 from rpc.traffic_rpc import TrafficRpcMixin  # noqa: E402
 from container import container  # noqa: E402
+from event_gateway_servicer import add_to_grpc_server as _add_event_gateway  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +210,9 @@ def serve() -> None:
     management_pb2_grpc.add_ImagePublisherServiceServicer_to_server(
         ImagePublisherServicer(), server
     )
+    # EventGateway servicer — sole external wire for hardware/UI ↔ EventBridge.
+    # Jetson(jetson_publisher) + PyQt(monitoring) 가 PublishEvent / WatchEvents 만 사용.
+    _add_event_gateway(server, container.event_bridge)
     bind_addr = f"{HOST}:{PORT}"
 
     creds = _load_tls_credentials()
