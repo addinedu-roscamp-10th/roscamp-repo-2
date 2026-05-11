@@ -1,0 +1,90 @@
+// EventGateway — sole channel between hardware-side (Jetson + PyQt) and Management
+// Service EventBridge (2026-05-08).
+//
+// 사용자 책임 영역(ESP32 펌웨어 / Jetson / PyQt) 와 다른 팀원 책임 영역(state_manager,
+// robot_adapter, AI server, DB 등) 의 통신 인터페이스 단일화. 외부 client 는 본 서비스만
+// 통과하며 내부 비즈니스 로직은 EventBridge 의 in-process subscribe 로 fan-out.
+//
+// Pattern:
+//   PublishEvent(unary)         외부 → backend EventBridge.publish
+//   WatchEvents(server stream)  EventBridge → 외부 client (filtered by event_type)
+//
+// payload 는 google.protobuf.Struct (자유형 dict) — EventType 별 필드 강제는 publisher 책임.
+
+syntax = "proto3";
+
+package casting.management.v2.event;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+// -----------------------------------------------------------------------------
+// EventEnvelope — proto wire format for EventBridge.Event
+// -----------------------------------------------------------------------------
+
+message EventEnvelope {
+  // EventType StrEnum 값 (HANDOFF_ACK / RFID_SCANNED / TOF1_ENTRY / PP_DONE_REQUESTED /
+  // INSP_COMPLETED 등). core/events.py 카탈로그가 단일 진실.
+  string event_type = 1;
+
+  // 자원 식별자 — smartcast.res.res_id (CONV1, RA1, ...) 또는 reader_id 등.
+  // 비어 있어도 무방.
+  string resource_id = 2;
+
+  // 발행 주체 식별자 — "jetson-orin-nx-01", "pyqt-pp-worker", "esp-conveyor-01" 등.
+  // 감사 추적 + 디버깅용.
+  string source = 3;
+
+  // 발생 시각 (UTC). 비어 있으면 backend 가 receive 시각으로 채움.
+  google.protobuf.Timestamp occurred_at = 4;
+
+  // 중복 방지 키 — 동일 key 가 짧은 TTL 내 다시 들어오면 1 회만 처리.
+  // hardware 재전송 / 네트워크 retry 안전성용. 비어 있으면 dedup 비활성.
+  string idempotency_key = 5;
+
+  // 자유형 metadata — EventType 별 필드 (item_id, raw_payload, on, raw_mm 등).
+  google.protobuf.Struct payload = 6;
+}
+
+// -----------------------------------------------------------------------------
+// PublishEvent — unary
+// -----------------------------------------------------------------------------
+
+message PublishEventRequest {
+  EventEnvelope event = 1;
+}
+
+message PublishEventResponse {
+  // EventBridge.publish 가 수락했는지 여부. accepted=false 면 reason 참조.
+  bool accepted = 1;
+
+  // 거부 사유 또는 처리 메모 (예: "duplicate idempotency_key").
+  string reason = 2;
+
+  // dedup 으로 인한 skip 인지 표시 (accepted=true 와 함께 set 가능 — "이미 처리됨" 의미).
+  bool deduplicated = 3;
+}
+
+// -----------------------------------------------------------------------------
+// WatchEvents — server-streaming
+// -----------------------------------------------------------------------------
+
+message WatchEventsRequest {
+  // 받고 싶은 EventType 화이트리스트. 빈 목록이면 모든 EventType 구독 (디버깅용 권장 X).
+  repeated string event_types = 1;
+
+  // 구독자 식별자 (로깅/디버깅용). 동일 consumer 가 다중 stream 가능.
+  string consumer = 2;
+}
+
+// -----------------------------------------------------------------------------
+// Service
+// -----------------------------------------------------------------------------
+
+service EventGateway {
+  // 외부 → EventBridge.publish.
+  rpc PublishEvent(PublishEventRequest) returns (PublishEventResponse);
+
+  // EventBridge subscribe → server-streaming. client 가 stream cancel 시 자동 unsubscribe.
+  rpc WatchEvents(WatchEventsRequest) returns (stream EventEnvelope);
+}
