@@ -9,6 +9,10 @@ if TYPE_CHECKING:
     from services.core.adapters.ros2_runtime import Ros2Runtime
 
 
+# router 호환성: router 가 직접 import 하여 action 비교에 사용한다.
+TAT_DOCK_ACTION = "dock_robot"
+
+
 # ─── action_type 별 매핑 ─────────────────────────────────────────
 @dataclass(frozen=True)
 class ActionSpec:
@@ -41,7 +45,7 @@ class TATAdapter:
     """AMR(이송) ROS2 action client."""
 
     _ACTIONS: Dict[str, ActionSpec] = {
-        "dock_robot": ActionSpec(
+        TAT_DOCK_ACTION: ActionSpec(
             name_fmt="/{robot_id}/dock_robot",
             action_attr="_dock_action",
             goal_builder=_build_dock_goal,
