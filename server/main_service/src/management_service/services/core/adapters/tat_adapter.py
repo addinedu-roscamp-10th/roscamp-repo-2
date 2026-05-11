@@ -9,7 +9,6 @@ if TYPE_CHECKING:
     from services.core.adapters.ros2_runtime import Ros2Runtime
 
 
-<<<<<<< HEAD
 # router 호환성: router 가 직접 import 하여 action 비교에 사용한다.
 TAT_DOCK_ACTION = "dock_robot"
 
@@ -23,17 +22,6 @@ class ActionSpec:
     goal_builder: Callable   # (action_cls, params: dict) → goal
 
 
-=======
-# ─── action_type 별 매핑 ─────────────────────────────────────────
-@dataclass(frozen=True)
-class ActionSpec:
-    """action 이름 하나가 요구하는 ROS2 action 정보."""
-    name_fmt: str            # 액션 이름 템플릿 ({robot_id} 자리)
-    action_attr: str         # 어댑터 인스턴스 속성 이름 (lazy import 결과 보관)
-    goal_builder: Callable   # (action_cls, params: dict) → goal
-
-
->>>>>>> dec6f62 (chore: merge tat-adapter)
 def _build_dock_goal(action_cls: Any, params: dict) -> Any:
     """
     nav2_msgs/DockRobot goal 생성. 좌표는 로봇 내부 dock DB에서 조회.
@@ -57,11 +45,7 @@ class TATAdapter:
     """AMR(이송) ROS2 action client."""
 
     _ACTIONS: Dict[str, ActionSpec] = {
-<<<<<<< HEAD
         TAT_DOCK_ACTION: ActionSpec(
-=======
-        "dock_robot": ActionSpec(
->>>>>>> dec6f62 (chore: merge tat-adapter)
             name_fmt="/{robot_id}/dock_robot",
             action_attr="_dock_action",
             goal_builder=_build_dock_goal,
