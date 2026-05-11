@@ -66,6 +66,8 @@
 
         <node pkg="tat_bringup" exec="battery_publisher">
         </node>
+
+        <include file="$(find-pkg-share aruco_node)/launch/aruco_marker_pose_node.launch.xml"/>
     </group>
 
 </launch>

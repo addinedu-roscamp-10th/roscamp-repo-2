@@ -1,6 +1,6 @@
 /**:
   ros__parameters:
-    target_pose_topic: /detected_dock_pose
+    target_pose_topic: detected_dock_pose
     camera_frame: front_camera_link
     width: 640
     height: 480
