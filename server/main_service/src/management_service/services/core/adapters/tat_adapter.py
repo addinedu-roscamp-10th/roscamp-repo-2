@@ -11,13 +11,15 @@ if TYPE_CHECKING:
 TAT_DOCK_ACTION = "dock_robot"
 
 TAT_POSE_NAMES = {
-    "ToCAST1",
-    "ToPP1",
+    "ToCAST",
+    "ToPP",
     "ToINSP",
-    "ToSTRG1",
-    "ToSTRG2",
+    "ToSTRG",
+    "ToPICK",
     "ToSHIP",
     "ToCHG1",
+    "ToCHG2",
+    "ToCHG3",
 }
 
 

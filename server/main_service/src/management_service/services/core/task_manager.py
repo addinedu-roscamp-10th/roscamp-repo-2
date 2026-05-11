@@ -128,12 +128,19 @@ class TaskManager(ITaskManager):
                 return task_results
             
             elif event == "amr_battery_low_ToCHG": #tochg = 10 dm =15 topp =15   주차자리 정하기
-                chg_loc = self.sm.get_empty_charger() ####사용가능한 주차 자리 1개 반환
+                chg_loc = await self.sm.get_empty_charger(item_info.req_res_id) ####사용가능한 주차 자리 1개 반환 및 예약
+                if chg_loc is None:
+                    logger.warning(
+                        "charger 예약 실패: item_id=%s res_id=%s",
+                        item_info.item_id,
+                        item_info.req_res_id,
+                    )
                 task_results.append(NextTaskResult(
                         item_id=item_info.item_id, 
-                        txn_id=await self.sm.insert_task_txn(CreateTaskInput(item_id=item_info.item_id, task_type=TaskType.ToCHG , chg_loc=chg_loc)),
+                        txn_id=await self.sm.insert_task_txn(CreateTaskInput(item_id=item_info.item_id, task_type=TaskType.ToCHG)),
                         task_type=TaskType.ToCHG, 
-                        priority=10
+                        priority=10,
+                        chg_loc=chg_loc
                     ))
                 return task_results
             # ToSTRG 세부 공정 중 AMR이 src(적재 대기장소)에 도착

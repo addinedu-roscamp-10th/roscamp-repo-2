@@ -44,6 +44,9 @@ class ITaskExecutor(Protocol):
     def execute_task(self, ExecuteTaskInput):
         ...
 
+    async def handle_emergency_return(self, item_id: int, amr_id: str, arm_id: str) -> None:
+        ...
+
 class IAdapter(Protocol):
     
     ##Task Executor가 사용하는 인터페이스
@@ -160,6 +163,9 @@ class IStateManager(Protocol):
         ...
     
     async def create_empty_item(self, order_id: int) -> int:
+        ...
+
+    async def get_empty_charger(self, res_id: str | None = None) -> str | None:
         ...
     
 

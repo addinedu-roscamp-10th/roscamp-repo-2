@@ -111,7 +111,11 @@ class MockStateManager:
                 "condition": "NORMAL",
             }
         # 충전소 상태 정보 (메모리 관리용)
-        self.charger_slots = {'CHG_01': 'EMPTY', 'CHG_02': 'EMPTY'}
+        self.charger_slots: dict[str, dict[str, Any]] = {
+            "1-1": {"chg_loc": "1-1", "status": "EMPTY", "res_id": None},
+            "1-2": {"chg_loc": "1-2", "status": "EMPTY", "res_id": None},
+            "1-3": {"chg_loc": "1-3", "status": "EMPTY", "res_id": None},
+        }
 
     def _safe_repo_call(self, method_name: str, *args, **kwargs):
         if not self._db_ready or self._repo is None:
@@ -125,10 +129,6 @@ class MockStateManager:
             logger.exception("[MockStateManager] persistence %s failed", method_name)
             return None
 
-        # 충전소 상태 정보 (메모리 관리용)
-        self.charger_slots = {'CHG_01': 'EMPTY', 'CHG_02': 'EMPTY'}
-
-    
     async def force_battery_emergency_test(self, amr_id="TAT1", item_id=1005):
         """
         5초 대기 후, 배터리 방전 이벤트를 강제로 발행하여 
@@ -144,10 +144,10 @@ class MockStateManager:
         emergency_event = Event(
             event_type=EventType.AMR_BATTERY_LOW,
             item_id=item_id,
+            res_id=amr_id,
             payload={
                 "battery_pct": 25,
                 "condition": "BATTERY_LOW",
-                "amr_id": amr_id,
                 "arm_id": arm_id,
             }
         )
@@ -192,24 +192,53 @@ class MockStateManager:
                         Event(
                             event_type=EventType.AMR_BATTERY_LOW, # Enums에 해당 타입이 있다고 가정
                             item_id=res_meta.get("item_id"),      # 현재 물고 있는 아이템 ID
-                            amr_id=res_id,
-                            arm_id=arm_id,
+                            res_id=res_id,
                             payload={
                                 "battery_pct": battery_pct,
-                                "condition": "BATTERY_LOW"
+                                "condition": "BATTERY_LOW",
+                                "arm_id": arm_id,
                             }
                         )
                     )
 
     # 3. 빈 충전소 찾기 메서드 추가
-    def get_empty_charger(self) -> str | None:
-        """충전 가능한 슬롯 반환"""
-        """for slot, state in self.charger_slots.items():
-            if state == 'EMPTY':
-                return slot
-        return None"""
-        #임시로
-        return "1-1"
+    async def get_empty_charger(self, res_id: str | None = None) -> str | None:
+        """충전 가능한 슬롯을 반환하고, 최초 조회 시 즉시 예약한다."""
+        if res_id is not None:
+            for slot_info in self.charger_slots.values():
+                if slot_info.get("res_id") == res_id:
+                    return slot_info.get("chg_loc")
+
+        for slot_info in self.charger_slots.values():
+            if slot_info.get("status") == "EMPTY":
+                slot_info["status"] = "RESERVED"
+                slot_info["res_id"] = res_id
+                logger.info(
+                    "[MockStateManager] Charger reserved: chg_loc=%s res_id=%s",
+                    slot_info.get("chg_loc"),
+                    res_id,
+                )
+                return slot_info.get("chg_loc")
+
+        logger.warning("[MockStateManager] No empty charger available for res_id=%s", res_id)
+        return None
+
+    def _release_charger(self, res_id: str | None = None) -> None:
+        """충전 완료된 AMR의 슬롯 예약을 해제한다."""
+        if res_id is None:
+            return
+
+        for slot_info in self.charger_slots.values():
+            if slot_info.get("res_id") != res_id:
+                continue
+            slot_info["status"] = "EMPTY"
+            slot_info["res_id"] = None
+            logger.info(
+                "[MockStateManager] Charger released: chg_loc=%s res_id=%s",
+                slot_info.get("chg_loc"),
+                res_id,
+            )
+            return
 
     # 4. 트랜잭션 실패(Rollback) 처리를 위한 txn 업데이트 요청 함수
     async def update_txn_fail_for_rollback(self, item_id: int) -> None:
@@ -490,6 +519,9 @@ class MockStateManager:
             if req.error_code is not None:
                 task_meta["error_code"] = req.error_code
             if req.new_stat == TxnStat.PROC and assigned_res_id is not None:
+                current_task_type = _normalize_task_type(task_meta.get("task_type"))
+                if current_task_type != TaskType.ToCHG:
+                    self._release_charger(assigned_res_id)
                 item_id = task_meta.get("item_id")
                 if item_id is not None and task_meta.get("task_type") == "MM":
                     item = self._items.setdefault(item_id, {"item_id": item_id})
@@ -691,9 +723,6 @@ class MockStateManager:
         item_id: int | None = None,
         source: str | None = None,
     ) -> bool:
-        if self._event_bridge is None:
-            return False
-
         res_meta = self._res_list.setdefault(res_id, {})
         res_meta["res_id"] = res_id
         res_meta["status"] = "idle"
@@ -702,6 +731,10 @@ class MockStateManager:
         if item_id is not None:
             res_meta["item_id"] = item_id
         self._safe_repo_call("sync_resource_snapshot", res_meta)
+        self._release_charger(res_id)
+
+        if self._event_bridge is None:
+            return False
 
         self._event_bridge.publish(
             Event(

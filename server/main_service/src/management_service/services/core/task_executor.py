@@ -10,6 +10,17 @@ from services.contracts.protocols import IAdapter, IEventBridge, IStateManager
 
 
 class TaskExecutor:
+    _CHARGER_POSE_MAP = {
+        "1-1": "ToCHG1",
+        "1-2": "ToCHG2",
+        "1-3": "ToCHG3",
+    }
+    _EXTERNAL_WAIT_EVENTS = {
+        EventType.HANDOFF_ACK,
+        EventType.PP_DONE_REQUESTED,
+        EventType.ITEM_LOOKUP_REQUESTED,
+    }
+
     def __init__(
         self,
         adapter: IAdapter,
@@ -36,6 +47,13 @@ class TaskExecutor:
                 self._on_subtask_completed,
                 "task_executor.subtask_completed_waiters",
             )
+            for event_type in self._EXTERNAL_WAIT_EVENTS:
+                self.event_bridge.subscribe(
+                    event_type,
+                    self._on_external_wait_event,
+                    f"task_executor.external_waiters.{event_type.value.lower()}",
+                )
+
         
         self._sequence_map: Dict[TaskType, List[CommandStep]] = {
             # === MAT (Casting Robot) ===
@@ -77,22 +95,21 @@ class TaskExecutor:
             ],
             # === TAT (AMR) ===
             TaskType.ToPP: [
-                CommandStep(step_id=1, action="dock_robot", params={"pose_name": "ToCAST1"}),  # Casting zone 상차 대기 장소
+                CommandStep(step_id=1, action="dock_robot", params={"pose_name": "ToCAST"}),  # Casting zone 상차 대기 장소
                 CommandStep(
                     step_id=2,
                     action="WAIT_TASK_COMPLETED",
                     params={"task_type": TaskType.DM},
                     timeout_sec=600,
                 ),
-                CommandStep(step_id=3, action="dock_robot", params={"pose_name": "ToPP1"}),    # PP Zone 하차 대기 장소
-                # 외부 이벤트 일단 주석 처리
-                # CommandStep(
-                #     step_id=4,
-                #     action="WAIT_SUBTASK_COMPLETED",
-                #     params={"subtask_type": "button_pushed"},
-                #     timeout_sec=600,
-                # ),
-                CommandStep(step_id=4, action="dock_robot", params={"pose_name": "ToCHG"}),
+                CommandStep(step_id=3, action="dock_robot", params={"pose_name": "ToPP"}),    # PP Zone 하차 대기 장소
+                CommandStep(
+                    step_id=4,
+                    action="WAIT_SUBTASK_COMPLETED",
+                    params={"subtask_type": EventType.HANDOFF_ACK.value},
+                    timeout_sec=600,
+                ),
+                CommandStep(step_id=5, action="dock_robot", params={}),  # 실행 전 계산 후 주입
             ],
             TaskType.ToSTRG: [
                 CommandStep(step_id=1, action="dock_robot", params={"pose_name": "ToINSP"}),   # 컨베이어 상차 대기 장소
@@ -102,17 +119,17 @@ class TaskExecutor:
                     params={"task_type": TaskType.ToPAWait},
                     timeout_sec=600,
                 ),
-                CommandStep(step_id=3, action="dock_robot", params={"pose_name": "ToSTRG1"}),  # STRG zone 하차 대기 장소
+                CommandStep(step_id=3, action="dock_robot", params={"pose_name": "ToSTRG"}),  # STRG zone 하차 대기 장소
                 CommandStep(
                     step_id=4,
                     action="WAIT_SUBTASK_COMPLETED",
                     params={"subtask_type": "pa_dld_done"},
                     timeout_sec=600,
                 ),
-                CommandStep(step_id=5, action="dock_robot", params={"pose_name": "ToCHG"}),
+                CommandStep(step_id=5, action="dock_robot", params={}),  # 실행 전 계산 후 주입
             ],
             TaskType.ToSHIP: [
-                CommandStep(step_id=1, action="dock_robot", params={"pose_name": "ToSTRG2"}),  # STRG Zone 상차 대기 장소
+                CommandStep(step_id=1, action="dock_robot", params={"pose_name": "ToPICK"}),  # STRG Zone 상차 대기 장소
                 CommandStep(
                     step_id=2,
                     action="WAIT_TASK_COMPLETED",
@@ -120,34 +137,31 @@ class TaskExecutor:
                     timeout_sec=600,
                 ),
                 CommandStep(step_id=3, action="dock_robot", params={"pose_name": "ToSHIP"}),   # SHIP Zone 하차 대기 장소
-                CommandStep(step_id=4, action="dock_robot", params={"pose_name": "ToCHG"}),
+                CommandStep(step_id=4, action="WAIT_TIME", params={"duration_sec": 5}),  # 7초 대기로 하차 신호
+                CommandStep(step_id=5, action="dock_robot", params={}),  # 실행 전 계산 후 주입
             ],
             TaskType.ToCHG: [
-                CommandStep(step_id=1, action="dock_robot", params={"pose_name": "ToCHG"}),   # Charging Zone
+                CommandStep(step_id=1, action="dock_robot", params={}),  # 실행 전 계산 후 주입
             ],
             
             # === CONV (Conveyor Belt) ===
             # 후처리 시작 -> pyqt 후처리 UI의 버튼 클릭이 종료 조건
-            TaskType.PP: [
-                CommandStep(step_id=1, action="NOOP", params={})
-                # 외부 이벤트 임시 주석 처리
-                # CommandStep(
-                #     step_id=1,
-                #     action="WAIT_SUBTASK_COMPLETED",
-                #     params={"subtask_type": "pyqt 후처리 UI에서 clicked"},
-                #     timeout_sec=600,
-                # ),
+            TaskType.PP: [  
+                CommandStep(
+                    step_id=1,
+                    action="WAIT_SUBTASK_COMPLETED",
+                    params={"subtask_type": EventType.PP_DONE_REQUESTED.value},
+                    timeout_sec=600,
+                ),
             ],
             # 컨베이어 이동 후 이미지 수신이 종료 조건
             TaskType.ToINSP: [
-                CommandStep(step_id=1, action="NOOP", params={})
-                # 외부 이벤트 임시 주석 처리
-                # CommandStep(
-                #     step_id=2,
-                #     action="WAIT_SUBTASK_COMPLETED",
-                #     params={"subtask_type": "image_arrived"},
-                #     timeout_sec=600,
-                # ),
+                CommandStep(
+                    step_id=1,
+                    action="WAIT_SUBTASK_COMPLETED",
+                    params={"subtask_type": EventType.ITEM_LOOKUP_REQUESTED.value},
+                    timeout_sec=600,
+                ),
             ],
             # INSP은 수신된 이미지로 AI에 추론 요청을 보내고 추론 결과 수신이 종료 조건
             TaskType.INSP: [
@@ -155,14 +169,13 @@ class TaskExecutor:
             ],
             TaskType.ToPAWait: [
                 CommandStep(step_id=1, action="NOOP", params={}),
-                # 임시 주석 처리
-                # CommandStep(
-                #     step_id=1,
-                #     action="WAIT_TASK_COMPLETED",
-                #     params={"task_type": TaskType.INSP},
-                #     timeout_sec=600,
-                # ),
-                CommandStep(step_id=2, action="CONV_ALLOW_MOVE", params={"duration_sec": 4}),
+                CommandStep(
+                    step_id=2,
+                    action="WAIT_SUBTASK_COMPLETED",
+                    params={"subtask_type": "tostrg"},
+                    timeout_sec=600,
+                ),
+                CommandStep(step_id=3, action="CONV_ALLOW_MOVE", params={"duration_sec": 4}),
             ],
         }
 
@@ -307,13 +320,30 @@ class TaskExecutor:
         if step.action == "WAIT_SUBTASK_COMPLETED":
             await self._wait_for_subtask_completed(input_data, step)
             return AdapterResult(success=True, message="wait_subtask_completed")
+        if step.action == "WAIT_TIME":  # 출고 대기용 시간
+            await asyncio.sleep(step.params.get("duration_sec", 0))
+            return AdapterResult(success=True, message="wait_time")
         if step.action == "NOOP": # 테스트용 fake action
             return AdapterResult(success=True, message="noop")
+        params = {**step.params, **input_data.payload}
+
+        if step.action == "dock_robot" and "pose_name" not in params:
+            charger_slot = await self.state_manager.get_empty_charger(input_data.res_id)
+            pose_name = self._resolve_charger_pose(charger_slot)
+            if pose_name is None:
+                return AdapterResult(success=False, message="no_available_charger")
+            params["pose_name"] = pose_name
         return await self.adapter.send_command(
             res_id=input_data.res_id,
             action=step.action,
-            params={**step.params, **input_data.payload},
+            params=params,
         )
+
+    def _resolve_charger_pose(self, charger_slot: str | None) -> str | None:
+        """chg_loc을 AMR의 dock id로 매핑."""
+        if charger_slot is None:
+            return None
+        return self._CHARGER_POSE_MAP.get(charger_slot)
 
     async def _wait_for_task_completed(self, input_data: ExecuteTaskInput, step: CommandStep) -> bool:
         """특정 task 완료를 기다리기 위해 waiter를 등록하고 대기한다."""
@@ -426,11 +456,11 @@ class TaskExecutor:
         pose_name = step.params.get("pose_name")
         if input_data.task_type == TaskType.POUR and step.action == "metal_pour_action":
             subtask_type = "pour"
-        elif input_data.task_type == TaskType.ToPP and step.action == "dock_robot" and pose_name == "ToCAST1":
+        elif input_data.task_type == TaskType.ToPP and step.action == "dock_robot" and pose_name == "ToCAST":
             subtask_type = "topp"
         elif input_data.task_type == TaskType.ToSTRG and step.action == "dock_robot" and pose_name == "ToINSP":
             subtask_type = "tostrg"
-        elif input_data.task_type == TaskType.ToSTRG and step.action == "dock_robot" and pose_name == "ToSTRG1":
+        elif input_data.task_type == TaskType.ToSTRG and step.action == "dock_robot" and pose_name == "ToSTRG":
             subtask_type = "tostrg_dld"
         elif input_data.task_type == TaskType.PA_GP and step.action == "pat_place_storage_action":
             subtask_type = "pa_dld_done"
@@ -494,23 +524,37 @@ class TaskExecutor:
         if item_id is None or payload_subtask_type is None:
             return
 
-        key = (item_id, payload_subtask_type)
-        self._completed_subtasks.add(key)  # 먼저 온 subtask를 저장해두기
+        key = (item_id, str(payload_subtask_type))
+        self._completed_subtasks.add(key)
         with self._waiters_lock:
             futures = self._subtask_waiters.pop(key, [])
 
         for future in futures:
             if future.done():
                 continue
-            future.get_loop().call_soon_threadsafe(self._resolve_waiter, future)
+            future.get_loop().call_soon_threadsafe(self._resolve_subtask_waiter, future)
+
+    def _on_external_wait_event(self, event: Event) -> None:
+        """외부 이벤트를 WAIT_SUBTASK_COMPLETED waiter와 같은 방식으로 처리한다."""
+        if event.item_id is None:
+            return
+        key = (event.item_id, event.event_type.value)
+        self._completed_subtasks.add(key)
+        with self._waiters_lock:
+            futures = self._subtask_waiters.pop(key, [])
+
+        for future in futures:
+            if future.done():
+                continue
+            future.get_loop().call_soon_threadsafe(self._resolve_subtask_waiter, future)
 
     def _resolve_task_waiter(self, future: asyncio.Future[str], status: str) -> None:
         """task waiter의 future를 완료시키고 upstream task status를 전달한다."""
         if not future.done():
             future.set_result(status)
 
-    def _resolve_waiter(self, future: asyncio.Future[None]) -> None:
-        """waiter의 future를 완료시킨다."""
+    def _resolve_subtask_waiter(self, future: asyncio.Future[None]) -> None:
+        """subtask waiter의 future를 완료시키고 upstream task status를 전달한다."""
         if not future.done():
             future.set_result(None)
 
