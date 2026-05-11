@@ -1,7 +1,8 @@
-"""Debug 도메인 mixin — RFID/Conveyor TOF1/TOF2 시뮬 (개발 모드).
+"""Debug 도메인 mixin — RFID / Conveyor TOF1 시뮬 (개발 모드, 2026-05-08 1.7.0).
 
-후처리 작업자 화면 (Pink GUI #4 확장 — 2026-04-26) 의 가상 시뮬 endpoint.
-실 HW (ESP32 RC522 → Mgmt gRPC) 미연동 환경에서 PyQt 만으로 e2e 테스트.
+후처리 작업자 화면의 가상 시뮬 endpoint. 실 HW (ESP32 RC522 → Mgmt gRPC) 미연동 환경에서
+PyQt 만으로 e2e 테스트. TOF2 관련 sim 메서드는 1.7.0 에서 제거됨 (TOF2 sensor hardware
++ firmware 코드 모두 제거 완료).
 
 Backend `/api/debug/*` endpoint 는 APP_ENV=development 일 때만 등록됨.
 """
@@ -9,6 +10,8 @@ Backend `/api/debug/*` endpoint 는 APP_ENV=development 일 때만 등록됨.
 from __future__ import annotations
 
 from typing import Any
+
+from app import mock_data
 
 
 class DebugMixin:
@@ -21,7 +24,10 @@ class DebugMixin:
         """
         from urllib.parse import quote
 
-        return self._get(f"/api/debug/items/by-rfid?payload={quote(payload)}", mock_value=None)
+        return self._get(
+            f"/api/debug/items/by-rfid?payload={quote(payload)}",
+            mock_value=mock_data.RFID_LOOKUP_RESULT,
+        )
 
     def post_sim_rfid_scan(
         self, raw_payload: str, reader_id: str = "PYQT-WORKER", zone: str = "postprocessing"
@@ -36,25 +42,39 @@ class DebugMixin:
             },
         )
 
-    def post_sim_conveyor_tof1(
-        self, res_id: str = "CONV-01", rfid_payload: str | None = None, item_id: int | None = None
+    def get_latest_rfid_for_reader(
+        self, reader_id: str = "RFID-CONV-01"
     ) -> dict[str, Any] | None:
-        """가상 TOF1 진입 — pp_task_txn SUCC + item PP→ToINSP + equip_task_txn ToINSP PROC."""
-        body: dict[str, Any] = {"res_id": res_id}
-        if rfid_payload:
-            body["rfid_payload"] = rfid_payload
-        if item_id is not None:
-            body["item_id"] = item_id
-        op = self.current_operator_id()
-        if op is not None:
-            body["operator_id"] = op
-        return self._post("/api/debug/sim/conveyor-tof1", body)
+        """가장 최근 RFID 스캔 payload 조회 — PyQt _payload_edit 자동 채움.
 
-    def post_sim_conveyor_tof2(
-        self, res_id: str = "CONV-01", item_id: int | None = None
+        backend in-memory store (`/api/rfid/<reader_id>/latest`) 에서 가져옴.
+        record_rfid_scan 이 successful scan 시 갱신. 미수신 시 ``payload=None``.
+
+        2026-05-08: 책임 재배치 — RFID 스캔 책임은 후처리 완료 버튼으로 이관.
+        본 endpoint 는 자동 입력만 위한 read-only.
+        """
+        from urllib.parse import quote
+
+        return self._get(f"/api/rfid/{quote(reader_id)}/latest")
+
+    def post_conveyor_start(
+        self, res_id: str = "CONV-01", item_id: int = 0
     ) -> dict[str, Any] | None:
-        """가상 TOF2 도달 — equip_task_txn ToINSP SUCC + item INSP + insp_task_txn PROC."""
-        body: dict[str, Any] = {"res_id": res_id}
-        if item_id is not None:
-            body["item_id"] = item_id
-        return self._post("/api/debug/sim/conveyor-tof2", body)
+        """실 ESP32 컨베이어 모터 ON — `start` 명령 dispatch.
+
+        2026-05-08: PP 작업자 페이지 "후처리 완료" 버튼 → 3 초 카운트다운 후 호출.
+        Management ExecuteCommand RPC → JetsonRelayAdapter → ConveyorCommandQueue →
+        Jetson CommandSubscriber → EspBridge.send_command("start") → ESP32 펌웨어
+        handleCommand("start") → motorOn() + ST_RUNNING (즉시 진입).
+
+        Sim endpoints (post_sim_conveyor_tof1/tof2) 와 달리 실 모터를 구동하므로
+        디버그 환경 (`APP_ENV=development`) 외에서도 동작.
+
+        반환 (mock_only 모드에서는 None):
+          {"res_id": "CONV-01", "action": "start", "command": "start",
+           "accepted": bool, "reason": str}
+        """
+        return self._post(
+            f"/api/management/conveyor/{res_id}/start?item_id={item_id}",
+            {},
+        )
