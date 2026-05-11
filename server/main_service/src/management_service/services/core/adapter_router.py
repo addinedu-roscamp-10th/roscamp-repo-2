@@ -6,7 +6,7 @@ import logging
 from typing import Any
 
 from services.contracts.models import AdapterResult
-from services.contracts.protocols import IAdapter
+from services.contracts.protocols import IAdapter, IEventBridge
 from services.core.adapters.ai_adapter import AIAdapter
 from services.core.adapters.conv_adapter import ConvAdapter
 from services.core.adapters.mat_adapter import MatAdapter
@@ -18,13 +18,18 @@ logger = logging.getLogger(__name__)
 
 
 class AdapterRouter(IAdapter):
-    def __init__(self, ros2_runtime: Ros2Runtime | None = None) -> None:
+    def __init__(
+        self,
+        ros2_runtime: Ros2Runtime | None = None,
+        event_bridge: IEventBridge | None = None,
+    ) -> None:
         self._ros2_runtime = ros2_runtime
         self._mat_adapter = MatAdapter(ros2_runtime=ros2_runtime)
         self._pat_adapter = PatAdapter(ros2_runtime=ros2_runtime)
         self._tat_adapter = TATAdapter(ros2_runtime=ros2_runtime)
         self._conv_adapter = ConvAdapter()
-        self._ai_adapter = AIAdapter()
+        # AI 어댑터는 검사 결과 DB 기록 후 INSP_COMPLETED publish 가 필요하므로 event_bridge 주입
+        self._ai_adapter = AIAdapter(event_bridge=event_bridge)
 
     def start(self) -> None:
         """등록된 모든 어댑터를 초기화하고 시작."""
