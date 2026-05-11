@@ -1,7 +1,11 @@
-"""AIAdapter 통합 — AI 서버 호출 + DB 기록 + INSP_COMPLETED publish 한 사이클 검증.
+"""AIAdapter 통합 — AI 서버 호출 + DB 기록 한 사이클 검증.
 
 DB 의존성은 InspectionResultCommand 를 mock 으로 대체하여 격리한다. AI 서버는
 같은 프로세스에서 uvicorn 으로 띄워 실 HTTP 경로를 통과시킨다.
+
+INSP_COMPLETED publish 책임은 본 어댑터에서 conv_adapter (ToPAWait/CONV_ALLOW_MOVE)
+로 이동되었으므로 (2026-05-12) AIAdapter 테스트에서는 publish 발생 안 함을 검증한다.
+conv_adapter 의 publish 검증은 test_conv_adapter_publish.py 참조.
 """
 
 from __future__ import annotations
@@ -77,7 +81,7 @@ def _save_image(tmp_path: Path, image_bytes: bytes, item_id: int) -> Path:
     return saved.path
 
 
-def test_ai_adapter_full_cycle_publishes_insp_completed(
+def test_ai_adapter_full_cycle_records_db_without_insp_completed(
     ai_mock_server: int,
     tmp_path: Path,
     jpeg_bytes: bytes,
@@ -106,7 +110,7 @@ def test_ai_adapter_full_cycle_publishes_insp_completed(
         recorded_at=datetime.now(timezone.utc).replace(tzinfo=None),
     )
 
-    # 3) EventBridge 는 실제 인스턴스 — INSP_COMPLETED 수신을 spy
+    # 3) EventBridge — AIAdapter 가 publish 하지 않아야 함을 검증하기 위한 spy
     event_bridge = EventBridgeImpl()
     captured: list[Event] = []
     event_bridge.subscribe(
@@ -115,8 +119,8 @@ def test_ai_adapter_full_cycle_publishes_insp_completed(
         subscriber_name="test_spy",
     )
 
-    # 4) AIAdapter 는 실 AiInferenceCommand (env 로 mock 서버 가리킴) + mock DB
-    adapter = AIAdapter(result_command=result_command, event_bridge=event_bridge)
+    # 4) AIAdapter — event_bridge 주입 안 함 (책임이 conv_adapter 로 이동됨)
+    adapter = AIAdapter(result_command=result_command)
     payload = json.dumps(
         {
             "image_path": str(saved_path),
@@ -146,15 +150,9 @@ def test_ai_adapter_full_cycle_publishes_insp_completed(
     assert call_kwargs["yolo_confidence"] is not None
     assert call_kwargs["anomaly_score"] is not None
 
-    # 7) INSP_COMPLETED 이벤트 수신 + payload 검증
-    assert len(captured) == 1
-    event = captured[0]
-    assert event.event_type == EventType.INSP_COMPLETED
-    assert event.item_id == 777
-    assert event.txn_id == 999
-    assert event.payload["result"] == "OK"
-    assert event.payload["is_defective"] is False
-    assert event.payload["insp_txn_id"] == 999
+    # 7) INSP_COMPLETED 는 AIAdapter 에서 publish 되지 않아야 함
+    # (conv_adapter 가 ToPAWait/CONV_ALLOW_MOVE 시점에 publish 함)
+    assert captured == []
 
 
 def test_ai_adapter_failure_records_failure_and_no_publish(
@@ -182,7 +180,7 @@ def test_ai_adapter_failure_records_failure_and_no_publish(
         subscriber_name="test_spy",
     )
 
-    adapter = AIAdapter(result_command=result_command, event_bridge=event_bridge)
+    adapter = AIAdapter(result_command=result_command)
     payload = json.dumps({"image_path": str(saved_path)}).encode("utf-8")
     result = adapter.execute(item_id=314, _robot_id="AI", _command="AI_INFERENCE_REQUEST", payload=payload)
 
@@ -194,7 +192,7 @@ def test_ai_adapter_failure_records_failure_and_no_publish(
     fail_kwargs = result_command.record_inspection_failure.call_args.kwargs
     assert fail_kwargs["item_id"] == 314
     assert "http_error" in (fail_kwargs.get("reason") or "")
-    # INSP_COMPLETED publish 는 발생하지 않아야 함
+    # INSP_COMPLETED publish 는 발생하지 않아야 함 (성공 path 든 실패 path 든 AIAdapter 책임 아님)
     assert seen == []
 
 

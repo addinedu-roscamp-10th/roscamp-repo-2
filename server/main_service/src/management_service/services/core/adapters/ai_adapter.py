@@ -1,22 +1,28 @@
-"""AI 추론 어댑터 — 검사 이미지 업로드 + DB 결과 영속화 + INSP_COMPLETED publish.
+"""AI 추론 어댑터 — 검사 이미지 업로드 + DB 결과 영속화.
 
 AdapterRouter 가 `action=AI_INFERENCE_REQUEST` 일 때 본 어댑터를 호출한다.
-execute() 한 번에 다음 단계가 모두 진행된다:
+execute() 한 번에 다음 단계가 진행된다:
 
     1. payload 검증 (image_path 또는 image_url + item_id)
     2. AiInferenceCommand → AI 서버 multipart POST → 양/불 판정 결과 수신
     3. InspectionResultCommand → insp_task_txn SUCC + ai_inference_txn / insp_stat INSERT
-    4. INSP_COMPLETED publish → Jetson WatchEvents 구독자가 ESP32 모터 ON
 
 AI 서버 호출 실패 시: insp_task_txn FAIL 로 마감하고 AdapterResult(success=False) 반환.
-이 경우 INSP_COMPLETED 는 publish 하지 않으므로 컨베이어가 정지 상태를 유지한다.
+
+INSP_COMPLETED publish 시점에 대한 주석 (2026-05-12):
+    이전 버전은 본 execute() 마지막에 INSP_COMPLETED 를 publish 하여 Jetson 측에서
+    즉시 컨베이어를 가동시켰다. 그러나 AI 추론 완료 시점에는 다음 공정 AMR 이 아직
+    컨베이어 출구(ToINSP pose) 에 도착하지 않은 상태일 수 있어 주물이 빈 위치로
+    unloading 되는 문제가 있었다. 이를 해결하기 위해 INSP_COMPLETED publish 는
+    ToPAWait task 의 step 3 (`CONV_ALLOW_MOVE`) 에서 실행되도록 conv_adapter 로
+    이동되었다. ToPAWait step 2 가 AMR 도착 subtask("tostrg") 를 기다리므로
+    AMR 도착 보장 후에만 컨베이어가 RUN 한다.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -25,9 +31,7 @@ from services.command.inspection_result_command import (
     InspectionResultCommand,
     InspectionResultRow,
 )
-from services.contracts.enums import EventType
-from services.contracts.models import AdapterResult, Event
-from services.contracts.protocols import IEventBridge
+from services.contracts.models import AdapterResult
 
 logger = logging.getLogger(__name__)
 
@@ -39,11 +43,9 @@ class AIAdapter:
         self,
         ai_command: AiInferenceCommand | None = None,
         result_command: InspectionResultCommand | None = None,
-        event_bridge: IEventBridge | None = None,
     ) -> None:
         self._ai_command = ai_command or AiInferenceCommand()
         self._result_command = result_command or InspectionResultCommand()
-        self._event_bridge = event_bridge
 
     def execute(
         self,
@@ -113,9 +115,8 @@ class AIAdapter:
                 payload={**payload_dict, "inference": inference.raw_payload},
             )
 
-        # 3) INSP_COMPLETED publish (단일 라인 — 양/불 무관 컨베이어 재가동) ---
-        self._publish_inspection_completed(recorded, inference)
-
+        # 3) INSP_COMPLETED publish 는 conv_adapter (ToPAWait/CONV_ALLOW_MOVE) 로 이동 -----
+        # AMR 도착 보장 후에만 컨베이어가 RUN 하도록 publish 시점을 늦춤.
         response_payload = {
             **payload_dict,
             "inference": inference.raw_payload,
@@ -164,47 +165,6 @@ class AIAdapter:
             },
         )
 
-    def _publish_inspection_completed(
-        self,
-        recorded: InspectionResultRow,
-        inference: AiInferenceResult,
-    ) -> None:
-        if self._event_bridge is None:
-            logger.info(
-                "AIAdapter._publish_inspection_completed: event_bridge 미주입 — "
-                "INSP_COMPLETED publish skip item_id=%d",
-                recorded.item_id,
-            )
-            return
-        try:
-            self._event_bridge.publish(
-                Event(
-                    event_type=EventType.INSP_COMPLETED,
-                    item_id=recorded.item_id,
-                    txn_id=recorded.insp_txn_id,
-                    payload={
-                        "item_id": recorded.item_id,
-                        "insp_txn_id": recorded.insp_txn_id,
-                        "inference_id": recorded.inference_id,
-                        "result": recorded.result,
-                        "is_defective": recorded.is_defective,
-                        "predicted_class": recorded.predicted_class,
-                        "anomaly_score": inference.anomaly_score,
-                        "anomaly_threshold": inference.anomaly_threshold,
-                        "yolo_confidence": inference.yolo_confidence,
-                        "model_nm": inference.model_nm,
-                        "occurred_at": datetime.now(timezone.utc).isoformat(),
-                    },
-                )
-            )
-        except Exception as exc:  # noqa: BLE001 — publish 실패가 DB commit 을 무효화하지 않도록 격리
-            logger.warning(
-                "AIAdapter._publish_inspection_completed: publish 실패 item_id=%d exc=%s",
-                recorded.item_id,
-                exc,
-            )
-
-
 def _coerce_float(value: object) -> float | None:
     if value is None:
         return None
@@ -229,7 +189,3 @@ def _parse_iso(value: str | None) -> datetime | None:
     if dt.tzinfo is not None:
         return dt.astimezone(timezone.utc).replace(tzinfo=None)
     return dt
-
-
-# 모듈 시각 동기화 헬퍼 (sleep 호출 회피용 placeholder)
-_NOW = time.time

@@ -219,6 +219,8 @@ def run_hw_mode(timeout_sec: int, keep_data: bool) -> int:
 
 # ---------- SIM mode ----------------------------------------------------------
 def run_sim_mode(timeout_sec: int, keep_data: bool) -> int:
+    from sqlalchemy import text
+
     from services.command.ai_inference_command import AiInferenceCommand
     from services.command.inspection_image_sink_command import InspectionImageSinkCommand
     from services.command.inspection_result_command import InspectionResultCommand
@@ -226,7 +228,8 @@ def run_sim_mode(timeout_sec: int, keep_data: bool) -> int:
     from services.core.adapters.ai_adapter import AIAdapter
     from services.core.event_bridge import EventBridgeImpl
 
-    # 1. 가용 item + active YOLO model 확보
+    # 1. 가용 item 확보 — 없으면 임시 item INSERT (FK: ord 한 행 필요)
+    temp_item_id: int | None = None
     with SessionLocal() as db:
         item = (
             db.query(Item)
@@ -235,9 +238,23 @@ def run_sim_mode(timeout_sec: int, keep_data: bool) -> int:
             .first()
         )
         if item is None:
-            print("✗ is_defective=NULL 인 item 없음 — 테스트 가능한 item 필요")
-            return 1
-        item_id = int(item.item_id)
+            ord_row = db.execute(
+                text("SELECT ord_id FROM smartcast.ord ORDER BY ord_id ASC LIMIT 1")
+            ).fetchone()
+            if ord_row is None:
+                print("✗ smartcast.ord 행이 없음 — temp item 생성 불가")
+                return 1
+            ord_id = int(ord_row[0])
+            new_item = Item(ord_id=ord_id, cur_stat="CAST", is_defective=None)
+            db.add(new_item)
+            db.commit()
+            db.refresh(new_item)
+            item_id = int(new_item.item_id)
+            temp_item_id = item_id
+            print(f"  [SIM] temp item INSERT — item_id={item_id} ord_id={ord_id} (cleanup 시 DELETE)")
+        else:
+            item_id = int(item.item_id)
+            print(f"  [SIM] 기존 item 사용 — item_id={item_id}")
         yolo = (
             db.query(AiModel)
             .filter(AiModel.is_active.is_(True))
@@ -269,18 +286,10 @@ def run_sim_mode(timeout_sec: int, keep_data: bool) -> int:
         return 1
     print(f"  [SIM] 검사 이미지 저장 — {saved.path}")
 
-    # 4. AIAdapter 실 호출 (mock AI 서버 + 실 DB)
-    event_bridge = EventBridgeImpl()
-    captured_events: list = []
-    event_bridge.subscribe(
-        EventType.INSP_COMPLETED,
-        lambda evt: captured_events.append(evt),
-        subscriber_name="e2e_sim_spy",
-    )
+    # 4. AIAdapter 실 호출 (mock AI 서버 + 실 DB) — DB 기록만, INSP_COMPLETED publish 책임 없음
     adapter = AIAdapter(
         ai_command=AiInferenceCommand(),
         result_command=InspectionResultCommand(),
-        event_bridge=event_bridge,
     )
     payload = json.dumps(
         {
@@ -299,12 +308,34 @@ def run_sim_mode(timeout_sec: int, keep_data: bool) -> int:
     elapsed_ms = (time.time() - started) * 1000.0
     print(f"  [SIM] AIAdapter.execute → success={result.success} ({elapsed_ms:.1f}ms)")
 
-    # 5. INSP_COMPLETED 이벤트 도달 확인
-    if not captured_events:
-        print("  ⚠ INSP_COMPLETED 이벤트 미수신 (event_bridge spy 0 hits)")
-    else:
+    # 5. ToPAWait/CONV_ALLOW_MOVE 시뮬레이션 — conv_adapter 가 INSP_COMPLETED publish
+    # 실 HW 흐름에서는 AMR 이 ToINSP pose 도착 후 ToPAWait step 3 가 conv_adapter 호출.
+    # SIM 모드에서는 AMR 도착 보장이 이미 끝났다 가정하고 직접 호출하여 publish 검증.
+    from services.core.adapters.conv_adapter import ConvAdapter
+
+    event_bridge = EventBridgeImpl()
+    captured_events: list = []
+    event_bridge.subscribe(
+        EventType.INSP_COMPLETED,
+        lambda evt: captured_events.append(evt),
+        subscriber_name="e2e_sim_spy",
+    )
+    conv = ConvAdapter(event_bridge=event_bridge)
+    conv_ok, conv_msg = conv.execute(
+        item_id=item_id,
+        robot_id="CONV1",
+        command="CONV_ALLOW_MOVE",
+        payload=json.dumps({"duration_sec": 4.0}).encode("utf-8"),
+    )
+    print(f"  [SIM] ConvAdapter.execute(CONV_ALLOW_MOVE) → ok={conv_ok} msg={conv_msg}")
+    if captured_events:
         evt = captured_events[0]
-        print(f"  [SIM] INSP_COMPLETED 수신 — item={evt.item_id} result={evt.payload.get('result')}")
+        print(
+            f"  [SIM] INSP_COMPLETED 수신 — item={evt.item_id} res_id={evt.res_id} "
+            f"source={evt.payload.get('source')}"
+        )
+    else:
+        print("  ⚠ INSP_COMPLETED 이벤트 미수신 (conv_adapter publish 실패?)")
 
     # 6. DB 4-table 검증
     with SessionLocal() as db:
@@ -315,7 +346,10 @@ def run_sim_mode(timeout_sec: int, keep_data: bool) -> int:
         ok, errors = _validate_succ(snap)
     else:
         ok, errors = _validate_fail(snap)
-    return _finalize(snap, ok, errors, keep_data, created_txn_id=created_txn_id)
+    return _finalize(
+        snap, ok, errors, keep_data,
+        created_txn_id=created_txn_id, temp_item_id=temp_item_id,
+    )
 
 
 # ---------- finalize / cleanup ------------------------------------------------
@@ -325,6 +359,7 @@ def _finalize(
     errors: list[str],
     keep_data: bool,
     created_txn_id: int | None,
+    temp_item_id: int | None = None,
 ) -> int:
     print("\n  ──────────── 검증 ────────────")
     if ok:
@@ -341,15 +376,15 @@ def _finalize(
     if not keep_data:
         # SIM 모드에서만 cleanup (HW 모드는 실 데이터를 보존)
         if created_txn_id is not None:
-            _cleanup(created_txn_id, snap.item_id)
+            _cleanup(created_txn_id, snap.item_id, temp_item_id)
     else:
         print("\n  --keep-data 지정 — 테스트 row 보존 (수동 정리 필요)")
 
     return 0 if ok else 1
 
 
-def _cleanup(txn_id: int, item_id: int | None) -> None:
-    print(f"\n  [cleanup] insp_txn={txn_id} item={item_id} 정리...")
+def _cleanup(txn_id: int, item_id: int | None, temp_item_id: int | None = None) -> None:
+    print(f"\n  [cleanup] insp_txn={txn_id} item={item_id} temp_item={temp_item_id} 정리...")
     with SessionLocal() as db:
         db.query(InspStat).filter(InspStat.insp_txn_id == txn_id).delete(synchronize_session=False)
         db.flush()
@@ -358,7 +393,12 @@ def _cleanup(txn_id: int, item_id: int | None) -> None:
         )
         db.flush()
         db.query(InspTaskTxn).filter(InspTaskTxn.txn_id == txn_id).delete(synchronize_session=False)
-        if item_id is not None:
+        db.flush()
+        if temp_item_id is not None:
+            # SIM 이 임시 생성한 item — DELETE
+            db.query(Item).filter(Item.item_id == temp_item_id).delete(synchronize_session=False)
+        elif item_id is not None:
+            # 기존 item — is_defective 만 NULL 복원
             db.query(Item).filter(Item.item_id == item_id).update(
                 {Item.is_defective: None},
                 synchronize_session=False,

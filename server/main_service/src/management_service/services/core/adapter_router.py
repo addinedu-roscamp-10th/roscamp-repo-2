@@ -27,9 +27,11 @@ class AdapterRouter(IAdapter):
         self._mat_adapter = MatAdapter(ros2_runtime=ros2_runtime)
         self._pat_adapter = PatAdapter(ros2_runtime=ros2_runtime)
         self._tat_adapter = TATAdapter(ros2_runtime=ros2_runtime)
-        self._conv_adapter = ConvAdapter()
-        # AI 어댑터는 검사 결과 DB 기록 후 INSP_COMPLETED publish 가 필요하므로 event_bridge 주입
-        self._ai_adapter = AIAdapter(event_bridge=event_bridge)
+        # 컨베이어 어댑터는 ToPAWait/CONV_ALLOW_MOVE 시점에 INSP_COMPLETED 를 publish
+        # 하여 Jetson 측 ESP32 모터 RUN 을 트리거하므로 event_bridge 주입.
+        # AI 어댑터는 DB 기록만 담당 (publish 책임 없음, 2026-05-12 변경).
+        self._conv_adapter = ConvAdapter(event_bridge=event_bridge)
+        self._ai_adapter = AIAdapter()
 
     def start(self) -> None:
         """등록된 모든 어댑터를 초기화하고 시작."""
