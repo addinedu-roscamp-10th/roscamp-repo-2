@@ -10,7 +10,7 @@ from management_service.tests.unit.test_task_executor import (
     _event_bridge,
     _execute_input,
 )
-from services.contracts.enums import TaskType
+from services.contracts.enums import TaskType, TxnStat
 from services.contracts.models import AdapterResult, CommandStep
 from services.core.task_executor import TaskExecutor
 
@@ -200,6 +200,92 @@ def test_execute_step_passes_through_non_dock_adapter_calls() -> None:
                 "action": "AI_INFERENCE_REQUEST",
                 "params": {"model": "vision", "item_id": 1001},
             }
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_execute_task_runs_tochg_sequence_with_injected_charge_pose(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ToCHG 전체 실행은 충전 위치를 주입한 뒤 adapter 호출과 성공 상태 전이까지 마친다."""
+
+    async def fake_sleep(_: float) -> None:
+        return None
+
+    async def scenario() -> None:
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+        adapter = _RecordingAdapter()
+        state_manager = _RecordingStateManager(charger_slot="1-2")
+        executor = TaskExecutor(adapter, state_manager, None)
+
+        result = await executor.execute_task(_execute_input(TaskType.ToCHG))
+
+        assert result.final_status == TxnStat.SUCC
+        assert result.steps_executed == 1
+        assert state_manager.status_updates == [
+            {"task_id": "task_1", "new_stat": "PROC", "error_code": None},
+            {"task_id": "task_1", "new_stat": "SUCC", "error_code": None},
+        ]
+        assert state_manager.charger_requests == ["TAT2"]
+        assert adapter.calls == [
+            {
+                "res_id": "TAT2",
+                "action": "dock_robot",
+                "params": {"pose_name": "ToCHG2"},
+            }
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_execute_task_runs_topp_sequence_and_injects_charge_pose_on_last_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ToPP 전체 실행은 중간 대기 단계를 지나 마지막 충전 복귀 목적지를 주입해 실행한다."""
+
+    async def fake_sleep(_: float) -> None:
+        return None
+
+    async def fake_wait_task_completed(*_args, **_kwargs) -> bool:
+        return True
+
+    async def fake_wait_subtask_completed(*_args, **_kwargs) -> bool:
+        return True
+
+    async def scenario() -> None:
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+        adapter = _RecordingAdapter()
+        state_manager = _RecordingStateManager(charger_slot="1-3")
+        executor = TaskExecutor(adapter, state_manager, _event_bridge())
+        monkeypatch.setattr(executor, "_wait_for_task_completed", fake_wait_task_completed)
+        monkeypatch.setattr(executor, "_wait_for_subtask_completed", fake_wait_subtask_completed)
+
+        result = await executor.execute_task(_execute_input(TaskType.ToPP))
+
+        assert result.final_status == TxnStat.SUCC
+        assert result.steps_executed == 5
+        assert state_manager.charger_requests == ["TAT2"]
+        assert adapter.calls == [
+            {
+                "res_id": "TAT2",
+                "action": "dock_robot",
+                "params": {"pose_name": "ToCAST"},
+            },
+            {
+                "res_id": "TAT2",
+                "action": "dock_robot",
+                "params": {"pose_name": "ToPP"},
+            },
+            {
+                "res_id": "TAT2",
+                "action": "dock_robot",
+                "params": {"pose_name": "ToCHG3"},
+            },
+        ]
+        assert state_manager.status_updates == [
+            {"task_id": "task_1", "new_stat": "PROC", "error_code": None},
+            {"task_id": "task_1", "new_stat": "SUCC", "error_code": None},
         ]
 
     asyncio.run(scenario())
