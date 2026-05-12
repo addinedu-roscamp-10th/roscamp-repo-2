@@ -86,8 +86,8 @@ class ItemStatusRecord(BaseModel): #ok -> tm
     strg_loc: Optional[tuple[int, int]] = None
     ship_loc: Optional[tuple[int, int]] = None
 
-class CreateTaskInput(BaseModel): #tm -> sm
-    item_id: int
+class CreateTaskInput(BaseModel): #tm -> sm TASK 정보 중 디비에 기록할것
+    item_id: Optional[int] = None
     task_type: TaskType
     txn_stat: str = "que"
     res_id : Optional[int] = None
@@ -98,8 +98,14 @@ class NextTaskResult(BaseModel): # tm -> ok
     txn_id: int
     task_type: TaskType
     priority: int = 5
-    #strg_loc: Optional[str] = None
+    strg_loc: Optional[str] = None
     chg_loc : Optional[str] = None #1-1,1-2,1-3  TOCHG 일때 할당받는 주차 자리
+
+class ShipTaskResult(BaseModel): #tm -> ok 출고 Task 정보
+    txn_id: int
+    task_type: TaskType
+    priority: int = 3
+    batch: list[tuple[int, int, int]] | None = None
 
 
 ## Event bridge
