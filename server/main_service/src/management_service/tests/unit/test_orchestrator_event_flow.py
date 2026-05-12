@@ -101,7 +101,7 @@ def _item(
     order_id: int = 501,
     req_res_id: str | None = None,
     ptn_id: int | None = 7,
-    strg_loc: str | None = "2-4",
+    strg_loc: tuple[int, int] | None = (2, 4),
 ) -> ItemStatusRecord:
     """오케스트레이터 테스트에 사용할 기본 아이템 상태를 만든다."""
 
@@ -153,7 +153,7 @@ def test_task_completed_event_creates_allocates_and_executes_next_task() -> None
                 "last_task_type": TaskType.PP,
                 "planning_event": None,
                 "req_res_id": None,
-                "strg_loc": "2-4",
+                "strg_loc": (2, 4),
                 "ptn_id": 7,
             }
         ]
@@ -163,7 +163,7 @@ def test_task_completed_event_creates_allocates_and_executes_next_task() -> None
                 "item_id": 1001,
                 "req_res_id": None,
                 "task_type": TaskType.ToINSP,
-                "zone_nm": "2-4",
+                "zone_nm": None,
             }
         ]
         assert len(executor.execute_calls) == 1
@@ -175,8 +175,7 @@ def test_task_completed_event_creates_allocates_and_executes_next_task() -> None
         assert execute_input.payload == {
             "item_id": 1001,
             "ptn_loc_id": 7,
-            "strg_loc": "2-4",
-            "strg_loc_id": 10,
+            "strg_loc": (2, 4),
         }
 
     asyncio.run(scenario())
@@ -236,7 +235,7 @@ def test_subtask_completed_event_passes_planning_event_to_task_manager() -> None
                 "last_task_type": TaskType.ToSTRG,
                 "planning_event": "tostrg_dld",
                 "req_res_id": None,
-                "strg_loc": "2-4",
+                "strg_loc": (2, 4),
                 "ptn_id": 7,
             }
         ]
@@ -368,7 +367,7 @@ def test_arm_return_completed_event_schedules_recovery_and_charge_tasks() -> Non
                 "last_task_type": None,
                 "planning_event": "amr_battery_low_ToPP",
                 "req_res_id": None,
-                "strg_loc": "2-4",
+                "strg_loc": (2, 4),
                 "ptn_id": 7,
             },
             {
@@ -377,7 +376,7 @@ def test_arm_return_completed_event_schedules_recovery_and_charge_tasks() -> Non
                 "last_task_type": None,
                 "planning_event": "amr_battery_low_ToCHG",
                 "req_res_id": "TAT2",
-                "strg_loc": "2-4",
+                "strg_loc": (2, 4),
                 "ptn_id": 7,
             },
         ]

@@ -83,8 +83,8 @@ class ItemStatusRecord(BaseModel): #ok -> tm
     flow_stat: Optional[str] = None
     is_defective: bool = False
     ptn_id: Optional[int] = None
-    strg_loc: Optional[str] = None
-    ship_loc: Optional[str] = None
+    strg_loc: Optional[tuple[int, int]] = None
+    ship_loc: Optional[tuple[int, int]] = None
 
 class CreateTaskInput(BaseModel): #tm -> sm
     item_id: int

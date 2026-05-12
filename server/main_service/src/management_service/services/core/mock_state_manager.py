@@ -38,25 +38,15 @@ def _normalize_task_type(task_type: Any) -> TaskType | None:
             return None
     return None
 
-
-def _strg_loc_id(strg_loc: Any | None) -> int | None:
-    if strg_loc is None:
+def _storage_loc_tuple(raw: Any | None) -> tuple[int, int] | str | None:
+    if raw is None:
         return None
-    try:
-        return int(strg_loc)
-    except (TypeError, ValueError):
-        pass
-
-    try:
-        row_text, col_text = str(strg_loc).split("-", maxsplit=1)
-        row = int(row_text)
-        col = int(col_text)
-    except (TypeError, ValueError):
-        return None
-
-    if row < 1 or col < 1 or col > 6:
-        return None
-    return (row - 1) * 6 + col
+    if isinstance(raw, tuple) and len(raw) == 2:
+        try:
+            return (int(raw[0]), int(raw[1]))
+        except (TypeError, ValueError):
+            return None
+    return raw
 
 
 class MockStateManager:
@@ -390,7 +380,7 @@ class MockStateManager:
             flow_stat=item.get("flow_stat"),
             is_defective=bool(item.get("is_defective", False)),
             ptn_id=item.get("ptn_id"),
-            strg_loc=item.get("strg_loc")
+            strg_loc=_storage_loc_tuple(item.get("strg_loc")),
         )
 
     async def insert_task_txn(self, task_input: CreateTaskInput) -> int:
@@ -405,8 +395,6 @@ class MockStateManager:
             "task_type": task_input.task_type.value,
             "status": str(task_input.txn_stat),
             "res_id": task_input.res_id,
-            #"strg_loc": task_input.strg_loc,
-            #"strg_loc_id": _strg_loc_id(task_input.strg_loc),
         }
         db_txn_id = self._safe_repo_call("sync_task_created", task_meta)
         if db_txn_id is not None:
@@ -881,39 +869,52 @@ class MockStateManager:
             cur_stat,
         )
     #적재 위치 업뎃 함수 - 아직 구현 안함 - 틀만 있음
-    async def update_item_storage_location(self, item_id: int, strg_loc: str) -> None:
+    async def update_item_storage_location(self, item_id: int, strg_loc: tuple[int, int] | str) -> None:
         item = self._items.setdefault(item_id, {"item_id": item_id})
-        item["strg_loc"] = strg_loc
+        item["strg_loc"] = _storage_loc_tuple(strg_loc)
 
-        self._safe_repo_call(
-            "update_item_storage_location",
-            item_id,
-            strg_loc,
-        )
+        if isinstance(item["strg_loc"], tuple):
+            self._safe_repo_call(
+                "update_item_storage_location",
+                item_id,
+                int(item["strg_loc"][0]),
+                int(item["strg_loc"][1]),
+            )
 
         logger.info(
             "[MockStateManager] item storage location saved: item=%s strg_loc=%s",
             item_id,
-            strg_loc,
+            item["strg_loc"],
         )
 
     #주문 수량만큼 공간이 충분하면 가장 작은 위치를 반환
-    async def get_empty_start_slot(self, target_qty: int) -> str | None:
+    async def get_empty_start_slot(self, target_qty: int) -> tuple[int, int] | None:
         """
         DB 기준으로 빈 적재 슬롯을 조회하고,
         주문 수량만큼 공간이 충분하면 가장 작은 위치를 반환한다.
         """
         db_slots = self._safe_repo_call("get_storage_slots")
+
+        # DB 조회 실패 시 메모리로
         if db_slots is None:
             logger.warning("[MockStateManager] DB slot 조회 실패 또는 repo 없음")
-            return None
+            if self.task_manager is None:
+                return None
 
-        empty_slots = [
-            (int(slot["row"]), int(slot["col"]))
-            for slot in db_slots
-            if slot.get("status") == "Empty"
-            and slot.get("order_id") is None
-        ]
+            empty_slots = [
+                (row, col)
+                for (row, col), slot in sorted(self.task_manager.slot_table.items())
+                if slot.get("status") == "Empty"
+                and slot.get("order_id") is None
+            ]
+        # DB 조회
+        else:
+            empty_slots = [
+                (int(slot["row"]), int(slot["col"]))
+                for slot in db_slots
+                if slot.get("status") == "Empty"
+                and slot.get("order_id") is None
+            ]
 
         empty_slots.sort()
 
@@ -921,4 +922,4 @@ class MockStateManager:
             return None
 
         row, col = empty_slots[0]
-        return f"{row}-{col}"
+        return (row, col)

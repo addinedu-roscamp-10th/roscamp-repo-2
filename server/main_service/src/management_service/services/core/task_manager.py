@@ -38,9 +38,9 @@ class TaskManager(ITaskManager):
 
 
     #오더 투입시 해당 오더가 사용할 적재 공간 예약
-    def reserve_rack_slots(self, order_id: int, start_pos: str, target_qty: int):
+    def reserve_rack_slots(self, order_id: int, start_pos: tuple[int, int], target_qty: int):
         """주문 투입 시 해당 오더가 사용할 슬롯들을 가상 랙에 예약한다."""
-        row, col = map(int, start_pos.split("-"))
+        row, col = start_pos
 
         assigned = 0
         current_abs_idx = (row - 1) * self.MAX_COL + (col - 1)
@@ -257,7 +257,7 @@ class TaskManager(ITaskManager):
         return NextTaskResult(item_id=item_info.item_id, txn_id=curr_txn_id, task_type=task_type ) #proority = 0 
     
     #적재위치계산 
-    async def _calculate_strg_loc(self, task_type: TaskType, item_info: ItemStatusRecord) -> str | None:
+    async def _calculate_strg_loc(self, task_type: TaskType, item_info: ItemStatusRecord) -> tuple[int, int] | str | None:
         if item_info.is_defective:
             return "DEFECTIVE_ZONE"
         
@@ -266,7 +266,7 @@ class TaskManager(ITaskManager):
                 if data["order_id"] == item_info.order_id and data["status"] == "Reserved":
                     data["status"] = "Assigned"
 
-                    strg_loc = f"{row}-{col}"
+                    strg_loc = (row, col)
 
                     await self.sm.update_item_storage_location(
                         item_info.item_id,

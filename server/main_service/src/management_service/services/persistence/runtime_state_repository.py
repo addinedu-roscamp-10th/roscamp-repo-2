@@ -338,6 +338,43 @@ class RuntimeStateRepository:
                 for row in rows
             ]
 
+    def update_item_storage_location(self, item_id: int, row: int, col: int) -> None:
+        if self._strg_location_stat_model is None:
+            return
+
+        with self._session_factory() as db:
+            target_slot = (
+                db.query(self._strg_location_stat_model)
+                .filter(
+                    self._strg_location_stat_model.loc_row == row,
+                    self._strg_location_stat_model.loc_col == col,
+                )
+                .first()
+            )
+            if target_slot is None:
+                logger.warning(
+                    "[RuntimeStateRepository] storage slot not found: item_id=%s row=%s col=%s",
+                    item_id,
+                    row,
+                    col,
+                )
+                return
+
+            occupied_slots = (
+                db.query(self._strg_location_stat_model)
+                .filter(self._strg_location_stat_model.item_id == item_id)
+                .all()
+            )
+            for slot in occupied_slots:
+                if slot.loc_id == target_slot.loc_id:
+                    continue
+                slot.item_id = None
+                slot.status = "reserved"
+
+            target_slot.item_id = item_id
+            target_slot.status = "occupied"
+            db.commit()
+
     def sync_task_status(self, task_meta: dict[str, Any]) -> None:
         txn_id = task_meta.get("txn_id") or _task_id_to_int(task_meta.get("task_id"))
         task_type = _task_db_value(task_meta.get("task_type"))
