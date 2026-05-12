@@ -685,9 +685,22 @@ class MockStateManager:
         return task_type == TaskType.ToCHG and res_meta.get("condition") == "BATTERY_LOW"
 
     def _handle_pa_gp_completion(self, task_meta: dict[str, Any]) -> bool:
+        """PA_GP 성공 시 DB 적재 슬롯을 occupied로 확정하고, gp_qty를 증가시켜 주문 생산 완료 여부를 판단."""
         ord_id = task_meta.get("ord_id")
         if ord_id is None:
             return False
+
+        item_id = task_meta.get("item_id")
+        if item_id is not None:
+            item = self._items.get(item_id, {})
+            strg_loc = _storage_loc_tuple(item.get("strg_loc"))
+            if isinstance(strg_loc, tuple):
+                self._safe_repo_call(
+                    "update_item_storage_location",
+                    item_id,
+                    int(strg_loc[0]),
+                    int(strg_loc[1]),
+                )
 
         db_complete = self._safe_repo_call("increment_order_gp_qty", ord_id)
         if db_complete is not None:
@@ -917,18 +930,10 @@ class MockStateManager:
             res_id,
             cur_stat,
         )
-    #적재 위치 업뎃 함수 - 아직 구현 안함 - 틀만 있음
+    # 적재 예정 위치를 메모리에 기록한다. DB 점유 확정은 PA_GP 성공 시 처리한다.
     async def update_item_storage_location(self, item_id: int, strg_loc: tuple[int, int] | str) -> None:
         item = self._items.setdefault(item_id, {"item_id": item_id})
         item["strg_loc"] = _storage_loc_tuple(strg_loc)
-
-        if isinstance(item["strg_loc"], tuple):
-            self._safe_repo_call(
-                "update_item_storage_location",
-                item_id,
-                int(item["strg_loc"][0]),
-                int(item["strg_loc"][1]),
-            )
 
         logger.info(
             "[MockStateManager] item storage location saved: item=%s strg_loc=%s",

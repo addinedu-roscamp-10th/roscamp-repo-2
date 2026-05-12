@@ -241,7 +241,7 @@ class TaskManager(ITaskManager):
                 
                 else:
                     # 양품일 경우 정상 적재(PA_GP) 진행
-                    # (이후 Orchestrator에서 PA_GP 완료 시 'Occupied'로 변경 처리)
+                    # Occupied 확정은 Executor가 PA_GP 성공 완료 시 State manager가 반영
                     task_results.append(await self._create_result(item_info, TaskType.PA_GP))
                 
                 return task_results
@@ -288,8 +288,6 @@ class TaskManager(ITaskManager):
         if task_type == TaskType.ToPAWait:
             for (row, col), data in sorted(self.slot_table.items()):
                 if data["order_id"] == item_info.order_id and data["status"] == "Reserved":
-                    data["status"] = "Assigned"
-
                     strg_loc = (row, col)
 
                     await self.sm.update_item_storage_location(
