@@ -30,10 +30,11 @@ class TaskManager(ITaskManager):
                     "status": "Empty",
                     "order_id": None,
                 }
-
-        self.slot_table[(1, 1)]["status"] = "Used"
-        self.slot_table[(1, 2)]["status"] = "Used"
-        self.slot_table[(1, 3)]["status"] = "Used"
+       
+        # 임시 점유 테스트용 1-1~1-3 
+        # self.slot_table[(1, 1)]["status"] = "Used"
+        # self.slot_table[(1, 2)]["status"] = "Used"
+        # self.slot_table[(1, 3)]["status"] = "Used"
 
 
     #오더 투입시 해당 오더가 사용할 적재 공간 예약
