@@ -47,6 +47,9 @@ class ITaskExecutor(Protocol):
     async def handle_emergency_return(self, item_id: int, amr_id: str, arm_id: str) -> None:
         ...
 
+    async def return_amr_to_charger(self, res_id: str, source: str | None = None) -> bool:
+        ...
+
 class IAdapter(Protocol):
     
     ##Task Executor가 사용하는 인터페이스
@@ -69,12 +72,6 @@ class IStateManager(Protocol):
         ...
         
     def add_task(self, task: Dict[str, Any]) -> str:
-        ...
-        
-    def find_available_res(self, res_type: str, task_type: str | None = None) -> str | None:
-        ...
-
-    def get_res_available_for_item(self, res_id: str, item_id: int | None = None) -> bool:
         ...
         
     def update_task_allocation(self, assign_input: AllocateTaskResInput) -> None:
@@ -130,6 +127,17 @@ class IStateManager(Protocol):
     async def update_task_allocation(self, assign_input: AllocateTaskResInput) -> None:
         ...
 
+    def is_res_available(self, res_id: str) -> bool:
+        ...
+
+    def update_amr_charger_return_state(
+        self,
+        res_id: str,
+        status: str,
+        source: str | None = None,
+    ) -> None:
+        ...
+
     ##Task Executor가 사용하는 인터페이스
     async def update_task_status(self, req: UpdateTaskStatusInput) -> bool: 
         ...    
@@ -165,7 +173,7 @@ class IStateManager(Protocol):
     async def create_empty_item(self, order_id: int) -> int:
         ...
 
-    async def get_empty_charger(self, res_id: str | None = None) -> str | None:
+    async def get_empty_charger(self, res_id: str | None = None) -> tuple[int, int] | None:
         ...
     
 

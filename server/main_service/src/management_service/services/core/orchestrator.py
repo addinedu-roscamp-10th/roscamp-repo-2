@@ -223,6 +223,12 @@ class Orchestrator(IOrchestrator):
             req_res_type,
         )
         await self._process_pending_bucket(req_res_type)
+        # 작업에 할당되지 않은 가용 가능한 AMR은 충전소로 이동
+        if req_res_type == "TAT" and event.res_id is not None:
+            await self._return_idle_amr_to_charger_if_needed(
+                event.res_id,
+                source=str(event.payload.get("task_id") or "resource_available"),
+            )
 
     async def on_amr_bat_low(self, event: Event) -> None:
         """배터리가 부족한 AMR의 충전 task를 생성하고 실행한다."""
@@ -247,7 +253,9 @@ class Orchestrator(IOrchestrator):
     async def on_arm_return_completed(self, event: Event) -> None:
             """로봇팔이 아이템 복구를 완료했을 때 호출되는 콜백 (이벤트 구독에 의해 실행)"""
             item_id = event.item_id
-            amr_id = event.payload.get("amr_id")
+            amr_id = event.res_id
+            if amr_id is None:
+                raise ValueError("ARM_RETURN_COMPLETED requires res_id")
 
             logger.info("[ OK ] arm_return_completed 이벤트 : 복구 완료 확인.")
 
@@ -401,6 +409,12 @@ class Orchestrator(IOrchestrator):
             task_type=task.task_type,
             payload=self._build_execute_payload(task, item_info),
         )
+
+    async def _return_idle_amr_to_charger_if_needed(self, res_id: str, source: str) -> None:
+        """대기 중인 TAT가 할당되지 않으면 충전소로 이동한다."""
+        if not self.state_manager.is_res_available(res_id):
+            return
+        await self.task_executor.return_amr_to_charger(res_id, source=source)
 
     def _build_execute_payload(
         self,

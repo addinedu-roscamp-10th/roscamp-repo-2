@@ -68,6 +68,7 @@ class _RecordingExecutor:
     def __init__(self) -> None:
         self.execute_calls: list[ExecuteTaskInput] = []
         self.emergency_returns: list[dict[str, object]] = []
+        self.charger_returns: list[dict[str, object]] = []
 
     async def execute_task(self, input_data: ExecuteTaskInput) -> None:
         self.execute_calls.append(input_data)
@@ -81,6 +82,10 @@ class _RecordingExecutor:
             }
         )
 
+    async def return_amr_to_charger(self, res_id: str, source: str | None = None) -> bool:
+        self.charger_returns.append({"res_id": res_id, "source": source})
+        return True
+
 
 class _RecordingStateManager:
     """아이템 조회 요청만 기록하고 미리 준비한 아이템 상태를 돌려주는 테스트용 객체."""
@@ -88,11 +93,15 @@ class _RecordingStateManager:
     def __init__(self, items: dict[int, ItemStatusRecord]) -> None:
         self.items = items
         self.get_item_calls: list[int] = []
+        self.available_resources: dict[str, bool] = {}
 
     async def get_item(self, item_id: int) -> ItemStatusRecord:
         self.get_item_calls.append(item_id)
         item = self.items[item_id]
         return item.model_copy(deep=True)
+
+    def is_res_available(self, res_id: str) -> bool:
+        return self.available_resources.get(res_id, False)
 
 
 def _item(
@@ -280,18 +289,47 @@ def test_resource_available_event_retries_pending_task_and_executes_it() -> None
                 "item_id": 1001,
                 "req_res_id": "TAT3",
                 "task_type": TaskType.ToINSP,
-                "zone_nm": "2-4",
+                "zone_nm": None,
             },
             {
                 "task_id": "9201",
                 "item_id": 1001,
                 "req_res_id": "TAT3",
                 "task_type": TaskType.ToINSP,
-                "zone_nm": "2-4",
+                "zone_nm": None,
             },
         ]
         assert len(executor.execute_calls) == 1
         assert executor.execute_calls[0].res_id == "TAT3"
+        assert executor.charger_returns == []
+
+    asyncio.run(scenario())
+
+
+def test_resource_available_event_sends_idle_tat_to_charger_when_no_pending_task_uses_it() -> None:
+    """RESOURCE_AVAILABLE 이후에도 TAT가 비어 있으면 오케스트레이터가 충전소 복귀를 지시한다."""
+
+    async def scenario() -> None:
+        event_bridge = EventBridgeImpl()
+        task_manager = _RecordingTaskManager()
+        allocator = _SequencedAllocator([])
+        executor = _RecordingExecutor()
+        state_manager = _RecordingStateManager({1001: _item()})
+        state_manager.available_resources["TAT3"] = True
+        Orchestrator(task_manager, allocator, state_manager, event_bridge, executor)
+
+        event_bridge.publish(
+            Event(
+                event_type=EventType.RESOURCE_AVAILABLE,
+                res_id="TAT3",
+                payload={"req_res_type": "TAT", "task_id": "task_88"},
+            )
+        )
+        await _drain_loop()
+
+        assert allocator.calls == []
+        assert executor.execute_calls == []
+        assert executor.charger_returns == [{"res_id": "TAT3", "source": "task_88"}]
 
     asyncio.run(scenario())
 
@@ -312,7 +350,7 @@ def test_amr_battery_low_event_requests_emergency_return() -> None:
                 event_type=EventType.AMR_BATTERY_LOW,
                 item_id=1001,
                 res_id="TAT2",
-                payload={"arm_id": "MAT1"},
+                payload={"arm_id": "MAT1", "amr_id": "TAT2"},
             )
         )
         await _drain_loop()
@@ -375,7 +413,7 @@ def test_arm_return_completed_event_schedules_recovery_and_charge_tasks() -> Non
                 "order_id": 501,
                 "last_task_type": None,
                 "planning_event": "amr_battery_low_ToCHG",
-                "req_res_id": "TAT2",
+                "req_res_id": None,
                 "strg_loc": (2, 4),
                 "ptn_id": 7,
             },
@@ -386,14 +424,14 @@ def test_arm_return_completed_event_schedules_recovery_and_charge_tasks() -> Non
                 "item_id": 1001,
                 "req_res_id": None,
                 "task_type": TaskType.ToPP,
-                "zone_nm": "2-4",
+                "zone_nm": None,
             },
             {
                 "task_id": "9302",
                 "item_id": 1001,
                 "req_res_id": "TAT2",
                 "task_type": TaskType.ToCHG,
-                "zone_nm": "2-4",
+                "zone_nm": None,
             },
         ]
         assert [call.task_type for call in executor.execute_calls] == [TaskType.ToPP, TaskType.ToCHG]

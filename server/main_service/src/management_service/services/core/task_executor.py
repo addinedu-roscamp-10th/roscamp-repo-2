@@ -11,9 +11,9 @@ from services.contracts.protocols import IAdapter, IEventBridge, IStateManager
 
 class TaskExecutor:
     _CHARGER_POSE_MAP = {
-        "1-1": "ToCHG1",
-        "1-2": "ToCHG2",
-        "1-3": "ToCHG3",
+        (1, 1): "ToCHG1",
+        (1, 2): "ToCHG2",
+        (1, 3): "ToCHG3",
     }
     _EXTERNAL_WAIT_EVENTS = {
         EventType.HANDOFF_ACK,
@@ -109,7 +109,6 @@ class TaskExecutor:
                     params={"subtask_type": EventType.HANDOFF_ACK.value},
                     timeout_sec=600,
                 ),
-                CommandStep(step_id=5, action="dock_robot", params={}),  # 실행 전 계산 후 주입
             ],
             TaskType.ToSTRG: [
                 CommandStep(step_id=1, action="dock_robot", params={"pose_name": "ToINSP"}),   # 컨베이어 상차 대기 장소
@@ -126,7 +125,6 @@ class TaskExecutor:
                     params={"subtask_type": "pa_dld_done"},
                     timeout_sec=600,
                 ),
-                CommandStep(step_id=5, action="dock_robot", params={}),  # 실행 전 계산 후 주입
             ],
             TaskType.ToSHIP: [
                 CommandStep(step_id=1, action="dock_robot", params={"pose_name": "ToPICK"}),  # STRG Zone 상차 대기 장소
@@ -138,7 +136,6 @@ class TaskExecutor:
                 ),
                 CommandStep(step_id=3, action="dock_robot", params={"pose_name": "ToSHIP"}),   # SHIP Zone 하차 대기 장소
                 CommandStep(step_id=4, action="WAIT_TIME", params={"duration_sec": 5}),  # 7초 대기로 하차 신호
-                CommandStep(step_id=5, action="dock_robot", params={}),  # 실행 전 계산 후 주입
             ],
             TaskType.ToCHG: [
                 CommandStep(step_id=1, action="dock_robot", params={}),  # 실행 전 계산 후 주입
@@ -339,11 +336,68 @@ class TaskExecutor:
             params=params,
         )
 
-    def _resolve_charger_pose(self, charger_slot: str | None) -> str | None:
+    def _resolve_charger_pose(self, charger_slot: tuple[int, int] | None) -> str | None:
         """chg_loc을 AMR의 dock id로 매핑."""
         if charger_slot is None:
             return None
         return self._CHARGER_POSE_MAP.get(charger_slot)
+
+    def _should_bypass_hardware_execution(self, res_id: str) -> bool:
+        """현재는 AMR(TAT)과 ARM(MAT/PAT)만 실제 하드웨어 명령을 실행한다."""
+        normalized_res_id = (res_id or "").upper()
+        if normalized_res_id in self._HARDWARE_RESOURCE_IDS:
+            return False
+        if normalized_res_id.startswith(self._HARDWARE_RESOURCE_PREFIXES):
+            return False
+        return True
+
+    async def return_amr_to_charger(self, res_id: str, source: str | None = None) -> bool:
+        """대기 중인 AMR을 남는 충전소로 복귀시킨다."""
+        charger_slot = await self.state_manager.get_empty_charger(res_id)
+        pose_name = self._resolve_charger_pose(charger_slot)
+        if pose_name is None:
+            self.logger.info(
+                "[Executor] Charger return skipped: no available charger for res_id=%s source=%s",
+                res_id,
+                source,
+            )
+            return False
+
+
+
+        # 충전소 이동 시 toidle 상태로 변경
+        self.state_manager.update_amr_charger_return_state(
+            res_id,
+            "toidle",
+            source=source,
+        )
+        result = await self.adapter.send_command(
+            res_id=res_id,
+            action="dock_robot",
+            params={"pose_name": pose_name},
+        )
+        if result.success:
+            self.logger.info(
+                "[Executor] Charger return dispatched: res_id=%s pose_name=%s source=%s",
+                res_id,
+                pose_name,
+                source,
+            )
+        else:
+            self.logger.warning(
+                "[Executor] Charger return failed: res_id=%s pose_name=%s source=%s message=%s",
+                res_id,
+                pose_name,
+                source,
+                result.message,
+            )
+        # 충전소 도착 후 idle 상태로 변경
+        self.state_manager.update_amr_charger_return_state(
+            res_id,
+            "idle",
+            source=source,
+        )
+        return result.success
 
     async def _wait_for_task_completed(self, input_data: ExecuteTaskInput, step: CommandStep) -> bool:
         """특정 task 완료를 기다리기 위해 waiter를 등록하고 대기한다."""

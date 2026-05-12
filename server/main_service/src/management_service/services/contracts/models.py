@@ -99,7 +99,7 @@ class NextTaskResult(BaseModel): # tm -> ok
     task_type: TaskType
     priority: int = 5
     strg_loc: Optional[str] = None
-    chg_loc : Optional[str] = None #1-1,1-2,1-3  TOCHG 일때 할당받는 주차 자리
+    chg_loc : Optional[tuple[int, int]] = None #ToCHG 일때 할당받는 주차 자리(row, col)
 
 class ShipTaskResult(BaseModel): #tm -> ok 출고 Task 정보
     txn_id: int

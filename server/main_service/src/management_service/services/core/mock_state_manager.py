@@ -8,7 +8,6 @@ outside this module.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
 import logging
 from typing import Any
 
@@ -82,30 +81,30 @@ class MockStateManager:
     # 개발용 res seed
     def _seed_res_pool(self) -> None:
         seed_resources = [
-            ("TAT1", "TAT", 0.0, 0.0, 80),
-            ("TAT2", "TAT", 0.0, 0.0, 65),
-            ("TAT3", "TAT", 0.0, 0.0, 50),
-            ("CONV1", "CONV", 0.0, 0.0, 100),
-            ("PAT", "PAT", 0.0, 0.0, 100),
-            ("MAT", "MAT", 0.0, 0.0, 100),
+            ("TAT1", "TAT", 0.0, 0.0, 80, "idle", None),
+            ("TAT2", "TAT", 0.0, 0.0, 65, "allocated", -1),
+            ("TAT3", "TAT", 0.0, 0.0, 50, "allocated", -1),
+            ("CONV1", "CONV", 0.0, 0.0, 100, "idle", None),
+            ("PAT", "PAT", 0.0, 0.0, 100, "idle", None),
+            ("MAT", "MAT", 0.0, 0.0, 100, "idle", None),
         ]
-        for res_id, res_type, x, y, battery_pct in seed_resources:
+        for res_id, res_type, x, y, battery_pct, status, item_id in seed_resources:
             self._res_list[res_id] = {
                 "res_id": res_id,
                 "res_type": res_type,
                 "task_id": None,
-                "item_id": None,
-                "status": "idle",
+                "item_id": item_id,
+                "status": status,
                 "x": x,
                 "y": y,
                 "battery_pct": battery_pct,
                 "condition": "NORMAL",
             }
         # 충전소 상태 정보 (메모리 관리용)
-        self.charger_slots: dict[str, dict[str, Any]] = {
-            "1-1": {"chg_loc": "1-1", "status": "EMPTY", "res_id": None},
-            "1-2": {"chg_loc": "1-2", "status": "EMPTY", "res_id": None},
-            "1-3": {"chg_loc": "1-3", "status": "EMPTY", "res_id": None},
+        self.charger_slots: dict[tuple[int, int], dict[str, Any]] = {
+            (1, 1): {"status": "empty", "res_id": None},
+            (1, 2): {"status": "empty", "res_id": None},
+            (1, 3): {"status": "empty", "res_id": None},
         }
 
     def _safe_repo_call(self, method_name: str, *args, **kwargs):
@@ -120,96 +119,23 @@ class MockStateManager:
             logger.exception("[MockStateManager] persistence %s failed", method_name)
             return None
 
-    async def force_battery_emergency_test(self, amr_id="TAT1", item_id=1005):
-        """
-        5초 대기 후, 배터리 방전 이벤트를 강제로 발행하여 
-        오케스트레이터의 비상 복구 로직이 트리거되는지 테스트합니다.
-        """
-        logger.info(f"[Test] 비상 시뮬레이션 예약: 5초 뒤 {amr_id} 배터리 방전 이벤트 발생")
-        
-        # 1. 5초 대기
-        await asyncio.sleep(5)
-        arm_id = "MAT"
-        
-        # 2. 비상 이벤트 생성
-        emergency_event = Event(
-            event_type=EventType.AMR_BATTERY_LOW,
-            item_id=item_id,
-            res_id=amr_id,
-            payload={
-                "battery_pct": 25,
-                "condition": "BATTERY_LOW",
-                "arm_id": arm_id,
-            }
-        )
-        
-        # 3. 클래스 내부의 self._event_bridge를 사용하여 이벤트 발행
-        if self._event_bridge:
-            self._event_bridge.publish(emergency_event)
-            logger.warning(f"[Test] 5초 경과: {amr_id} 배터리 방전 이벤트 퍼블리시 완료!")
-        else:
-            logger.error("[Test] 이벤트 브리지가 설정되지 않아 이벤트를 쏠 수 없습니다.")
-
-# 2. 배터리 업데이트 및 이벤트 발행 로직
-    async def update_amr_runtime_memory(
-        self,
-        res_id: str,
-        *,
-        x: float | None = None,
-        y: float | None = None,
-        battery_pct: int | None = None,
-    ) -> None:
-        """배터리 수신(1단계) 및 조건 만족 시 이벤트 발행(2단계)"""
-        res_meta = self._res_list.get(res_id)
-        if not res_meta:
-            return
-
-        if x is not None: res_meta["x"] = x
-        if y is not None: res_meta["y"] = y
-        
-        if battery_pct is not None:
-            res_meta["battery_pct"] = battery_pct
-            
-            # 방전 감지 (30% 미만) 및 중복 이벤트 방지(condition 체크)
-            if battery_pct < 30 and res_meta.get("condition") == "NORMAL":
-                res_meta["condition"] = "BATTERY_LOW"
-                logger.warning("[MockStateManager] AMR %s 배터리 부족 감지 (%s%%)", res_id, battery_pct)
-                
-                #여기서 res_id 로 item_id 찾고 그 item_id 가지고 있는 arm res_id 찾기
-                arm_id = "MAT"
-                # 오케스트레이터가 구독 중인 이벤트 브리지로 발행 (2단계)
-                if self._event_bridge:
-                    self._event_bridge.publish(
-                        Event(
-                            event_type=EventType.AMR_BATTERY_LOW, # Enums에 해당 타입이 있다고 가정
-                            item_id=res_meta.get("item_id"),      # 현재 물고 있는 아이템 ID
-                            res_id=res_id,
-                            payload={
-                                "battery_pct": battery_pct,
-                                "condition": "BATTERY_LOW",
-                                "arm_id": arm_id,
-                            }
-                        )
-                    )
-
-    # 3. 빈 충전소 찾기 메서드 추가
-    async def get_empty_charger(self, res_id: str | None = None) -> str | None:
+    async def get_empty_charger(self, res_id: str | None = None) -> tuple[int, int] | None:
         """충전 가능한 슬롯을 반환하고, 최초 조회 시 즉시 예약한다."""
         if res_id is not None:
-            for slot_info in self.charger_slots.values():
+            for chg_loc, slot_info in self.charger_slots.items():
                 if slot_info.get("res_id") == res_id:
-                    return slot_info.get("chg_loc")
+                    return chg_loc
 
-        for slot_info in self.charger_slots.values():
-            if slot_info.get("status") == "EMPTY":
-                slot_info["status"] = "RESERVED"
+        for chg_loc, slot_info in self.charger_slots.items():
+            if slot_info.get("status") == "empty":
+                slot_info["status"] = "reserved"
                 slot_info["res_id"] = res_id
                 logger.info(
                     "[MockStateManager] Charger reserved: chg_loc=%s res_id=%s",
-                    slot_info.get("chg_loc"),
+                    chg_loc,
                     res_id,
                 )
-                return slot_info.get("chg_loc")
+                return chg_loc
 
         logger.warning("[MockStateManager] No empty charger available for res_id=%s", res_id)
         return None
@@ -219,14 +145,14 @@ class MockStateManager:
         if res_id is None:
             return
 
-        for slot_info in self.charger_slots.values():
+        for chg_loc, slot_info in self.charger_slots.items():
             if slot_info.get("res_id") != res_id:
                 continue
-            slot_info["status"] = "EMPTY"
+            slot_info["status"] = "empty"
             slot_info["res_id"] = None
             logger.info(
                 "[MockStateManager] Charger released: chg_loc=%s res_id=%s",
-                slot_info.get("chg_loc"),
+                chg_loc,
                 res_id,
             )
             return
@@ -423,22 +349,12 @@ class MockStateManager:
         self._tasks[task_id] = dict(task)
         return task_id
 
-    def find_available_res(self, res_type: str, task_type: str | None = None) -> str | None:
-        for res_id, res_meta in self._res_list.items():
-            if (
-                res_meta.get("res_type") == res_type
-                and res_meta.get("status") == "idle"
-                and res_meta.get("item_id") is None
-            ):
-                return res_id
-        return None
-
     async def get_available_resources(self, req_res_type: str) -> list[str]:
         available = [
             res_id
             for res_id, res_meta in sorted(self._res_list.items())
             if res_meta.get("res_type") == req_res_type
-            and res_meta.get("status") == "idle"
+            and res_meta.get("status") in {"idle", "toidle"}
             and res_meta.get("item_id") is None
         ]
         return available
@@ -455,15 +371,38 @@ class MockStateManager:
             if res_meta.get("res_type") == "TAT"
         ]
 
-    def get_res_available_for_item(self, res_id: str, item_id: int | None = None) -> bool:
+    def is_res_available(self, res_id: str) -> bool:
         res_meta = self._res_list.get(res_id)
         if res_meta is None:
             return False
-        if res_meta.get("status") != "idle":
-            return False
-        if item_id is None:
-            return res_meta.get("item_id") is None
-        return res_meta.get("item_id") == item_id
+        return res_meta.get("status") in {"idle", "toidle"} and res_meta.get("item_id") is None
+
+    def update_amr_charger_return_state(
+        self,
+        res_id: str,
+        status: str,
+        source: str | None = None,
+    ) -> None:
+        """Task가 아닌 충전소 복귀 후처리 상태를 반영한다."""
+        res_meta = self._res_list.setdefault(res_id, {"res_id": res_id})
+        res_meta.update(
+            {
+                "res_id": res_id,
+                "task_id": None,
+                "item_id": None,
+                "status": status,
+                "task_type": "charger_return",
+            }
+        )
+        if source is not None:
+            res_meta["charger_return_source"] = source
+        self._safe_repo_call("sync_resource_snapshot", res_meta)
+        logger.info(
+            "[MockStateManager] update_amr_charger_return_state: res=%s status=%s source=%s",
+            res_id,
+            status,
+            source,
+        )
 
     async def update_task_allocation(self, assign_input: AllocateTaskResInput) -> None:
         task_key = (
@@ -512,81 +451,20 @@ class MockStateManager:
             if req.error_code is not None:
                 task_meta["error_code"] = req.error_code
             if req.new_stat == TxnStat.PROC and assigned_res_id is not None:
-                current_task_type = _normalize_task_type(task_meta.get("task_type"))
-                if current_task_type != TaskType.ToCHG:
-                    self._release_charger(assigned_res_id)
-                item_id = task_meta.get("item_id")
-                if item_id is not None and task_meta.get("task_type") == "MM":
-                    item = self._items.setdefault(item_id, {"item_id": item_id})
-                    if item.get("flow_stat") == "CREATED":
-                        item["flow_stat"] = "CAST"
-                    item["last_task_type"] = task_meta.get("task_type")
-                    item["req_res_id"] = task_meta.get("res_id")
-                    self._safe_repo_call("sync_item_snapshot", item)
-                res_meta = self._res_list.setdefault(assigned_res_id, {"res_id": assigned_res_id})
-                res_meta.update(
-                    {
-                        "task_id": req.task_id,
-                        "item_id": task_meta.get("item_id"),
-                        "status": TxnStat.PROC.value,
-                        "task_type": task_meta.get("task_type"),
-                    }
-                )
-                self._safe_repo_call("sync_resource_snapshot", res_meta)
+                self._handle_proc_task_status(req, task_meta, assigned_res_id)
             if req.new_stat == TxnStat.SUCC:
-                item_id = task_meta.get("item_id")
-                if item_id is not None:
-                    item = self._items.setdefault(item_id, {"item_id": item_id})
-                    item["last_task_type"] = task_meta.get("task_type")
-                    item["req_res_id"] = (
-                        task_meta.get("res_id")
-                        if task_meta.get("task_type") in ITEM_AFFINITY_PREDECESSORS
-                        else None
-                    )
-                    self._safe_repo_call("sync_item_snapshot", item)
-                if task_meta.get("task_type") == "ToSTRG":
-                    suppress_task_completed = True
-                if previous_status != TxnStat.SUCC.value and task_meta.get("task_type") == "PA_GP":
-                    suppress_task_completed = self._handle_pa_gp_completion(task_meta)
+                suppress_task_completed = self._handle_success_task_status(
+                    task_meta,
+                    previous_status,
+                )
             if req.new_stat in {TxnStat.SUCC, TxnStat.FAIL} and assigned_res_id is not None:
-                res_meta = self._res_list.setdefault(assigned_res_id, {"res_id": assigned_res_id})
-                keep_item_affinity = (
-                    req.new_stat == TxnStat.SUCC
-                    and task_meta.get("task_type") in ITEM_AFFINITY_PREDECESSORS
+                should_continue, suppress_resource_available = self._handle_terminal_resource_status(
+                    req,
+                    task_meta,
+                    assigned_res_id,
                 )
-                res_meta.update(
-                    {
-                        "task_id": None,
-                        "status": "idle",
-                        "task_type": task_meta.get("task_type"),
-                    }
-                )
-                if keep_item_affinity:
-                    res_meta["item_id"] = task_meta.get("item_id")
-                    suppress_resource_available = True
-                else:
-                    res_meta["item_id"] = None
-                self._safe_repo_call("sync_resource_snapshot", res_meta)
-
-                req_res_type = res_meta.get("res_type")
-                if (
-                    self._event_bridge is not None
-                    and isinstance(req_res_type, str)
-                    and req_res_type
-                    and not suppress_resource_available
-                ):
-                    self._event_bridge.publish(
-                        Event(
-                            event_type=EventType.RESOURCE_AVAILABLE,
-                            item_id=task_meta.get("item_id"),
-                            res_id=assigned_res_id,
-                            payload={
-                                "req_res_type": req_res_type,
-                                "task_id": req.task_id,
-                                "status": req.new_stat.value,
-                            },
-                        )
-                    )
+                if not should_continue:
+                    return True
         logger.info(
             "[MockStateManager] update_task_status: task=%s status=%s",
             req.task_id,
@@ -616,6 +494,170 @@ class MockStateManager:
         if task_meta is not None:
             self._safe_repo_call("sync_task_status", task_meta)
         return True
+
+    def _handle_proc_task_status(
+        self,
+        req: UpdateTaskStatusInput,
+        task_meta: dict[str, Any],
+        assigned_res_id: str,
+    ) -> None:
+        """Task 시작 시 따라오는 상태 반영과 이벤트 처리"""
+        current_task_type = _normalize_task_type(task_meta.get("task_type"))
+        if current_task_type != TaskType.ToCHG:
+            self._release_charger(assigned_res_id)
+
+        item_id = task_meta.get("item_id")
+        if item_id is not None and task_meta.get("task_type") == "MM":
+            item = self._items.setdefault(item_id, {"item_id": item_id})
+            if item.get("flow_stat") == "CREATED":
+                item["flow_stat"] = "CAST"
+            item["last_task_type"] = task_meta.get("task_type")
+            item["req_res_id"] = task_meta.get("res_id")
+            self._safe_repo_call("sync_item_snapshot", item)
+
+        res_meta = self._res_list.setdefault(assigned_res_id, {"res_id": assigned_res_id})
+        is_battery_low_tochg = self._is_battery_low_tochg(current_task_type, res_meta)
+        if current_task_type == TaskType.ToCHG:
+            status = "charging" if is_battery_low_tochg else "toidle"
+            res_meta.update(
+                {
+                    "task_id": req.task_id,
+                    "item_id": None,
+                    "status": status,
+                    "task_type": task_meta.get("task_type"),
+                }
+            )
+        else:
+            res_meta.update(
+                {
+                    "task_id": req.task_id,
+                    "item_id": task_meta.get("item_id"),
+                    "status": TxnStat.PROC.value,
+                    "task_type": task_meta.get("task_type"),
+                }
+            )
+        self._safe_repo_call("sync_resource_snapshot", res_meta)
+
+        if (
+            current_task_type == TaskType.ToCHG
+            and self._event_bridge is not None
+            and isinstance(res_meta.get("res_type"), str)
+            and res_meta.get("res_type")
+            and not is_battery_low_tochg
+        ):
+            self._event_bridge.publish(
+                Event(
+                    event_type=EventType.RESOURCE_AVAILABLE,
+                    item_id=task_meta.get("item_id"),
+                    res_id=assigned_res_id,
+                    payload={
+                        "req_res_type": res_meta.get("res_type"),
+                        "task_id": req.task_id,
+                        "status": "toidle",
+                    },
+                )
+            )
+
+    def _handle_success_task_status(
+        self,
+        task_meta: dict[str, Any],
+        previous_status: str | None,
+    ) -> bool:
+        """Task 성공 시 따라오는 상태 반영과 이벤트 처리"""
+        suppress_task_completed = task_meta.get("task_type") == "ToSTRG"
+        item_id = task_meta.get("item_id")
+        if item_id is not None:
+            item = self._items.setdefault(item_id, {"item_id": item_id})
+            item["last_task_type"] = task_meta.get("task_type")
+            item["req_res_id"] = (
+                task_meta.get("res_id")
+                if task_meta.get("task_type") in ITEM_AFFINITY_PREDECESSORS
+                else None
+            )
+            self._safe_repo_call("sync_item_snapshot", item)
+        if previous_status != TxnStat.SUCC.value and task_meta.get("task_type") == "PA_GP":
+            suppress_task_completed = self._handle_pa_gp_completion(task_meta)
+        return suppress_task_completed
+
+    def _handle_terminal_resource_status(
+        self,
+        req: UpdateTaskStatusInput,
+        task_meta: dict[str, Any],
+        assigned_res_id: str,
+    ) -> tuple[bool, bool]:
+        """Task 완료/실패 시 resource 상태를 갱신하고 RESOURCE_AVAILABLE 발행 여부를 결정한다."""
+        suppress_resource_available = False
+        res_meta = self._res_list.setdefault(assigned_res_id, {"res_id": assigned_res_id})
+        current_task_id = res_meta.get("task_id")
+        if current_task_id not in {None, req.task_id}:
+            self._safe_repo_call("sync_task_status", task_meta)
+            logger.info(
+                "[MockStateManager] resource reset skipped: task=%s res=%s current_task=%s",
+                req.task_id,
+                assigned_res_id,
+                current_task_id,
+            )
+            return False, suppress_resource_available
+
+        current_task_type = _normalize_task_type(task_meta.get("task_type"))
+        is_battery_low_tochg = self._is_battery_low_tochg(current_task_type, res_meta)
+        if is_battery_low_tochg:
+            res_meta.update(
+                {
+                    "task_id": None,
+                    "item_id": None,
+                    "status": "charging",
+                    "task_type": task_meta.get("task_type"),
+                }
+            )
+            self._safe_repo_call("sync_resource_snapshot", res_meta)
+            return True, True
+
+        keep_item_affinity = (
+            req.new_stat == TxnStat.SUCC
+            and task_meta.get("task_type") in ITEM_AFFINITY_PREDECESSORS
+        )
+        res_meta.update(
+            {
+                "task_id": None,
+                "status": "idle",
+                "task_type": task_meta.get("task_type"),
+            }
+        )
+        if keep_item_affinity:
+            res_meta["item_id"] = task_meta.get("item_id")
+            suppress_resource_available = True
+        else:
+            res_meta["item_id"] = None
+        self._safe_repo_call("sync_resource_snapshot", res_meta)
+
+        req_res_type = res_meta.get("res_type")
+        if (
+            self._event_bridge is not None
+            and isinstance(req_res_type, str)
+            and req_res_type
+            and not suppress_resource_available
+        ):
+            self._event_bridge.publish(
+                Event(
+                    event_type=EventType.RESOURCE_AVAILABLE,
+                    item_id=task_meta.get("item_id"),
+                    res_id=assigned_res_id,
+                    payload={
+                        "req_res_type": req_res_type,
+                        "task_id": req.task_id,
+                        "status": req.new_stat.value,
+                    },
+                )
+            )
+        return True, suppress_resource_available
+
+    def _is_battery_low_tochg(
+        self,
+        task_type: TaskType | None,
+        res_meta: dict[str, Any],
+    ) -> bool:
+        return task_type == TaskType.ToCHG and res_meta.get("condition") == "BATTERY_LOW"
 
     def _handle_pa_gp_completion(self, task_meta: dict[str, Any]) -> bool:
         ord_id = task_meta.get("ord_id")
@@ -805,24 +847,6 @@ class MockStateManager:
             item_id,
             flow_stat,
             zone_nm,
-        )
-
-    def update_res_status_memory(self, res_id: str, x: float, y: float, battery_pct: int) -> None:
-        res_meta = self._res_list.setdefault(res_id, {"res_id": res_id})
-        res_meta.update(
-            {
-                "x": x,
-                "y": y,
-                "battery_pct": battery_pct,
-            }
-        )
-        self._safe_repo_call("sync_resource_snapshot", res_meta)
-        logger.debug(
-            "[MockStateManager] update_res_status_memory: res=%s x=%s y=%s battery=%s",
-            res_id,
-            x,
-            y,
-            battery_pct,
         )
 
     def update_amr_runtime_memory(
