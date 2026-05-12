@@ -157,6 +157,7 @@ class PatternControlPage(QWidget):
         self._api = api
         self._orders: list[dict[str, Any]] = []
         self._patterns: dict[int, int] = {}  # ord_id → ptn_loc_id
+        self._selected_unreg_ord_id: int | None = None  # 클릭으로 선택된 미등록 주문
         self._refresh_thread: QThread | None = None
         self._refresh_worker: _RefreshWorker | None = None
         self._calc_thread: QThread | None = None
@@ -207,7 +208,7 @@ class PatternControlPage(QWidget):
         left_pat = QVBoxLayout()
         left_pat.addWidget(QLabel("미등록 주문 목록"))
         self._unreg_list = QListWidget()
-        self._unreg_list.currentRowChanged.connect(self._on_unreg_selected)
+        self._unreg_list.itemClicked.connect(self._on_unreg_selected)
         left_pat.addWidget(self._unreg_list)
         pat_h.addLayout(left_pat, stretch=1)
 
@@ -265,7 +266,8 @@ class PatternControlPage(QWidget):
         self._priority_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self._priority_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self._priority_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self._priority_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self._priority_table.setSelectionMode(QAbstractItemView.MultiSelection)
+        self._priority_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         right_prod.addWidget(self._priority_table)
         prod_h.addLayout(right_prod, stretch=1)
 
@@ -344,17 +346,32 @@ class PatternControlPage(QWidget):
         # ── 미등록 주문 목록 ───────────────────────────────────────────
         self._unreg_list.blockSignals(True)
         self._unreg_list.clear()
+        unreg_ord_ids = {o["ord_id"] for o in unreg_orders}
         for order in unreg_orders:
             item = QListWidgetItem(f"ord_{order['ord_id']}  (user={order.get('user_id', '-')})")
             item.setData(Qt.UserRole, order["ord_id"])
             self._unreg_list.addItem(item)
         self._unreg_list.blockSignals(False)
 
-        self._order_no_lbl.setText("—")
-        self._register_btn.setEnabled(False)
+        # 이전에 선택된 주문이 여전히 목록에 있으면 선택 상태 유지
+        if self._selected_unreg_ord_id is not None and self._selected_unreg_ord_id in unreg_ord_ids:
+            self._order_no_lbl.setText(f"ord_{self._selected_unreg_ord_id}")
+            self._register_btn.setEnabled(True)
+        else:
+            self._selected_unreg_ord_id = None
+            self._order_no_lbl.setText("—")
+            self._register_btn.setEnabled(False)
 
         # ── 등록 완료 주문 목록 ────────────────────────────────────────
         reg_orders = [o for o in appr_orders if o["ord_id"] in self._patterns]
+
+        # refresh 전 선택 상태 저장 → 재구성 후 복원
+        prev_selected_ids = {
+            self._reg_list.item(i).data(Qt.UserRole)
+            for i in range(self._reg_list.count())
+            if self._reg_list.item(i).isSelected()
+        }
+
         self._reg_list.blockSignals(True)
         self._reg_list.clear()
         for order in reg_orders:
@@ -362,12 +379,24 @@ class PatternControlPage(QWidget):
             item = QListWidgetItem(f"ord_{order['ord_id']}  패턴:{ptn}")
             item.setData(Qt.UserRole, order["ord_id"])
             self._reg_list.addItem(item)
+
+        # 이전에 선택된 항목 복원
+        for i in range(self._reg_list.count()):
+            it = self._reg_list.item(i)
+            if it and it.data(Qt.UserRole) in prev_selected_ids:
+                it.setSelected(True)
         self._reg_list.blockSignals(False)
 
-        self._priority_table.setRowCount(0)
-        self._priority_result.clear()
-        self._calc_btn.setEnabled(False)
-        self._start_btn.setEnabled(False)
+        # 복원된 선택이 없을 때만 결과 초기화
+        restored = bool(prev_selected_ids & {o["ord_id"] for o in reg_orders})
+        if restored:
+            # 선택이 복원됐으면 calc 버튼은 항상 활성화 (start 는 calc 결과에 따라 유지)
+            self._calc_btn.setEnabled(True)
+        else:
+            self._priority_table.setRowCount(0)
+            self._priority_result.clear()
+            self._calc_btn.setEnabled(False)
+            self._start_btn.setEnabled(False)
 
         self._status_label.setText(
             f"APPR 주문 {len(appr_orders)}건 — 패턴 미등록 {len(unreg_orders)}건 / 등록 완료 {len(reg_orders)}건"
@@ -379,28 +408,20 @@ class PatternControlPage(QWidget):
 
     # ── 이벤트 핸들러: 패턴 등록 섹션 ────────────────────────────────────────
 
-    @pyqtSlot(int)
-    def _on_unreg_selected(self, row: int) -> None:
-        if row < 0:
-            self._order_no_lbl.setText("—")
-            self._register_btn.setEnabled(False)
-            return
-        item = self._unreg_list.item(row)
+    @pyqtSlot(QListWidgetItem)
+    def _on_unreg_selected(self, item: QListWidgetItem) -> None:
         if item is None:
             return
         ord_id = item.data(Qt.UserRole)
+        self._selected_unreg_ord_id = ord_id
         self._order_no_lbl.setText(f"ord_{ord_id}")
         self._register_btn.setEnabled(True)
 
     @pyqtSlot()
     def _on_register_pattern(self) -> None:
-        row = self._unreg_list.currentRow()
-        if row < 0:
+        ord_id = self._selected_unreg_ord_id
+        if ord_id is None:
             return
-        item = self._unreg_list.item(row)
-        if item is None:
-            return
-        ord_id: int = item.data(Qt.UserRole)
         ptn_loc_id = self._pattern_spin.value()
         try:
             self._register_pattern(ord_id, ptn_loc_id)
@@ -408,6 +429,7 @@ class PatternControlPage(QWidget):
             QMessageBox.critical(self, "패턴 등록 실패", str(exc))
             return
 
+        self._selected_unreg_ord_id = None
         QMessageBox.information(
             self,
             "패턴 등록 완료",
@@ -422,11 +444,10 @@ class PatternControlPage(QWidget):
         selected = self._reg_list.selectedItems()
         has_selection = len(selected) > 0
         self._calc_btn.setEnabled(has_selection)
-        # 선택이 바뀌면 이전 계산 결과 초기화
-        if not has_selection or self._priority_result:
-            self._start_btn.setEnabled(False)
-            self._priority_result.clear()
-            self._priority_table.setRowCount(0)
+        # 선택이 바뀌면 이전 계산 결과는 항상 초기화 (재계산 필요)
+        self._start_btn.setEnabled(False)
+        self._priority_result.clear()
+        self._priority_table.setRowCount(0)
 
     @pyqtSlot()
     def _on_calc_priority(self) -> None:
@@ -474,12 +495,14 @@ class PatternControlPage(QWidget):
         self._priority_result = [(r["order_id"], r["total_score"]) for r in results]
 
         self._priority_table.setRowCount(len(results))
+        self._priority_table.setVerticalHeaderLabels(
+            [f"{r['rank']}위" for r in results]
+        )
         delay_color = {"high": "#e53935", "medium": "#fb8c00", "low": ""}
         for row, r in enumerate(results):
             oid = r["order_id"]
             ptn = self._PATTERN_LABEL.get(self._patterns.get(oid, 0), "?")
-            label = f"  {r['rank']}위  ord_{oid}  패턴:{ptn}"
-            label_item = QTableWidgetItem(label)
+            label_item = QTableWidgetItem(f"  ord_{oid}  패턴:{ptn}")
             color = delay_color.get(r["delay_risk"], "")
             if color:
                 label_item.setForeground(QColor(color))
@@ -505,12 +528,22 @@ class PatternControlPage(QWidget):
 
     @pyqtSlot()
     def _on_start_production(self) -> None:
-        """우선순위 순서대로 생산 시작."""
+        """우선순위 테이블에서 선택한 주문만 생산 시작."""
         if not self._priority_result:
             QMessageBox.warning(self, "생산 시작", "먼저 우선 순위계산을 실행하세요.")
             return
 
-        ord_ids = [oid for oid, _ in self._priority_result]
+        # 테이블에서 선택된 행 번호 수집 (중복 제거, rank 순 유지)
+        selected_rows = sorted({idx.row() for idx in self._priority_table.selectedIndexes()})
+        if not selected_rows:
+            QMessageBox.warning(self, "생산 시작", "우선순위 결과 테이블에서 시작할 주문을 선택하세요.")
+            return
+
+        ord_ids = [
+            self._priority_result[row][0]
+            for row in selected_rows
+            if row < len(self._priority_result)
+        ]
         confirm = QMessageBox.question(
             self,
             "생산 시작 확인",
