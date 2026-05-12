@@ -62,9 +62,12 @@ def _dispatch_ai_inference(
 ) -> None:
     """AI 어댑터로 비동기 dispatch — gRPC handler 가 즉시 응답하도록 백그라운드 스레드 사용.
 
-    AI 호출 + DB 기록 + INSP_COMPLETED publish 는 ai_adapter.execute() 안에서 일어난다.
-    실패 path 에서도 ai_adapter 가 inspection_result_command.record_inspection_failure 를
-    호출하여 insp_task_txn 을 FAIL 로 마감한다 (다음 cycle 진행 정책은 운영 정책 결정).
+    AI 호출 + DB 기록 (insp_task_txn SUCC + ai_inference_txn + insp_stat + item) 은
+    ai_adapter.execute() 안에서 일어난다. INSP_COMPLETED publish 는 이 시점이 아니라
+    ToPAWait/CONV_ALLOW_MOVE 단계 (conv_adapter) 에서 발생하여 AMR 도착 후에만
+    컨베이어가 RUN 하도록 한다 (commit 2593b9e). 실패 path 에서는 ai_adapter 가
+    inspection_result_command.record_inspection_failure 를 호출해 insp_task_txn 을
+    FAIL 로 마감한다.
     """
     try:
         # 지연 import — container 초기화 순서 의존성 (server.py 가 import 시 container 가 준비됨)
