@@ -15,6 +15,7 @@ from services.contracts.models import (
     StartProductionOrderAckModel,
     ItemStatusRecord,
     NextTaskResult,
+    ShipTaskResult,
     ScheduleNextTaskInput,
     ExecuteTaskInput,
     AllocateTaskInput,
@@ -22,6 +23,7 @@ from services.contracts.models import (
 )
 from services.contracts.enums import (
     EventType,
+    TaskType,
     TxnStat,
     ResourceBindingPolicy,
     get_resource_binding_policy,
@@ -156,9 +158,13 @@ class Orchestrator(IOrchestrator):
         )
         return batch_result
 
-    async def start_shipping(self, ord_ids: int | None = None) -> list[int]:  # 출고 구현할 때 필요
+    async def start_shipping(self, ord_id: int | None = None) -> list[int]:
         """출고 시작 진입점."""
-        return []
+        if ord_id is None:
+            logger.warning("start shipping skipped: ord_id is required")
+            return []
+
+        return await self._schedule_ship_task(ord_id, event="ship_start")
 
     async def on_task_completed(self, event: Event) -> None:
         """작업 완료 후 다음 작업을 생성, 할당, 실행한다."""
@@ -175,6 +181,15 @@ class Orchestrator(IOrchestrator):
         item_id = event.item_id
         if item_id is None:
             raise ValueError("TASK_COMPLETED requires item_id")
+
+        # 출고는 따로
+        if event.payload.get("task_type") == TaskType.PICK:
+            item_info = await self.state_manager.get_item(item_id)
+            await self._schedule_ship_task(
+                item_info.order_id,
+                event="pick_done",
+            )
+            return
 
         await self._schedule_next_task(
             ScheduleNextTaskInput(
@@ -198,6 +213,15 @@ class Orchestrator(IOrchestrator):
         item_id = event.item_id
         if item_id is None:
             raise ValueError("SUBTASK_COMPLETED requires item_id")
+
+        # 출고는 따로
+        if subtask_type == "toship_src_arrived":
+            item_info = await self.state_manager.get_item(item_id)
+            await self._schedule_ship_task(
+                item_info.order_id,
+                event="toship_src_arrived",
+            )
+            return
 
         await self._schedule_next_task(
             ScheduleNextTaskInput(
@@ -247,8 +271,6 @@ class Orchestrator(IOrchestrator):
         #executor 작업 중지 -> 로봇팔은 상차하려던거 멈추고 어디 내려둠 + 베이스 위치로
         await self.task_executor.handle_emergency_return(item_id, amr_id , arm_id)
 
-
-
     async def on_arm_return_completed(self, event: Event) -> None:
             """로봇팔이 아이템 복구를 완료했을 때 호출되는 콜백 (이벤트 구독에 의해 실행)"""
             item_id = event.item_id
@@ -296,6 +318,20 @@ class Orchestrator(IOrchestrator):
                 item_info,
                 req_res_id=input_data.req_res_id,
             )
+
+    async def _schedule_ship_task(
+        self,
+        ord_id: int,
+        event: str,
+    ) -> list[int]:
+        """출고 이벤트에 따라 다음 출고 task를 만들고 실행한다."""
+        item_locations = await self._collect_ship_item_locations(ord_id)
+        ship_task = await self.task_manager.create_ship_task(
+            order_id=ord_id,
+            item_locations=item_locations,
+            event=event,
+        )
+        return await self._execute_ship_task(ord_id, ship_task, item_locations)
 
     async def _process_pending_bucket(self, req_res_type: str) -> None:
         """해당 자원 타입의 대기 작업들을 처리한다."""
@@ -356,6 +392,37 @@ class Orchestrator(IOrchestrator):
             allocation_result.reason,
         )
 
+    async def _execute_ship_task(
+        self,
+        ord_id: int,
+        ship_task: ShipTaskResult | None,
+        item_locations: list[tuple[int, int, int]],
+    ) -> list[int]:
+        """ShipTaskResult를 일반 task 실행 경로로 연결한다."""
+        if ship_task is None:
+            logger.info("no shipping task created: ord_id=%s item_count=%s", ord_id, len(item_locations))
+            return []
+
+        ship_batch = ship_task.batch or item_locations[:1]
+        if not ship_batch:
+            logger.info("shipping task has no item batch: ord_id=%s task_id=%s", ord_id, ship_task.txn_id)
+            return []
+
+        item_id, strg_row, strg_col = ship_batch[0]
+        item_info = await self.state_manager.get_item(item_id)
+        item_info.strg_loc = (strg_row, strg_col)
+
+        await self._allocate_and_execute(
+            NextTaskResult(
+                item_id=item_id,
+                txn_id=ship_task.txn_id,
+                task_type=ship_task.task_type,
+                priority=ship_task.priority,
+                batch=ship_batch,
+            ),
+            item_info,
+        )
+        return [item_id]
     def _push_pending_task(self, req_res_type: str, pending_task: _PendingTask) -> None:
         """task를 pending bucket에 추가한다."""
         heapq.heappush(
@@ -429,7 +496,23 @@ class Orchestrator(IOrchestrator):
         if item_info.strg_loc:
             payload["strg_loc"] = item_info.strg_loc
 
+        # 출고 때는 여러 item을 한번에 작업하기 때문에 batch 사용
+        if task.batch:
+            payload["batch"] = task.batch
+
         return payload
+
+    async def _collect_ship_item_locations(self, ord_id: int) -> list[tuple[int, int, int]]:
+        """주문별 출고 대상 item의 적재 위치를 모은다."""
+        item_locations: list[tuple[int, int, int]] = []
+        items = await self.state_manager.get_items_by_order(ord_id)
+        for item in items:
+            strg_loc = item.strg_loc
+            if not isinstance(strg_loc, tuple) or len(strg_loc) != 2:
+                continue
+            item_locations.append((int(item.item_id), int(strg_loc[0]), int(strg_loc[1])))
+        return item_locations
+
 
     def _build_rejected_ack(self, ord_id: int, reason: str) -> "StartProductionOrderAckModel":
         """start_production 예외 발생 시 rejected ack를 생성한다."""

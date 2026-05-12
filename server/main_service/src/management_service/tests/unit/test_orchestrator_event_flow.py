@@ -9,6 +9,7 @@ from services.contracts.models import (
     ExecuteTaskInput,
     ItemStatusRecord,
     NextTaskResult,
+    ShipTaskResult,
 )
 from services.core.event_bridge import EventBridgeImpl
 from services.core.orchestrator import Orchestrator
@@ -20,6 +21,9 @@ class _RecordingTaskManager:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
         self.responses: dict[str | None, list[NextTaskResult]] = {}
+        self.ship_calls: list[dict[str, object]] = []
+        self.ship_result: ShipTaskResult | None = None
+        self.reserve_calls: list[dict[str, object]] = []
 
     async def create_next_task(
         self,
@@ -38,6 +42,38 @@ class _RecordingTaskManager:
             }
         )
         return list(self.responses.get(event, []))
+
+    async def create_ship_task(
+        self,
+        order_id: int,
+        item_locations: list[tuple[int, int, int]],
+        event: str | None = None,
+    ) -> ShipTaskResult | None:
+        self.ship_calls.append(
+            {
+                "order_id": order_id,
+                "item_locations": list(item_locations),
+                "event": event,
+            }
+        )
+        return self.ship_result
+
+    def log_slot_table(self) -> None:
+        return None
+
+    def reserve_rack_slots(
+        self,
+        order_id: int,
+        start_pos: tuple[int, int],
+        target_qty: int,
+    ) -> None:
+        self.reserve_calls.append(
+            {
+                "order_id": order_id,
+                "start_pos": start_pos,
+                "target_qty": target_qty,
+            }
+        )
 
 
 class _SequencedAllocator:
@@ -94,6 +130,8 @@ class _RecordingStateManager:
         self.items = items
         self.get_item_calls: list[int] = []
         self.available_resources: dict[str, bool] = {}
+        self.orders: dict[int, dict[str, object]] = {}
+        self.start_slots: list[int] = []
 
     async def get_item(self, item_id: int) -> ItemStatusRecord:
         self.get_item_calls.append(item_id)
@@ -102,6 +140,26 @@ class _RecordingStateManager:
 
     def is_res_available(self, res_id: str) -> bool:
         return self.available_resources.get(res_id, False)
+
+    async def get_order_target_qty(self, ord_id: int) -> int | None:
+        order = self.orders.get(ord_id, {})
+        target = order.get("target")
+        return int(target) if target is not None else None
+
+    async def get_empty_start_slot(self, target_qty: int) -> tuple[int, int] | None:
+        self.start_slots.append(target_qty)
+        return (1, 1)
+
+    async def start_production(self, ord_id: int):
+        from services.contracts.models import StartProductionOrderAckModel
+
+        return StartProductionOrderAckModel(
+            ord_id=ord_id,
+            accepted=True,
+            reason="ok",
+            item_ids=[],
+            equip_task_txn_ids=[],
+        )
 
 
 def _item(
@@ -190,6 +248,33 @@ def test_task_completed_event_creates_allocates_and_executes_next_task() -> None
     asyncio.run(scenario())
 
 
+def test_start_production_uses_state_manager_target_qty_for_rack_reservation() -> None:
+    """랙 예약 수량은 주문 메모리 기본값이 아니라 state manager가 제공한 target qty를 따른다."""
+
+    async def scenario() -> None:
+        event_bridge = EventBridgeImpl()
+        task_manager = _RecordingTaskManager()
+        allocator = _SequencedAllocator([])
+        executor = _RecordingExecutor()
+        state_manager = _RecordingStateManager({})
+        state_manager.orders[3] = {"target": 10}
+        orchestrator = Orchestrator(task_manager, allocator, state_manager, event_bridge, executor)
+
+        result = await orchestrator.start_production([3])
+
+        assert result.accepted_count == 1
+        assert state_manager.start_slots == [10]
+        assert task_manager.reserve_calls == [
+            {
+                "order_id": 3,
+                "start_pos": (1, 1),
+                "target_qty": 10,
+            }
+        ]
+
+    asyncio.run(scenario())
+
+
 def test_failed_task_completed_event_does_not_plan_any_follow_up_task() -> None:
     """실패로 끝난 TASK_COMPLETED 이벤트는 다음 태스크 계획으로 이어지지 않는다."""
 
@@ -248,6 +333,173 @@ def test_subtask_completed_event_passes_planning_event_to_task_manager() -> None
                 "ptn_id": 7,
             }
         ]
+
+    asyncio.run(scenario())
+
+
+def test_start_shipping_collects_item_locations_and_executes_ship_task() -> None:
+    """start_shipping은 주문의 적재 위치 목록을 task manager에 넘기고 첫 출고 task를 실행한다."""
+
+    async def scenario() -> None:
+        event_bridge = EventBridgeImpl()
+        task_manager = _RecordingTaskManager()
+        task_manager.ship_result = ShipTaskResult(
+            txn_id=9301,
+            priority=7,
+            task_type=TaskType.PICK,
+            batch=[(1001, 2, 4)],
+        )
+        allocator = _SequencedAllocator(
+            [AllocateTaskResult(success=True, req_res_type="PAT", res_id="PAT")]
+        )
+        executor = _RecordingExecutor()
+        state_manager = _RecordingStateManager(
+            {
+                1001: _item(item_id=1001, order_id=501, ptn_id=None, strg_loc=(2, 4)),
+                1002: _item(item_id=1002, order_id=501, ptn_id=None, strg_loc=(1, 2)),
+                2001: _item(item_id=2001, order_id=777, ptn_id=None, strg_loc=(3, 1)),
+            }
+        )
+        orchestrator = Orchestrator(task_manager, allocator, state_manager, event_bridge, executor)
+
+        started_item_ids = await orchestrator.start_shipping(501)
+        await _drain_loop()
+
+        assert started_item_ids == [1001]
+        assert task_manager.ship_calls == [
+            {
+                "order_id": 501,
+                "item_locations": [(1001, 2, 4), (1002, 1, 2)],
+                "event": None,
+            }
+        ]
+        assert allocator.calls == [
+            {
+                "task_id": "9301",
+                "item_id": 1001,
+                "req_res_id": None,
+                "task_type": TaskType.PICK,
+                "zone_nm": None,
+            }
+        ]
+        assert len(executor.execute_calls) == 1
+        execute_input = executor.execute_calls[0]
+        assert execute_input.task_id == "9301"
+        assert execute_input.task_type == TaskType.PICK
+        assert execute_input.res_id == "PAT"
+        assert execute_input.payload == {
+            "item_id": 1001,
+            "strg_loc": (2, 4),
+            "batch": [(1001, 2, 4)],
+        }
+
+    asyncio.run(scenario())
+
+
+def test_toship_arrival_event_creates_single_pick_with_full_batch_payload() -> None:
+    """ToSHIP가 출고 상차 위치에 도착하면 현재 batch 전체를 담은 PICK 1개를 실행한다."""
+
+    async def scenario() -> None:
+        event_bridge = EventBridgeImpl()
+        task_manager = _RecordingTaskManager()
+        task_manager.ship_result = ShipTaskResult(
+            txn_id=9401,
+            priority=3,
+            task_type=TaskType.PICK,
+            batch=[(1001, 2, 4), (1002, 1, 2), (1003, 3, 1)],
+        )
+        allocator = _SequencedAllocator(
+            [AllocateTaskResult(success=True, req_res_type="PAT", res_id="PAT")]
+        )
+        executor = _RecordingExecutor()
+        state_manager = _RecordingStateManager(
+            {
+                1001: _item(item_id=1001, order_id=501, ptn_id=None, strg_loc=(2, 4)),
+                1002: _item(item_id=1002, order_id=501, ptn_id=None, strg_loc=(1, 2)),
+                1003: _item(item_id=1003, order_id=501, ptn_id=None, strg_loc=(3, 1)),
+            }
+        )
+        Orchestrator(task_manager, allocator, state_manager, event_bridge, executor)
+
+        event_bridge.publish(
+            Event(
+                event_type=EventType.SUBTASK_COMPLETED,
+                item_id=1001,
+                payload={"task_type": TaskType.ToSHIP, "subtask_type": "toship_src_arrived"},
+            )
+        )
+        await _drain_loop()
+
+        assert task_manager.ship_calls == [
+            {
+                "order_id": 501,
+                "item_locations": [(1001, 2, 4), (1002, 1, 2), (1003, 3, 1)],
+                "event": "toship_src_arrived",
+            }
+        ]
+        assert len(executor.execute_calls) == 1
+        execute_input = executor.execute_calls[0]
+        assert execute_input.task_type == TaskType.PICK
+        assert execute_input.item_id == "1001"
+        assert execute_input.payload == {
+            "item_id": 1001,
+            "strg_loc": (2, 4),
+            "batch": [(1001, 2, 4), (1002, 1, 2), (1003, 3, 1)],
+        }
+
+    asyncio.run(scenario())
+
+
+def test_pick_completed_event_creates_next_shipping_task() -> None:
+    """출고 PICK 완료 이벤트는 현재 batch를 끝내고 다음 ToSHIP을 만든다."""
+
+    async def scenario() -> None:
+        event_bridge = EventBridgeImpl()
+        task_manager = _RecordingTaskManager()
+        task_manager.ship_result = ShipTaskResult(
+            txn_id=9501,
+            priority=3,
+            task_type=TaskType.ToSHIP,
+            batch=[(1004, 2, 5)],
+        )
+        allocator = _SequencedAllocator(
+            [AllocateTaskResult(success=True, req_res_type="TAT", res_id="TAT1")]
+        )
+        executor = _RecordingExecutor()
+        state_manager = _RecordingStateManager(
+            {
+                1001: _item(item_id=1001, order_id=501, ptn_id=None, strg_loc=(2, 4)),
+                1004: _item(item_id=1004, order_id=501, ptn_id=None, strg_loc=(2, 5)),
+            }
+        )
+        Orchestrator(task_manager, allocator, state_manager, event_bridge, executor)
+
+        event_bridge.publish(
+            Event(
+                event_type=EventType.TASK_COMPLETED,
+                item_id=1001,
+                payload={"task_type": TaskType.PICK, "status": TxnStat.SUCC.value},
+            )
+        )
+        await _drain_loop()
+
+        assert task_manager.calls == []
+        assert task_manager.ship_calls == [
+            {
+                "order_id": 501,
+                "item_locations": [(1001, 2, 4), (1004, 2, 5)],
+                "event": "pick_done",
+            }
+        ]
+        assert len(executor.execute_calls) == 1
+        execute_input = executor.execute_calls[0]
+        assert execute_input.task_type == TaskType.ToSHIP
+        assert execute_input.item_id == "1004"
+        assert execute_input.payload == {
+            "item_id": 1004,
+            "strg_loc": (2, 5),
+            "batch": [(1004, 2, 5)],
+        }
 
     asyncio.run(scenario())
 

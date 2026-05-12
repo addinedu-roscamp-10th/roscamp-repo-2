@@ -334,6 +334,15 @@ class MockStateManager:
             strg_loc=_storage_loc_tuple(item.get("strg_loc")),
         )
 
+    async def get_items_by_order(self, ord_id: int) -> list[ItemStatusRecord]:
+        """특정 주문의 모든 아이템 정보를 조회."""
+        result = []
+        for item_id, item_meta in self._items.items():
+            item_order_id = int(item_meta.get("order_id") or item_meta.get("ord_id") or 0)
+            if item_order_id == ord_id:
+                result.append(await self.get_item(item_id))
+        return result
+
     async def insert_task_txn(self, task_input: CreateTaskInput) -> int:
         txn_id = self._next_equip_task_txn_id
         self._next_equip_task_txn_id += 1

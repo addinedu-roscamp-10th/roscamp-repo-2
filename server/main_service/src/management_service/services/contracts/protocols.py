@@ -1,5 +1,5 @@
 
-from typing import Protocol, Dict, Any, List, Optional
+from typing import Protocol, Dict, Any, List, Optional, Callable
 
 from .enums import EventType, TaskType
 from .models import *
@@ -28,6 +28,14 @@ class ITaskManager(Protocol):
         ...
     
     async def create_next_task(self, item_info: ItemStatusRecord ,eventMsg: Optional[str] = None) -> List[NextTaskResult]: 
+        ...
+
+    async def create_ship_task(
+        self,
+        order_id: int,
+        item_locations: List[tuple[int, int, int]],
+        event: Optional[str] = None,
+    ) -> ShipTaskResult | None:
         ...
 
     def reissue_task_on_error(self, item_info: ItemStatusRecord) -> List[NextTaskResult]: 
@@ -115,6 +123,9 @@ class IStateManager(Protocol):
         ...
 
     async def get_item(self, item_id: int) -> ItemStatusRecord:
+        ...
+
+    async def get_items_by_order(self, ord_id: int) -> list[ItemStatusRecord]:
         ...
         
     ##Task Allocator가 사용하는 인터페이스
