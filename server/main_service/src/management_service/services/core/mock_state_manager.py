@@ -916,21 +916,4 @@ class MockStateManager:
             if slot.get("status") == "Empty"
             and slot.get("order_id") is None
         ]
-
-        empty_slots.sort()
-
-        if len(empty_slots) < target_qty:
-            return None
-
-        row, col = empty_slots[0]
-        return f"{row}-{col}" 
-        
-        
-    
-    #DB의 적재 슬롯 테이블 조회.
-    def get_storage_slots(self) -> list[dict]:
-        """
-        DB의 적재 슬롯 테이블 조회.
-        예: rack_slot_master 또는 storage_slot 테이블.
-        """
-        ...
+        return self._find_contiguous_start_slot(empty_slots, target_qty)

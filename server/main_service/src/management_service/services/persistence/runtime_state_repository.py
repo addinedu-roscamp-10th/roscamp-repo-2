@@ -107,6 +107,7 @@ class RuntimeStateRepository:
         trans_task_txn_model=None,
         equip_stat_model=None,
         trans_stat_model=None,
+        strg_location_stat_model=None,
     ) -> None:
         self._session_factory = session_factory
         self._ord_model = ord_model
@@ -120,6 +121,7 @@ class RuntimeStateRepository:
         self._trans_task_txn_model = trans_task_txn_model
         self._equip_stat_model = equip_stat_model
         self._trans_stat_model = trans_stat_model
+        self._strg_location_stat_model = strg_location_stat_model
 
     @classmethod
     def from_default_db(cls) -> "RuntimeStateRepository":
@@ -134,6 +136,7 @@ class RuntimeStateRepository:
             OrdLog,
             OrdStat,
             Pattern,
+            StrgLocationStat,
             TransStat,
             TransTaskTxn,
         )
@@ -151,6 +154,7 @@ class RuntimeStateRepository:
             trans_task_txn_model=TransTaskTxn,
             equip_stat_model=EquipStat,
             trans_stat_model=TransStat,
+            strg_location_stat_model=StrgLocationStat,
         )
 
     def start_production(self, ord_id: int) -> StartProductionOrderAckModel:
@@ -307,6 +311,32 @@ class RuntimeStateRepository:
                 return None
             ptn_loc_id = getattr(pattern, "ptn_loc_id", None)
             return int(ptn_loc_id) if ptn_loc_id is not None else None
+
+    def get_storage_slots(self) -> list[dict[str, Any]]:
+        if self._strg_location_stat_model is None:
+            return []
+
+        with self._session_factory() as db:
+            rows = (
+                db.query(self._strg_location_stat_model)
+                .order_by(
+                    self._strg_location_stat_model.loc_row.asc(),
+                    self._strg_location_stat_model.loc_col.asc(),
+                )
+                .all()
+            )
+
+            return [
+                {
+                    "loc_id": int(row.loc_id),
+                    "row": int(row.loc_row),
+                    "col": int(row.loc_col),
+                    "status": str(row.status).capitalize(),
+                    "item_id": getattr(row, "item_id", None),
+                    "order_id": None,
+                }
+                for row in rows
+            ]
 
     def sync_task_status(self, task_meta: dict[str, Any]) -> None:
         txn_id = task_meta.get("txn_id") or _task_id_to_int(task_meta.get("task_id"))
