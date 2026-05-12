@@ -516,9 +516,9 @@ class TaskExecutor:
             subtask_type = "tostrg"
         elif input_data.task_type == TaskType.ToSTRG and step.action == "dock_robot" and pose_name == "ToSTRG":
             subtask_type = "tostrg_dld"
-        elif input_data.task_type == TaskType.PA_GP and step.action == "pat_place_storage_action":
+        elif input_data.task_type == TaskType.PA_GP and step.action == "pat_pick_action":
             subtask_type = "pa_dld_done"
-        elif input_data.task_type == TaskType.PA_DP and step.action == "pat_defect_drop_action":
+        elif input_data.task_type == TaskType.PA_DP and step.action == "pat_pick_action":
             subtask_type = "pa_dld_done"
         if subtask_type is None:
             return
