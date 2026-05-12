@@ -119,6 +119,31 @@ class MockStateManager:
             logger.exception("[MockStateManager] persistence %s failed", method_name)
             return None
 
+    async def get_order_target_qty(self, ord_id: int) -> int | None:
+        repo_qty = self._safe_repo_call("get_order_target_qty", ord_id)
+        if repo_qty is not None:
+            normalized_qty = max(int(repo_qty), 1)
+            self.orders.setdefault(ord_id, {})["target"] = normalized_qty
+            return normalized_qty
+
+        order_meta = self.orders.get(ord_id, {})
+        target_qty = order_meta.get("target")
+        if target_qty is None:
+            return None
+        return max(int(target_qty), 1)
+
+    def reserve_storage_slots(
+        self,
+        start_pos: tuple[int, int],
+        target_qty: int,
+    ) -> int | None:
+        return self._safe_repo_call(
+            "reserve_storage_slots",
+            int(start_pos[0]),
+            int(start_pos[1]),
+            int(target_qty),
+        )
+
     async def get_empty_charger(self, res_id: str | None = None) -> tuple[int, int] | None:
         """충전 가능한 슬롯을 반환하고, 최초 조회 시 즉시 예약한다."""
         if res_id is not None:

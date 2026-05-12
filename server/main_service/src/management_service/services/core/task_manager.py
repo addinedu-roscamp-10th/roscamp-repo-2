@@ -83,6 +83,17 @@ class TaskManager(ITaskManager):
         logger.info("주문 %s 구역 예약 완료: start=%s target=%s assigned=%s",
                     order_id, start_pos, target_qty, assigned)
 
+        if assigned > 0:
+            reserved_count = self.sm.reserve_storage_slots(start_pos, assigned)
+            if reserved_count is not None and reserved_count != assigned:
+                logger.warning(
+                    "DB 적재 슬롯 예약 불일치: order_id=%s start=%s memory_assigned=%s db_reserved=%s",
+                    order_id,
+                    start_pos,
+                    assigned,
+                    reserved_count,
+                )
+
     def log_slot_table(self):
         """현재 slot_table 상태를 로그 출력"""
 

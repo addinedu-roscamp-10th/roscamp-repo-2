@@ -104,8 +104,7 @@ class Orchestrator(IOrchestrator):
         for ord_id in ord_ids:
             try:
                 # 주문 수량 확인
-                order_meta = self.state_manager.orders.get(ord_id, {})
-                target_qty = max(int(order_meta.get("target", 1) or 1), 1)
+                target_qty = await self.state_manager.get_order_target_qty(ord_id)
                 self.task_manager.log_slot_table()
                 # TM이 빈 슬롯 찾기
                 start_pos = await self.state_manager.get_empty_start_slot(target_qty)

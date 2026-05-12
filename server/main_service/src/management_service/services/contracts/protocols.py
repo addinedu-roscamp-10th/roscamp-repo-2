@@ -173,6 +173,19 @@ class IStateManager(Protocol):
     async def create_empty_item(self, order_id: int) -> int:
         ...
 
+    async def get_empty_start_slot(self, target_qty: int) -> tuple[int, int] | None:
+        ...
+
+    async def get_order_target_qty(self, ord_id: int) -> int | None:
+        ...
+
+    def reserve_storage_slots(
+        self,
+        start_pos: tuple[int, int],
+        target_qty: int,
+    ) -> int | None:
+        ...
+
     async def get_empty_charger(self, res_id: str | None = None) -> tuple[int, int] | None:
         ...
     

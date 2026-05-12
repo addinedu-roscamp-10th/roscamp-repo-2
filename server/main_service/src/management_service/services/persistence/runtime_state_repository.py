@@ -11,6 +11,8 @@ from datetime import datetime
 import logging
 from typing import Any
 
+from sqlalchemy import tuple_
+
 from services.contracts.enums import TaskType, TxnStat
 from services.contracts.models import StartProductionOrderAckModel
 
@@ -312,6 +314,18 @@ class RuntimeStateRepository:
             ptn_loc_id = getattr(pattern, "ptn_loc_id", None)
             return int(ptn_loc_id) if ptn_loc_id is not None else None
 
+    def get_order_target_qty(self, ord_id: int) -> int | None:
+        with self._session_factory() as db:
+            detail = (
+                db.query(self._ord_detail_model)
+                .filter(self._ord_detail_model.ord_id == ord_id)
+                .first()
+            )
+            if detail is None:
+                return None
+            qty = getattr(detail, "qty", None)
+            return int(qty) if qty is not None and int(qty) > 0 else None
+
     def get_storage_slots(self) -> list[dict[str, Any]]:
         if self._strg_location_stat_model is None:
             return []
@@ -337,6 +351,51 @@ class RuntimeStateRepository:
                 }
                 for row in rows
             ]
+
+    def reserve_storage_slots(
+        self,
+        start_row: int,
+        start_col: int,
+        target_qty: int,
+    ) -> int:
+        if self._strg_location_stat_model is None or target_qty <= 0:
+            return 0
+
+        positions: list[tuple[int, int]] = []
+        current_abs_idx = (start_row - 1) * 6 + (start_col - 1)
+        for _ in range(target_qty):
+            row = (current_abs_idx // 6) + 1
+            col = (current_abs_idx % 6) + 1
+            positions.append((row, col))
+            current_abs_idx += 1
+
+        with self._session_factory() as db:
+            slots = (
+                db.query(self._strg_location_stat_model)
+                .filter(
+                    tuple_(
+                        self._strg_location_stat_model.loc_row,
+                        self._strg_location_stat_model.loc_col,
+                    ).in_(positions)
+                )
+                .all()
+            )
+            by_pos = {
+                (int(slot.loc_row), int(slot.loc_col)): slot
+                for slot in slots
+            }
+
+            target_slots = [by_pos.get(position) for position in positions]
+            if any(slot is None for slot in target_slots):
+                return 0
+            if any(slot.status != "empty" or slot.item_id is not None for slot in target_slots):
+                return 0
+
+            for slot in target_slots:
+                slot.status = "reserved"
+
+            db.commit()
+            return len(target_slots)
 
     def update_item_storage_location(self, item_id: int, row: int, col: int) -> None:
         if self._strg_location_stat_model is None:
