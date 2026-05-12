@@ -186,6 +186,13 @@ class IStateManager(Protocol):
     ) -> int | None:
         ...
 
+    async def update_item_storage_location(
+        self,
+        item_id: int,
+        strg_loc: tuple[int, int] | str,
+    ) -> None:
+        ...
+
     async def get_empty_charger(self, res_id: str | None = None) -> tuple[int, int] | None:
         ...
     
