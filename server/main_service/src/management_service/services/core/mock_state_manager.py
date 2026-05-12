@@ -903,9 +903,7 @@ class MockStateManager:
         DB 기준으로 빈 적재 슬롯을 조회하고,
         주문 수량만큼 공간이 충분하면 가장 작은 위치를 반환한다.
         """
-        #return "1-4" #db 읽고 반환하는거라 일단 강제 할당
         db_slots = self._safe_repo_call("get_storage_slots")
-
         if db_slots is None:
             logger.warning("[MockStateManager] DB slot 조회 실패 또는 repo 없음")
             return None
@@ -916,4 +914,11 @@ class MockStateManager:
             if slot.get("status") == "Empty"
             and slot.get("order_id") is None
         ]
-        return self._find_contiguous_start_slot(empty_slots, target_qty)
+
+        empty_slots.sort()
+
+        if len(empty_slots) < target_qty:
+            return None
+
+        row, col = empty_slots[0]
+        return f"{row}-{col}"
