@@ -78,11 +78,9 @@ class ScheduleQueryService:
             orders = db.query(Ord).filter(Ord.ord_id.in_(parsed_ids)).all()
             if not orders:
                 raise LookupError("selected orders not found")
-            results = [
-                self._priority_result(db, ord_obj)
-                for ord_obj in orders
-                if self._is_schedule_queue_candidate(db, ord_obj.ord_id)
-            ]
+            # MFG 큐 필터를 적용하지 않음 — 우선순위 계산은 APPR + 패턴 등록된
+            # 주문 중 operator 가 선택한 건에 대해 수행하므로 호출자가 이미 필터링함.
+            results = [self._priority_result(db, ord_obj) for ord_obj in orders]
             results.sort(key=lambda row: row.total_score, reverse=True)
             return [
                 SchedulePriorityResultQueryRow(

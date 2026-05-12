@@ -477,6 +477,30 @@ class ManagementClient:
             logger.warning("GetRobotStatus 실패: %s", e)
             return []
 
+    def calculate_priority(self, ord_ids: list[int]) -> list[dict[str, Any]]:
+        """APPR + 패턴 등록된 선택 주문들의 우선순위 계산.
+
+        Management Service 의 CalculateSchedulePriority RPC 를 호출하고
+        rank 오름차순(1 = 최우선)으로 정렬된 결과를 반환한다.
+        """
+        req = management_pb2.CalculateSchedulePriorityRequest(
+            order_ids=[str(i) for i in ord_ids]
+        )
+        resp = self._stub.CalculateSchedulePriority(req, timeout=self._timeout)
+        results = [
+            {
+                "order_id": int(r.order_id),
+                "rank": r.rank,
+                "total_score": round(r.total_score, 1),
+                "product_summary": r.product_summary or "-",
+                "requested_delivery": r.requested_delivery or "-",
+                "delay_risk": r.delay_risk or "low",
+            }
+            for r in resp.results
+        ]
+        results.sort(key=lambda x: x["rank"])
+        return results
+
     @staticmethod
     def stage_code_to_label(code: int) -> str:
         """proto enum 정수 → 코드 문자열 (UI 매핑용)."""

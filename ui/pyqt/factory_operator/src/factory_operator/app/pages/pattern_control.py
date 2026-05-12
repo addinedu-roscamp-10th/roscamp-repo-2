@@ -13,7 +13,7 @@ from typing import Any
 
 import sip
 from PyQt5.QtCore import QObject, Qt, QThread, pyqtSignal, pyqtSlot
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QFrame,
@@ -111,6 +111,31 @@ class _RefreshWorker(QObject):
         self.data_ready.emit(data)
 
 
+class _CalcPriorityWorker(QObject):
+    """선택된 APPR + 패턴 등록 주문들의 우선순위를 Management Service 에서 조회."""
+
+    result_ready = pyqtSignal(list)   # list[dict]
+    error = pyqtSignal(str)
+
+    def __init__(self, ord_ids: list[int]) -> None:
+        super().__init__()
+        self._ord_ids = ord_ids
+
+    @pyqtSlot()
+    def run(self) -> None:
+        from app.management_client import ManagementClient
+
+        client = ManagementClient()
+        try:
+            results = client.calculate_priority(self._ord_ids)
+        except Exception as exc:  # noqa: BLE001
+            self.error.emit(str(exc))
+            return
+        finally:
+            client.close()
+        self.result_ready.emit(results)
+
+
 # ── 메인 페이지 ───────────────────────────────────────────────────────────────
 
 class PatternControlPage(QWidget):
@@ -134,8 +159,10 @@ class PatternControlPage(QWidget):
         self._patterns: dict[int, int] = {}  # ord_id → ptn_loc_id
         self._refresh_thread: QThread | None = None
         self._refresh_worker: _RefreshWorker | None = None
-        # 우선순위 계산 결과: [(ord_id, score), ...]
-        self._priority_result: list[tuple[int, int]] = []
+        self._calc_thread: QThread | None = None
+        self._calc_worker: _CalcPriorityWorker | None = None
+        # 우선순위 계산 결과: [(ord_id, total_score), ...] rank 순
+        self._priority_result: list[tuple[int, float]] = []
         self._build_ui()
         self.refresh()
 
@@ -393,34 +420,88 @@ class PatternControlPage(QWidget):
     @pyqtSlot()
     def _on_reg_selection_changed(self) -> None:
         selected = self._reg_list.selectedItems()
-        self._calc_btn.setEnabled(len(selected) > 0)
-        self._start_btn.setEnabled(False)
-        self._priority_result.clear()
-        self._priority_table.setRowCount(0)
+        has_selection = len(selected) > 0
+        self._calc_btn.setEnabled(has_selection)
+        # 선택이 바뀌면 이전 계산 결과 초기화
+        if not has_selection or self._priority_result:
+            self._start_btn.setEnabled(False)
+            self._priority_result.clear()
+            self._priority_table.setRowCount(0)
 
     @pyqtSlot()
     def _on_calc_priority(self) -> None:
-        """선택된 주문들의 우선순위를 계산해 테이블에 표시."""
+        """선택된 APPR + 패턴 등록 주문을 Management Service 에 보내 우선순위 계산."""
+        if self._calc_thread is not None and self._calc_thread.isRunning():
+            return
+
         selected = self._reg_list.selectedItems()
         if not selected:
             return
 
-        ord_ids = [item.data(Qt.UserRole) for item in selected]
+        ord_ids: list[int] = [item.data(Qt.UserRole) for item in selected]
 
-        # 우선순위 점수: ord_id 오름차순 → 높은 점수 (단순 임시 로직, 추후 서버 연동)
-        base_score = 10 * len(ord_ids)
-        ranked = [(oid, base_score - 5 * i) for i, oid in enumerate(sorted(ord_ids))]
-        self._priority_result = ranked
+        self._calc_btn.setEnabled(False)
+        self._start_btn.setEnabled(False)
+        self._priority_table.setRowCount(0)
+        self._priority_result.clear()
 
-        self._priority_table.setRowCount(len(ranked))
-        for row, (oid, score) in enumerate(ranked):
+        worker = _CalcPriorityWorker(ord_ids)
+        thread = QThread(self)
+        self._calc_worker = worker
+        worker.moveToThread(thread)
+        worker.result_ready.connect(self._on_calc_done)
+        worker.error.connect(self._on_calc_error)
+        worker.result_ready.connect(lambda _: thread.quit())
+        worker.error.connect(lambda _: thread.quit())
+        thread.started.connect(worker.run)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(self._clear_calc_worker)
+        self._calc_thread = thread
+        thread.start()
+
+    @pyqtSlot(list)
+    def _on_calc_done(self, results: list) -> None:
+        """Management Service 응답 → 우선순위 테이블 업데이트."""
+        if self._is_ui_deleted():
+            return
+
+        if not results:
+            QMessageBox.warning(self, "우선 순위계산", "계산 결과가 없습니다.\n선택한 주문의 상태를 확인하세요.")
+            self._calc_btn.setEnabled(True)
+            return
+
+        # _priority_result: [(ord_id, total_score), ...] rank 순(1 = 최우선)
+        self._priority_result = [(r["order_id"], r["total_score"]) for r in results]
+
+        self._priority_table.setRowCount(len(results))
+        delay_color = {"high": "#e53935", "medium": "#fb8c00", "low": ""}
+        for row, r in enumerate(results):
+            oid = r["order_id"]
             ptn = self._PATTERN_LABEL.get(self._patterns.get(oid, 0), "?")
-            self._priority_table.setItem(row, 0, QTableWidgetItem(f"ord_{oid}  패턴:{ptn}"))
-            score_item = QTableWidgetItem(str(score))
+            label = f"  {r['rank']}위  ord_{oid}  패턴:{ptn}"
+            label_item = QTableWidgetItem(label)
+            color = delay_color.get(r["delay_risk"], "")
+            if color:
+                label_item.setForeground(QColor(color))
+            self._priority_table.setItem(row, 0, label_item)
+
+            score_item = QTableWidgetItem(str(r["total_score"]))
             score_item.setTextAlignment(Qt.AlignCenter)
             self._priority_table.setItem(row, 1, score_item)
 
         self._start_btn.setEnabled(True)
+        self._calc_btn.setEnabled(True)
+
+    @pyqtSlot(str)
+    def _on_calc_error(self, msg: str) -> None:
+        if self._is_ui_deleted():
+            return
+        QMessageBox.critical(self, "우선 순위계산 실패", msg)
+        self._calc_btn.setEnabled(True)
+
+    @pyqtSlot()
+    def _clear_calc_worker(self) -> None:
+        self._calc_worker = None
 
     @pyqtSlot()
     def _on_start_production(self) -> None:
