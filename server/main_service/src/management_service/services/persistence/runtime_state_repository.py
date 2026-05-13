@@ -8,6 +8,7 @@ while this repository mirrors durable runtime snapshots into smart_cast_db.
 from __future__ import annotations
 
 from datetime import datetime
+import json
 import logging
 from typing import Any
 
@@ -109,7 +110,11 @@ class RuntimeStateRepository:
         trans_task_txn_model=None,
         equip_stat_model=None,
         trans_stat_model=None,
+        chg_location_stat_model=None,
         strg_location_stat_model=None,
+        log_event_model=None,
+        log_err_equip_model=None,
+        log_err_trans_model=None,
     ) -> None:
         self._session_factory = session_factory
         self._ord_model = ord_model
@@ -123,16 +128,24 @@ class RuntimeStateRepository:
         self._trans_task_txn_model = trans_task_txn_model
         self._equip_stat_model = equip_stat_model
         self._trans_stat_model = trans_stat_model
+        self._chg_location_stat_model = chg_location_stat_model
         self._strg_location_stat_model = strg_location_stat_model
+        self._log_event_model = log_event_model
+        self._log_err_equip_model = log_err_equip_model
+        self._log_err_trans_model = log_err_trans_model
 
     @classmethod
     def from_default_db(cls) -> "RuntimeStateRepository":
         from db_session import SessionLocal
         from smart_cast_db.models import (
+            ChgLocationStat,
             EquipStat,
             EquipTaskTxn,
             InspTaskTxn,
             ItemStat,
+            LogErrEquip,
+            LogErrTrans,
+            LogEvent,
             Ord,
             OrdDetail,
             OrdLog,
@@ -156,7 +169,11 @@ class RuntimeStateRepository:
             trans_task_txn_model=TransTaskTxn,
             equip_stat_model=EquipStat,
             trans_stat_model=TransStat,
+            chg_location_stat_model=ChgLocationStat,
             strg_location_stat_model=StrgLocationStat,
+            log_event_model=LogEvent,
+            log_err_equip_model=LogErrEquip,
+            log_err_trans_model=LogErrTrans,
         )
 
     def start_production(self, ord_id: int) -> StartProductionOrderAckModel:
@@ -434,6 +451,110 @@ class RuntimeStateRepository:
             target_slot.status = "occupied"
             db.commit()
 
+    def reserve_charger_slot(self, row: int, col: int) -> bool:
+        """Reserve an empty charger slot in chg_location_stat."""
+        if self._chg_location_stat_model is None:
+            return False
+
+        with self._session_factory() as db:
+            slot = (
+                db.query(self._chg_location_stat_model)
+                .filter(
+                    self._chg_location_stat_model.loc_row == row,
+                    self._chg_location_stat_model.loc_col == col,
+                )
+                .first()
+            )
+            if slot is None:
+                logger.warning(
+                    "[RuntimeStateRepository] charger slot not found: row=%s col=%s",
+                    row,
+                    col,
+                )
+                return False
+            if slot.status == "occupied" or slot.res_id is not None:
+                return False
+
+            slot.status = "reserved"
+            slot.res_id = None
+            slot.stored_at = datetime.utcnow()
+            db.commit()
+            return True
+
+    def occupy_charger_slot(self, res_id: str, row: int, col: int) -> bool:
+        """Mark a charger slot occupied by an AMR."""
+        if self._chg_location_stat_model is None:
+            return False
+
+        with self._session_factory() as db:
+            target_slot = (
+                db.query(self._chg_location_stat_model)
+                .filter(
+                    self._chg_location_stat_model.loc_row == row,
+                    self._chg_location_stat_model.loc_col == col,
+                )
+                .first()
+            )
+            if target_slot is None:
+                logger.warning(
+                    "[RuntimeStateRepository] charger slot not found: res_id=%s row=%s col=%s",
+                    res_id,
+                    row,
+                    col,
+                )
+                return False
+
+            occupied_slots = (
+                db.query(self._chg_location_stat_model)
+                .filter(self._chg_location_stat_model.res_id == res_id)
+                .all()
+            )
+            for slot in occupied_slots:
+                if slot.loc_id == target_slot.loc_id:
+                    continue
+                slot.res_id = None
+                slot.status = "empty"
+                slot.stored_at = datetime.utcnow()
+
+            target_slot.res_id = res_id
+            target_slot.status = "occupied"
+            target_slot.stored_at = datetime.utcnow()
+            db.commit()
+            return True
+
+    def release_charger_slot(
+        self,
+        row: int | None = None,
+        col: int | None = None,
+        res_id: str | None = None,
+    ) -> bool:
+        """Release a reserved/occupied charger slot."""
+        if self._chg_location_stat_model is None:
+            return False
+
+        with self._session_factory() as db:
+            query = db.query(self._chg_location_stat_model)
+            if row is not None and col is not None:
+                query = query.filter(
+                    self._chg_location_stat_model.loc_row == row,
+                    self._chg_location_stat_model.loc_col == col,
+                )
+            elif res_id is not None:
+                query = query.filter(self._chg_location_stat_model.res_id == res_id)
+            else:
+                return False
+
+            slots = query.all()
+            if not slots:
+                return False
+
+            for slot in slots:
+                slot.res_id = None
+                slot.status = "empty"
+                slot.stored_at = datetime.utcnow()
+            db.commit()
+            return True
+
     def sync_task_status(self, task_meta: dict[str, Any]) -> None:
         txn_id = task_meta.get("txn_id") or _task_id_to_int(task_meta.get("task_id"))
         task_type = _task_db_value(task_meta.get("task_type"))
@@ -473,6 +594,52 @@ class RuntimeStateRepository:
                     txn.start_at = now
                 if status in {TxnStat.SUCC.value, TxnStat.FAIL.value}:
                     txn.end_at = now
+            db.commit()
+
+    def record_adapter_result(self, record: dict[str, Any]) -> None:
+        """Persist adapter command results into runtime log tables.
+
+        Task txn tables keep coarse lifecycle status. Adapter-specific command
+        messages and payloads are stored as event logs; failed physical commands
+        also get an error-log row for equipment/transport dashboards.
+        """
+        txn_id = record.get("txn_id") or _task_id_to_int(record.get("task_id"))
+        task_type = _task_db_value(record.get("task_type"))
+        detail = json.dumps(record, ensure_ascii=True, default=str)
+
+        with self._session_factory() as db:
+            if self._log_event_model is not None:
+                db.add(
+                    self._log_event_model(
+                        component="adapter",
+                        event_type="ADAPTER_STEP_RESULT",
+                        txn_id=txn_id,
+                        detail=detail,
+                    )
+                )
+
+            if record.get("success") is False and txn_id is not None and task_type is not None:
+                message = str(record.get("message") or "adapter_failed")
+                failed_stat = str(record.get("action") or task_type)
+                if task_type in TRANS_TASK_TYPES and self._log_err_trans_model is not None:
+                    db.add(
+                        self._log_err_trans_model(
+                            res_id=record.get("res_id"),
+                            task_txn_id=txn_id,
+                            failed_stat=failed_stat,
+                            err_msg=message,
+                        )
+                    )
+                elif task_type != TaskType.INSP.value and self._log_err_equip_model is not None:
+                    db.add(
+                        self._log_err_equip_model(
+                            res_id=record.get("res_id"),
+                            task_txn_id=txn_id,
+                            failed_stat=failed_stat,
+                            err_msg=message,
+                        )
+                    )
+
             db.commit()
 
     def sync_item_snapshot(self, item_meta: dict[str, Any]) -> None:

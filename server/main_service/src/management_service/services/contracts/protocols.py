@@ -153,6 +153,9 @@ class IStateManager(Protocol):
     async def update_task_status(self, req: UpdateTaskStatusInput) -> bool: 
         ...    
 
+    async def record_adapter_result(self, req: AdapterStepResultInput) -> bool:
+        ...
+
     async def publish_subtask_completed(
         self,
         *,

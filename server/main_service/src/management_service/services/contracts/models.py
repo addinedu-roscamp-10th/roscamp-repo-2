@@ -167,6 +167,20 @@ class AdapterResult(BaseModel):
     message: str = ""
     payload: Dict[str, Any] = Field(default_factory=dict)
 
+class AdapterStepResultInput(BaseModel):
+    """Adapter command result recorded after each executor step."""
+    task_id: str
+    item_id: Optional[int] = None
+    res_id: str
+    task_type: TaskType
+    step_id: int
+    action: str
+    success: bool
+    message: str = ""
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    command_params: Dict[str, Any] = Field(default_factory=dict)
+    recorded_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
 class UpdateTaskStatusInput(BaseModel):
     """State Manager 로 보낼 Task 진행 상태 업데이트 요청 ([동사][명사]Input 규칙)"""
     task_id: str

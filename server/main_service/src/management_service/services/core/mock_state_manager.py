@@ -17,6 +17,7 @@ from ..contracts.enums import TaskType, TxnStat
 from ..contracts.models import (
     AmrRuntimeState,
     AllocateTaskResInput,
+    AdapterStepResultInput,
     CreateTaskInput,
     Event,
     ItemStatusRecord,
@@ -84,6 +85,7 @@ class MockStateManager:
         self._items: dict[int, dict[str, Any]] = {}
         self._tasks: dict[str, dict[str, Any]] = {}
         self._res_list: dict[str, dict[str, Any]] = {}
+        self.adapter_results: list[dict[str, Any]] = []
         self.items = self._items
         self.orders: dict[int, dict[str, Any]] = {}
 
@@ -188,6 +190,13 @@ class MockStateManager:
 
         for chg_loc, slot_info in self.charger_slots.items():
             if slot_info.get("status") == "empty":
+                reserved = self._safe_repo_call(
+                    "reserve_charger_slot",
+                    int(chg_loc[0]),
+                    int(chg_loc[1]),
+                )
+                if reserved is False:
+                    continue
                 slot_info["status"] = "reserved"
                 slot_info["res_id"] = res_id
                 logger.info(
@@ -208,10 +217,38 @@ class MockStateManager:
         for chg_loc, slot_info in self.charger_slots.items():
             if slot_info.get("res_id") != res_id:
                 continue
+            self._safe_repo_call(
+                "release_charger_slot",
+                int(chg_loc[0]),
+                int(chg_loc[1]),
+                res_id,
+            )
             slot_info["status"] = "empty"
             slot_info["res_id"] = None
             logger.info(
                 "[MockStateManager] Charger released: chg_loc=%s res_id=%s",
+                chg_loc,
+                res_id,
+            )
+            return
+
+    def _occupy_charger(self, res_id: str | None = None) -> None:
+        """예약된 충전 슬롯을 AMR 점유 상태로 확정한다."""
+        if res_id is None:
+            return
+
+        for chg_loc, slot_info in self.charger_slots.items():
+            if slot_info.get("res_id") != res_id:
+                continue
+            slot_info["status"] = "occupied"
+            self._safe_repo_call(
+                "occupy_charger_slot",
+                res_id,
+                int(chg_loc[0]),
+                int(chg_loc[1]),
+            )
+            logger.info(
+                "[MockStateManager] Charger occupied: chg_loc=%s res_id=%s",
                 chg_loc,
                 res_id,
             )
@@ -465,6 +502,8 @@ class MockStateManager:
         )
         if source is not None:
             res_meta["charger_return_source"] = source
+        if status in {"idle", "charging"}:
+            self._occupy_charger(res_id)
         self._safe_repo_call("sync_resource_snapshot", res_meta)
         logger.info(
             "[MockStateManager] update_amr_charger_return_state: res=%s status=%s source=%s",
@@ -562,6 +601,24 @@ class MockStateManager:
             )
         if task_meta is not None:
             self._safe_repo_call("sync_task_status", task_meta)
+        return True
+
+    async def record_adapter_result(self, req: AdapterStepResultInput) -> bool:
+        """Adapter 결과를 메모리에 기록하고, 가능하면 DB 로그로 mirror한다."""
+        task_key = req.task_id if req.task_id.startswith("task_") else f"task_{req.task_id}"
+        task_meta = self._tasks.get(task_key, {})
+        record = req.model_dump()
+        record["txn_id"] = task_meta.get("txn_id")
+        record["ord_id"] = task_meta.get("ord_id")
+        self.adapter_results.append(record)
+        self._safe_repo_call("record_adapter_result", record)
+        logger.info(
+            "[MockStateManager] record_adapter_result: task=%s step=%s action=%s success=%s",
+            req.task_id,
+            req.step_id,
+            req.action,
+            req.success,
+        )
         return True
 
     def _handle_proc_task_status(
@@ -671,6 +728,7 @@ class MockStateManager:
         current_task_type = _normalize_task_type(task_meta.get("task_type"))
         is_battery_low_tochg = self._is_battery_low_tochg(current_task_type, res_meta)
         if is_battery_low_tochg:
+            self._occupy_charger(assigned_res_id)
             res_meta.update(
                 {
                     "task_id": None,

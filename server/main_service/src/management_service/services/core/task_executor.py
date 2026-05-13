@@ -347,6 +347,49 @@ class TaskExecutor:
             params=params,
         )
 
+    async def _record_adapter_result(
+        self,
+        input_data: ExecuteTaskInput,
+        step: CommandStep,
+        step_result: AdapterResult,
+    ) -> None:
+        """Persist adapter step results when the StateManager supports it."""
+        if step.action in {
+            "WAIT_TASK_COMPLETED",
+            "WAIT_SUBTASK_COMPLETED",
+            "WAIT_TIME",
+            "NOOP",
+        }:
+            return
+
+        recorder = getattr(self.state_manager, "record_adapter_result", None)
+        if recorder is None:
+            return
+
+        item_id = int(input_data.item_id) if input_data.item_id is not None else None
+        try:
+            await recorder(
+                AdapterStepResultInput(
+                    task_id=input_data.task_id,
+                    item_id=item_id,
+                    res_id=input_data.res_id,
+                    task_type=input_data.task_type,
+                    step_id=step.step_id,
+                    action=step.action,
+                    success=step_result.success,
+                    message=step_result.message,
+                    payload=step_result.payload,
+                    command_params={**step.params, **input_data.payload},
+                )
+            )
+        except Exception:
+            self.logger.exception(
+                "[Executor] Failed to record adapter result: task=%s step=%s action=%s",
+                input_data.task_id,
+                step.step_id,
+                step.action,
+            )
+
     def _resolve_charger_pose(self, charger_slot: tuple[int, int] | None) -> str | None:
         """chg_loc을 AMR의 dock id로 매핑."""
         if charger_slot is None:
