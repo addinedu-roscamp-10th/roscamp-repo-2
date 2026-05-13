@@ -194,7 +194,7 @@ class PatternControlPage(QWidget):
         stats_row.setSpacing(12)
         self._stat_unreg = _StatBox("패턴 미등록")
         self._stat_appr = _StatBox("생산 승인")
-        self._stat_today = _StatBox("금일 생산 주문", highlight=True)
+        self._stat_today = _StatBox("금일 생산 진행 주문", highlight=True)
         for box in (self._stat_unreg, self._stat_appr, self._stat_today):
             stats_row.addWidget(box)
         root.addLayout(stats_row)
@@ -329,6 +329,7 @@ class PatternControlPage(QWidget):
 
         all_orders = [self._normalize_order(item) for item in raw_orders]
         appr_orders = [o for o in all_orders if o["status"] == "APPR"]
+        mfg_orders = [o for o in all_orders if o["status"] == "MFG"]
 
         self._patterns = {
             int(p["ord_id"]): int(p.get("ptn_loc_id", p.get("ptn_id")))
@@ -341,7 +342,7 @@ class PatternControlPage(QWidget):
         unreg_orders = [o for o in appr_orders if o["ord_id"] not in self._patterns]
         self._stat_unreg.set_value(len(unreg_orders))
         self._stat_appr.set_value(len(appr_orders))
-        self._stat_today.set_value(len(all_orders))
+        self._stat_today.set_value(len(mfg_orders))
 
         # ── 미등록 주문 목록 ───────────────────────────────────────────
         self._unreg_list.blockSignals(True)

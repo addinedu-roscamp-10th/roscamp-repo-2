@@ -37,7 +37,7 @@ QGroupBox::title {{
 }}
 #kpiTitle {{
     color: {c.text_muted};
-    font-size: {typo.size_sm}px;
+    font-size: {typo.size_lg}px;
     font-weight: 500;
     background-color: transparent;
 }}

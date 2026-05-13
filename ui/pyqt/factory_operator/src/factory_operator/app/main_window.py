@@ -18,7 +18,6 @@ from PyQt5.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
-    QMessageBox,
     QStackedWidget,
     QStatusBar,
     QToolButton,
@@ -27,6 +26,7 @@ from PyQt5.QtWidgets import (
 )
 
 from app.api_client import ApiClient
+from app.management_client import ManagementClient
 from app.pages.dashboard import DashboardPage
 from app.pages.logistics import LogisticsPage
 from app.pages.map import FactoryMapPage
@@ -42,10 +42,10 @@ from app.widgets.alert_widgets import ToastNotification, _normalize_level
 # 2026-04-27: '실시간 운영 모니터링' (operations) 은 발주/패턴/공정단계/Item 위치/핸드오프 통합 관리,
 # '생산 모니터링' (production) 은 제어 패널 + 실시간 게이지 + 차트 (HW 직결 시각화) 전담.
 NAV_ITEMS: list[tuple[str, str]] = [
+    ("dashboard", "대시보드"),
     ("pattern_control", "패턴 위치 조작 및 생산 시작"),
     ("operations", "실시간 운영 모니터링"),
     ("pp_worker", "후처리 작업자"),
-    ("dashboard", "대시보드"),
     ("map", "공장 맵"),
     ("production", "생산 모니터링"),
     ("schedule", "생산 계획"),
@@ -66,6 +66,7 @@ class MainWindow(QMainWindow):
         self.resize(1400, 900)
 
         self._api = ApiClient()
+        self._mgmt = ManagementClient()
         self._amr_thread = None
         self._theme_manager = theme_manager  # ThemeManager (옵션 — main.py 가 주입)
         # 알림 중복 방지 (같은 critical 5초 내 재발행 차단). __init__ 에서 초기화 —
@@ -96,7 +97,7 @@ class MainWindow(QMainWindow):
         side_layout.setContentsMargins(0, 0, 0, 0)
         side_layout.setSpacing(0)
 
-        logo = QLabel("주물공장 모니터링")
+        logo = QLabel("SmartCast\nRobotics")
         logo.setObjectName("sidebarLogo")
         logo.setAlignment(Qt.AlignCenter)
         side_layout.addWidget(logo)
@@ -147,7 +148,7 @@ class MainWindow(QMainWindow):
         self._pattern_control = PatternControlPage(self._api)  # NAV_ITEMS[0] — 수동 패턴/생산 시작
         self._operations = OperationsPage(self._api)  # NAV_ITEMS[1] — 실시간 운영 모니터링
         self._pp_worker = PpWorkerPage(self._api)  # NAV_ITEMS[2]
-        self._dashboard = DashboardPage(self._api)
+        self._dashboard = DashboardPage(self._api, self._mgmt)
         self._map = FactoryMapPage(self._api)
         self._production = ProductionPage(self._api)  # NAV_ITEMS[5] — 생산 모니터링 (게이지/차트)
         self._schedule = SchedulePage(self._api)
@@ -156,10 +157,10 @@ class MainWindow(QMainWindow):
         self._storage = StoragePage(self._api)
 
         for page in (
+            self._dashboard,
             self._pattern_control,
             self._operations,
             self._pp_worker,
-            self._dashboard,
             self._map,
             self._production,
             self._schedule,
@@ -341,31 +342,7 @@ class MainWindow(QMainWindow):
         if equipment_id:
             body = f"{body}\n설비: {equipment_id}"
 
-        if (severity or "").lower() == "critical":
-            # 폭주 방지 — 같은 alert_id 는 모달 1회만
-            if not hasattr(self, "_shown_critical_alerts"):
-                self._shown_critical_alerts = set()
-            if alert_id in self._shown_critical_alerts:
-                return
-            self._shown_critical_alerts.add(alert_id)
-            # 캐시 크기 cap (오래된 것 정리)
-            if len(self._shown_critical_alerts) > 200:
-                self._shown_critical_alerts = set(list(self._shown_critical_alerts)[-100:])
-
-            box = QMessageBox(self)
-            box.setIcon(QMessageBox.Critical)
-            box.setWindowTitle(title)
-            box.setText(body)
-            if at_iso:
-                box.setInformativeText(
-                    f"발생 시각: {at_iso[:19].replace('T', ' ')}\nID: {alert_id}"
-                )
-            box.setStandardButtons(QMessageBox.Ok)
-            # 중요: 메인 GUI 스레드에서 호출되므로 exec_() 로 모달 처리
-            box.exec_()
-            return
-
-        # critical 외: 기존 토스트
+        # 모든 severity 토스트로 통일 (critical 모달 제거)
         self.show_toast(severity, title, body)
 
     def _on_alert_conn_state(self, connected: bool) -> None:
