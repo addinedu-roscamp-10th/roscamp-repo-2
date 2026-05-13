@@ -245,9 +245,7 @@ class RuntimeStateRepository:
                 )
 
             item_ids: list[int] = []
-            equip_task_txn_ids: list[int] = []
             created_items: list[Any] = []
-            created_txns: list[Any] = []
 
             for _ in range(int(detail.qty)):
                 new_item = self._item_model(
@@ -260,31 +258,23 @@ class RuntimeStateRepository:
                 db.flush()
 
                 new_item_id = getattr(new_item, "item_id", getattr(new_item, "item_stat_id", None))
-                txn = self._equip_task_txn_model(
-                    res_id="PAT",
-                    task_type="MM",
-                    txn_stat=TxnStat.QUE.value,
-                    item_id=new_item_id,
-                )
-                db.add(txn)
-                db.flush()
-
                 created_items.append(new_item)
-                created_txns.append(txn)
                 item_ids.append(int(new_item_id))
-                equip_task_txn_ids.append(int(txn.txn_id))
+
+            # 초기 MM equip_task_txn 은 TaskManager.create_next_task(flow_stat=="CREATED") 가
+            # MockStateManager.insert_task_txn 를 통해 한 번만 만든다. 여기서 미리 만들면
+            # 같은 item 에 MM txn 두 개가 생성되어 자원 할당 / 상태 추적이 어긋난다.
 
             db.commit()
-            for new_item, txn in zip(created_items, created_txns):
+            for new_item in created_items:
                 db.refresh(new_item)
-                db.refresh(txn)
 
             return StartProductionOrderAckModel(
                 ord_id=ord_id,
                 accepted=True,
-                reason=f"Production started: {len(item_ids)} items and MM tasks created.",
+                reason=f"Production started: {len(item_ids)} items created.",
                 item_ids=item_ids,
-                equip_task_txn_ids=equip_task_txn_ids,
+                equip_task_txn_ids=[],
             )
 
     def sync_task_created(self, task_meta: dict[str, Any]) -> int | None:

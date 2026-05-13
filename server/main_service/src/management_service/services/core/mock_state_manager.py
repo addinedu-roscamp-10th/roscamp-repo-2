@@ -333,7 +333,7 @@ class MockStateManager:
             return ack
 
         ptn_id = self._safe_repo_call("get_order_ptn_loc_id", ord_id)
-        for item_id, txn_id in zip(ack.item_ids, ack.equip_task_txn_ids):
+        for item_id in ack.item_ids:
             self._items[item_id] = {
                 "item_id": item_id,
                 "ord_id": ord_id,
@@ -342,14 +342,6 @@ class MockStateManager:
                 "zone_nm": "PAT",
                 "result": None,
                 "ptn_id": ptn_id,
-            }
-            self._tasks[f"task_{txn_id}"] = {
-                "ord_id": ord_id,
-                "item_id": item_id,
-                "txn_id": txn_id,
-                "status": TxnStat.QUE.value,
-                "res_id": "PAT",
-                "task_type": TaskType.MM.value,
             }
         return ack
 
