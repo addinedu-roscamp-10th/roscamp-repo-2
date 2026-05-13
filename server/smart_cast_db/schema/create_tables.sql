@@ -186,7 +186,12 @@ CREATE TABLE item (
     ord_id           INT          NOT NULL REFERENCES ord(ord_id),
     equip_task_type  VARCHAR(10),
     trans_task_type  VARCHAR(10),
-    cur_stat         VARCHAR(10),
+    cur_stat         VARCHAR(20)  NOT NULL DEFAULT 'CREATED'
+        CHECK (cur_stat IN (
+            'CREATED', 'CAST', 'WAIT_PP',
+            'WAIT_INSP', 'INSP', 'WAIT_PA',
+            'STORED', 'DISCARDED', 'PICK', 'READY_TO_SHIP'
+        )),
     cur_res          VARCHAR(10)  REFERENCES res(res_id),
     is_defective     BOOLEAN,
     updated_at       TIMESTAMP    DEFAULT now()
@@ -319,7 +324,7 @@ CREATE TABLE equip_task_txn (
     txn_id       SERIAL       PRIMARY KEY,
     res_id       VARCHAR(10)  REFERENCES res(res_id),
     task_type    VARCHAR      NOT NULL CHECK (task_type IN (
-        'MM', 'POUR', 'DM', 'PP', 'PA_GP', 'PA_DP', 'PICK', 'SHIP', 'ToINSP', 'ToPAWait'
+        'MM', 'POUR', 'DM', 'PA_GP', 'PA_DP', 'PICK', 'SHIP', 'ToINSP', 'ToPAWait'
     )),
     txn_stat     VARCHAR      NOT NULL CHECK (txn_stat IN ('QUE', 'PROC', 'SUCC', 'FAIL')),
     item_id      INT          REFERENCES item(item_id),
@@ -379,14 +384,14 @@ CREATE TABLE trans_stat (
 -- =====================
 
 CREATE TABLE insp_task_txn (
-    txn_id    SERIAL       PRIMARY KEY,
-    item_id   INT          REFERENCES item(item_id),
-    res_id    VARCHAR(10)  REFERENCES equip(res_id),
-    txn_stat  VARCHAR(10)  NOT NULL CHECK (txn_stat IN ('QUE', 'PROC', 'SUCC', 'FAIL')),
-    result    BOOLEAN,
-    req_at    TIMESTAMP    DEFAULT now(),
-    start_at  TIMESTAMP,
-    end_at    TIMESTAMP
+    txn_id              SERIAL       PRIMARY KEY,
+    item_id             INT          REFERENCES item(item_id),
+    txn_stat            VARCHAR(10)  NOT NULL CHECK (txn_stat IN ('QUE', 'PROC', 'SUCC', 'FAIL')),
+    result              BOOLEAN,
+    final_inference_id  INT,         -- FK added after ai_inference_txn is created (see ALTER below)
+    req_at              TIMESTAMP    DEFAULT now(),
+    start_at            TIMESTAMP,
+    end_at              TIMESTAMP
 );
 
 -- =====================
@@ -408,27 +413,36 @@ CREATE TABLE ai_model (
 );
 
 CREATE TABLE ai_inference_txn (
-    inference_id  SERIAL       PRIMARY KEY,
-    insp_txn_id   INT          NOT NULL REFERENCES insp_task_txn(txn_id),
-    model_id      INT          NOT NULL REFERENCES ai_model(model_id),
-    step_type     VARCHAR(30)  NOT NULL CHECK (step_type IN ('CLASSIFICATION', 'ANOMALY_DETECTION')),
-    txn_stat      VARCHAR(10)  NOT NULL CHECK (txn_stat IN ('QUE', 'PROC', 'SUCC', 'FAIL')),
-    req_at        TIMESTAMP    DEFAULT now(),
-    start_at      TIMESTAMP,
-    end_at        TIMESTAMP
+    inference_id      SERIAL       PRIMARY KEY,
+    insp_txn_id       INT          NOT NULL REFERENCES insp_task_txn(txn_id),
+    model_id          INT          NOT NULL REFERENCES ai_model(model_id),
+    step_type         VARCHAR(30)  NOT NULL CHECK (step_type IN ('CLASSIFICATION', 'ANOMALY_DETECTION')),
+    txn_stat          VARCHAR(10)  NOT NULL CHECK (txn_stat IN ('QUE', 'PROC', 'SUCC', 'FAIL')),
+    -- CLASSIFICATION (YOLO) 결과
+    predicted_class   VARCHAR(5)   CHECK (predicted_class IN ('CMH', 'RMH', 'EMH')),
+    confidence        NUMERIC,
+    -- ANOMALY_DETECTION (PatchCore) 결과
+    anomaly_score     NUMERIC,
+    anomaly_threshold NUMERIC,
+    is_anomaly        BOOLEAN,
+    -- 공통
+    result_json       JSONB,
+    req_at            TIMESTAMP    DEFAULT now(),
+    start_at          TIMESTAMP,
+    end_at            TIMESTAMP
 );
+
+-- insp_task_txn.final_inference_id → ai_inference_txn (circular dep: added post-creation)
+ALTER TABLE insp_task_txn
+    ADD CONSTRAINT fk_insp_final_inference
+    FOREIGN KEY (final_inference_id) REFERENCES ai_inference_txn(inference_id);
 
 CREATE TABLE insp_stat (
     insp_txn_id             INT        PRIMARY KEY REFERENCES insp_task_txn(txn_id),
     item_id                 INT        REFERENCES item(item_id),
     yolo_inference_id       INT        REFERENCES ai_inference_txn(inference_id),
     patchcore_inference_id  INT        REFERENCES ai_inference_txn(inference_id),
-    predicted_class         VARCHAR(5) CHECK (predicted_class IN ('CMH', 'RMH', 'EMH')),
-    yolo_confidence         NUMERIC,
-    anomaly_score           NUMERIC,
-    anomaly_threshold       NUMERIC,
     final_result            VARCHAR(2) CHECK (final_result IN ('GP', 'DP')),
-    result_json             JSONB,
     updated_at              TIMESTAMP  DEFAULT now()
 );
 

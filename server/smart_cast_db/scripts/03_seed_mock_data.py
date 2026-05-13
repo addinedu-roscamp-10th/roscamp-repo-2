@@ -2,18 +2,20 @@
 
 목적:
     'pattern_control' 탭 검증에 필요한 다양한 상태의 주문 데이터를 한 번에 생성.
+    대시보드 탭 '실시간 알림' 검증을 위한 alerts_stat mock 데이터도 생성.
 
 생성 데이터:
     [APPR + ptn_loc_id 없음] 3건 → _unreg_list (패턴 미등록)
     [APPR + ptn_loc_id 있음] 4건 → _reg_list   (패턴 등록완료, 우선순위 계산 가능)
     [MFG 상태]               2건 → 어느 리스트에도 미표시 (realistic 데이터)
+    [alerts_stat]            5건 → 대시보드 실시간 알림
 
 실행:
     cd server/smart_cast_db
-    python scripts/09_seed_mock_data.py
+    python scripts/03_seed_mock_data.py
 
     # 이전 실행 데이터 삭제 후 재생성:
-    python scripts/09_seed_mock_data.py --clean
+    python scripts/03_seed_mock_data.py --clean
 
 확인:
     1. ./scripts/run-backend.sh  (Management gRPC :50051)
@@ -21,6 +23,7 @@
     3. 첫 탭 '패턴 위치 조작 및 생산 시작' 에서:
        - 패턴 미등록 영역: 3건 표시
        - 생산 계획 영역:   4건 표시 (선택 후 우선순위 계산 가능)
+    4. 대시보드 탭 '실시간 알림'에서 5건 표시 확인
 """
 
 from __future__ import annotations
@@ -67,6 +70,65 @@ _OPERATOR_USER_ID = 2
 _SHIP_ADDR        = "서울특별시 강남구 테헤란로 123"
 
 _MOCK_TAG = "MOCK09"   # ord_log.note 등 없으므로 cleanup 시 ord_id 범위로 처리
+
+# ─── Mock 알림 데이터 ───────────────────────────────────────────────────────────
+_MOCK_ALERTS = [
+    {
+        "id":           "ALERT-2026-001",
+        "res_id":       "CONV1",
+        "type":         "stage_timeout",
+        "severity":     "warning",
+        "error_code":   "T1003",
+        "message":      "컨베이어 정체 — 검사 대기 30초 초과",
+        "zone":         "INSP",
+        "timestamp":    "2026-05-13T08:15:00+09:00",
+        "acknowledged": False,
+    },
+    {
+        "id":           "ALERT-2026-002",
+        "res_id":       "PAT",
+        "type":         "equipment_error",
+        "severity":     "info",
+        "error_code":   "",
+        "message":      "PAT 암 홈 복귀 완료",
+        "zone":         "STRG",
+        "timestamp":    "2026-05-13T08:30:00+09:00",
+        "acknowledged": True,
+    },
+    {
+        "id":           "ALERT-2026-003",
+        "res_id":       "TAT1",
+        "type":         "equipment_error",
+        "severity":     "warning",
+        "error_code":   "E4021",
+        "message":      "TAT1 배터리 잔량 낮음 (22%) — 충전 권장",
+        "zone":         "CHG",
+        "timestamp":    "2026-05-13T09:00:00+09:00",
+        "acknowledged": False,
+    },
+    {
+        "id":           "ALERT-2026-004",
+        "res_id":       "MAT",
+        "type":         "equipment_error",
+        "severity":     "critical",
+        "error_code":   "E9001",
+        "message":      "MAT 주조 암 통신 두절 — 즉시 점검 필요",
+        "zone":         "CAST",
+        "timestamp":    "2026-05-13T09:20:00+09:00",
+        "acknowledged": False,
+    },
+    {
+        "id":           "ALERT-2026-005",
+        "res_id":       "CONV1",
+        "type":         "stage_timeout",
+        "severity":     "info",
+        "error_code":   "",
+        "message":      "컨베이어 정상 가동 재개",
+        "zone":         "INSP",
+        "timestamp":    "2026-05-13T09:45:00+09:00",
+        "acknowledged": True,
+    },
+]
 
 
 # ─── DB 헬퍼 ─────────────────────────────────────────────────────────────────
@@ -299,6 +361,25 @@ def _clean_previous(cur) -> int:
     return len(ids)
 
 
+def _upsert_mock_alerts(cur) -> int:
+    """alerts_stat 에 mock 알림 데이터 삽입 (UPSERT)."""
+    for alert in _MOCK_ALERTS:
+        cur.execute(
+            """
+            INSERT INTO alerts_stat
+                (id, res_id, type, severity, error_code, message, zone, "timestamp", acknowledged)
+            VALUES (%(id)s, %(res_id)s, %(type)s, %(severity)s, %(error_code)s,
+                    %(message)s, %(zone)s, %(timestamp)s, %(acknowledged)s)
+            ON CONFLICT (id) DO UPDATE SET
+                message      = EXCLUDED.message,
+                severity     = EXCLUDED.severity,
+                acknowledged = EXCLUDED.acknowledged
+            """,
+            alert,
+        )
+    return len(_MOCK_ALERTS)
+
+
 def main() -> int:
     _db.load_env()
     args = parse_args()
@@ -373,6 +454,9 @@ def main() -> int:
                 _start_mfg(cur, ctx["ord_id"], args.operator_id)
                 created_mfg.append({**ctx, "ptn_loc_id": s["ptn_loc_id"]})
 
+            # ── alerts_stat mock 데이터 ─────────────────────────────────────
+            alert_count = _upsert_mock_alerts(cur)
+
             cur.close()
         # auto-commit
 
@@ -421,7 +505,12 @@ def main() -> int:
     print(f"       패턴 미등록 영역: {len(created_unreg)}건")
     print(f"       생산 계획 영역:   {len(created_reg)}건  (전체 선택 후 우선순위 계산 클릭)")
     print()
-    print("재생성 시: python scripts/09_seed_mock_data.py --clean")
+    print(f"【 실시간 알림 (alerts_stat) 】  {alert_count}건 UPSERT 완료")
+    for a in _MOCK_ALERTS:
+        print(f"  {a['id']}  [{a['severity']:8}]  {a['message']}")
+
+    print()
+    print("재생성 시: python scripts/03_seed_mock_data.py --clean")
 
     return 0
 
