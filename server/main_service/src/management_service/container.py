@@ -1,4 +1,5 @@
 import logging
+import os
 
 from services.legacy.execution_monitor import ExecutionMonitor
 from services.core.orchestrator import Orchestrator
@@ -35,6 +36,10 @@ class Container:
     def __init__(self):
         logger.info("Initializing Dependency Container...")
         self._started = False
+        bypass_non_robot_hardware = os.environ.get(
+            "MGMT_BYPASS_NON_ROBOT_HARDWARE",
+            "0",
+        ).lower() in ("1", "true", "yes")
 
         self.event_bridge = EventBridge()
         self.state_manager = MockStateManager(event_bridge=self.event_bridge, enable_persistence=True)
@@ -49,6 +54,11 @@ class Container:
             adapter=self.adapter,
             state_manager=self.state_manager,
             event_bridge=self.event_bridge,
+            bypass_non_robot_hardware=bypass_non_robot_hardware,
+        )
+        logger.info(
+            "TaskExecutor bypass_non_robot_hardware=%s",
+            bypass_non_robot_hardware,
         )
         self.orchestrator = Orchestrator(
             event_bridge=self.event_bridge,

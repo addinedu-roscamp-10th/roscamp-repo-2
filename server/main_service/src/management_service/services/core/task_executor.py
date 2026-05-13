@@ -15,6 +15,16 @@ class TaskExecutor:
         (1, 2): "ToCHG2",
         (1, 3): "ToCHG3",
     }
+    _HARDWARE_RESOURCE_IDS = frozenset({"MAT", "PAT"})
+    _HARDWARE_RESOURCE_PREFIXES = ("TAT",)
+    _BYPASSABLE_TASK_TYPES = frozenset(
+        {
+            TaskType.PP,
+            TaskType.ToINSP,
+            TaskType.INSP,
+            TaskType.ToPAWait,
+        }
+    )
     _EXTERNAL_WAIT_EVENTS = {
         EventType.HANDOFF_ACK,
         EventType.PP_DONE_REQUESTED,
@@ -23,16 +33,22 @@ class TaskExecutor:
         # 디스크 저장까지 완료된 시점. UploadInspectionImage RPC 가 publish.
         EventType.INSP_IMAGE_UPLOADED,
     }
+    _EXTERNAL_WAIT_SUBTASK_TYPES = frozenset(
+        event_type.value for event_type in _EXTERNAL_WAIT_EVENTS
+    )
 
     def __init__(
         self,
         adapter: IAdapter,
         state_manager: IStateManager,
         event_bridge: IEventBridge | None = None,
+        *,
+        bypass_non_robot_hardware: bool = False,
     ):
         self.adapter = adapter
         self.state_manager = state_manager
         self.event_bridge = event_bridge
+        self._bypass_non_robot_hardware = bypass_non_robot_hardware
         self.logger = logging.getLogger(__name__)
         self._waiters_lock = threading.Lock()
         self._task_waiters: dict[tuple[int, TaskType], list[asyncio.Future[str]]] = defaultdict(list)
@@ -203,6 +219,20 @@ class TaskExecutor:
         await self.state_manager.update_task_status(
             UpdateTaskStatusInput(task_id=input_data.task_id, new_stat=TxnStat.PROC)
         )
+        if self._should_bypass_task(input_data.task_type):
+            self.logger.info(
+                "[Executor] Bypassing non-robot task: task=%s type=%s",
+                input_data.task_id,
+                input_data.task_type.value,
+            )
+            await self.state_manager.update_task_status(
+                UpdateTaskStatusInput(task_id=input_data.task_id, new_stat=TxnStat.SUCC)
+            )
+            return ExecutionResult(
+                task_id=input_data.task_id,
+                final_status=TxnStat.SUCC,
+                steps_executed=0,
+            )
         await asyncio.sleep(1)
 
         # 2. 시퀀스 분해
@@ -323,9 +353,25 @@ class TaskExecutor:
         특정 선행 단계(task, subtask)를 기다려야할 경우 waiter를 만들고 완료 event를 기다린다.
         """
         if step.action == "WAIT_TASK_COMPLETED":
+            target_task_type = self._get_valid_wait_task_type(step)
+            if self._should_bypass_task(target_task_type):
+                self.logger.info(
+                    "[Executor] Bypassing upstream non-robot task wait: task=%s target=%s",
+                    input_data.task_id,
+                    target_task_type.value,
+                )
+                return AdapterResult(success=True, message="wait_task_completed")
             await self._wait_for_task_completed(input_data, step)
             return AdapterResult(success=True, message="wait_task_completed")
         if step.action == "WAIT_SUBTASK_COMPLETED":
+            subtask_type = self._get_valid_wait_subtask_type(step)
+            if self._should_bypass_external_wait(subtask_type):
+                self.logger.info(
+                    "[Executor] Bypassing external wait: task=%s subtask_type=%s",
+                    input_data.task_id,
+                    subtask_type,
+                )
+                return AdapterResult(success=True, message="wait_subtask_completed")
             await self._wait_for_subtask_completed(input_data, step)
             return AdapterResult(success=True, message="wait_subtask_completed")
         if step.action == "WAIT_TIME":  # 출고 대기용 시간
@@ -396,6 +442,31 @@ class TaskExecutor:
             return None
         return self._CHARGER_POSE_MAP.get(charger_slot)
 
+    def _should_bypass_task(self, task_type: TaskType) -> bool:
+        return self._bypass_non_robot_hardware and task_type in self._BYPASSABLE_TASK_TYPES
+
+    def _should_bypass_external_wait(self, subtask_type: str) -> bool:
+        if not self._bypass_non_robot_hardware:
+            return False
+        return subtask_type in self._EXTERNAL_WAIT_SUBTASK_TYPES
+
+    def _get_valid_wait_task_type(self, step: CommandStep) -> TaskType:
+        target_task_type = step.params.get("task_type")
+        if isinstance(target_task_type, str):
+            try:
+                target_task_type = TaskType(target_task_type)
+            except ValueError as exc:
+                raise RuntimeError("WAIT_TASK_COMPLETED requires params.task_type") from exc
+        if not isinstance(target_task_type, TaskType):
+            raise RuntimeError("WAIT_TASK_COMPLETED requires params.task_type")
+        return target_task_type
+
+    def _get_valid_wait_subtask_type(self, step: CommandStep) -> str:
+        subtask_type = step.params.get("subtask_type")
+        if not isinstance(subtask_type, str) or not subtask_type.strip():
+            raise RuntimeError("WAIT_SUBTASK_COMPLETED requires params.subtask_type")
+        return subtask_type.strip()
+
     def _should_bypass_hardware_execution(self, res_id: str) -> bool:
         """현재는 AMR(TAT)과 ARM(MAT/PAT)만 실제 하드웨어 명령을 실행한다."""
         normalized_res_id = (res_id or "").upper()
@@ -461,14 +532,7 @@ class TaskExecutor:
         if item_id is None:
             raise RuntimeError("WAIT_TASK_COMPLETED requires item_id")
 
-        target_task_type = step.params.get("task_type")
-        if isinstance(target_task_type, str):
-            try:
-                target_task_type = TaskType(target_task_type)
-            except ValueError as exc:
-                raise RuntimeError("WAIT_TASK_COMPLETED requires params.task_type") from exc
-        if not isinstance(target_task_type, TaskType):
-            raise RuntimeError("WAIT_TASK_COMPLETED requires params.task_type")
+        target_task_type = self._get_valid_wait_task_type(step)
 
         key = (item_id, target_task_type)
         loop = asyncio.get_running_loop()  # 현재 스레드에서 돌고 있는 event loop를 받아옴
@@ -510,11 +574,8 @@ class TaskExecutor:
         if item_id is None:
             raise RuntimeError("WAIT_SUBTASK_COMPLETED requires item_id")
 
-        subtask_type = step.params.get("subtask_type")
-        if not isinstance(subtask_type, str) or not subtask_type.strip():
-            raise RuntimeError("WAIT_SUBTASK_COMPLETED requires params.subtask_type")
-
-        key = (item_id, subtask_type.strip())
+        subtask_type = self._get_valid_wait_subtask_type(step)
+        key = (item_id, subtask_type)
         # task 생성 전에 먼저 온 이벤트를 보고 성공처리
         if key in self._completed_subtasks:
             self.logger.info(
