@@ -6,6 +6,7 @@ import threading
 from collections import defaultdict
 from typing import Dict, List
 from services.contracts.models import *
+from services.contracts.enums import TaskType, TxnStat
 from services.contracts.protocols import IAdapter, IEventBridge, IStateManager
 
 
@@ -54,6 +55,9 @@ class TaskExecutor:
         self._task_waiters: dict[tuple[int, TaskType], list[asyncio.Future[str]]] = defaultdict(list)
         self._subtask_waiters: dict[tuple[int, str], list[asyncio.Future[None]]] = defaultdict(list)
         self._completed_subtasks: set[tuple[int, str]] = set()
+        # 진행 중인 execute_task 코루틴을 task_id로 저장한다
+        # 비상 시 abort_task(task_id) 가 여기서 찾아서 정지시킨다
+        self._active_executions: dict[str, asyncio.Task] = {}
 
         if self.event_bridge is not None:
             self.event_bridge.subscribe(
@@ -210,76 +214,128 @@ class TaskExecutor:
         """
         self.logger.info(f"[Executor] Start Task: {input_data.task_id} ({input_data.task_type.value})")
 
-        # 1. 전처리: 실행 가능 여부 확인 (Mock)
-        # 실제 구현 시에는 res_stat 확인 등 수행
-        if not await self._pre_check(input_data):
-            return await self._handle_error(input_data, "PRECHECK_FAILED", 0)
+        # abort_task(task_id)로 이 코루틴을 찾을 수 있도록 자기 자신을 등록한다.
+        # finally 에서 반드시 제거되도록 try 블록으로 lifecycle 을 감싼다.
+        self._active_executions[input_data.task_id] = asyncio.current_task()
+        try:
+            # 1. 전처리: 실행 가능 여부 확인 (Mock)
+            # 실제 구현 시에는 res_stat 확인 등 수행
+            if not await self._pre_check(input_data):
+                return await self._handle_error(input_data, "PRECHECK_FAILED", 0)
 
-        # Task 시작 시 진행 상태 전이: QUE -> PROC
-        await self.state_manager.update_task_status(
-            UpdateTaskStatusInput(task_id=input_data.task_id, new_stat=TxnStat.PROC)
-        )
-        if self._should_bypass_task(input_data.task_type):
-            self.logger.info(
-                "[Executor] Bypassing non-robot task: task=%s type=%s",
+            # Task 시작 시 진행 상태 전이: QUE -> PROC
+            await self.state_manager.update_task_status(
+                UpdateTaskStatusInput(task_id=input_data.task_id, new_stat=TxnStat.PROC)
+            )
+            if self._should_bypass_task(input_data.task_type):
+                self.logger.info(
+                    "[Executor] Bypassing non-robot task: task=%s type=%s",
+                    input_data.task_id,
+                    input_data.task_type.value,
+                )
+                await self.state_manager.update_task_status(
+                    UpdateTaskStatusInput(task_id=input_data.task_id, new_stat=TxnStat.SUCC)
+                )
+                return ExecutionResult(
+                    task_id=input_data.task_id,
+                    final_status=TxnStat.SUCC,
+                    steps_executed=0,
+                )
+            await asyncio.sleep(1)
+
+            # 2. 시퀀스 분해
+            try:
+                sequence = self._breakdown_sequence(input_data.task_type)
+            except ValueError as e:
+                return await self._handle_error(input_data, str(e), 0)
+
+            executed_steps = 0
+
+            # 3. 순차 실행
+            try:
+                for step in sequence:
+                    # 단계 실행
+                    step_result = await self._execute_step(input_data, step)
+                    # INSP task 의 AI_INFERENCE_REQUEST step 은 성공/실패 상관 없이 DB 영속화.
+                    # 실패도 insp_task_txn FAIL 로 기록해야 다음 cycle 진입이 가능.
+                    if (
+                        input_data.task_type == TaskType.INSP
+                        and step.action == "AI_INFERENCE_REQUEST"
+                    ):
+                        await self._persist_insp_result(input_data, step_result)
+                    if not step_result.success:
+                        raise RuntimeError(step_result.message or f"Adapter failed at step {step.step_id}")
+
+                    executed_steps += 1
+                    self.logger.info(f"[Executor] Step {step.step_id} completed")
+                    await self._handle_step_completion(input_data, step, step_result)
+
+                # Task가 성공한 경우 전이: PROC -> SUCC
+                await self.state_manager.update_task_status(
+                    UpdateTaskStatusInput(task_id=input_data.task_id, new_stat=TxnStat.SUCC)
+                )
+                # asyncio.create_task()로 만들어진 코루틴 객체이기 때문에, return은 현재 사용되지 않음
+                return ExecutionResult(
+                    task_id=input_data.task_id,
+                    final_status=TxnStat.SUCC,
+                    steps_executed=executed_steps
+                )
+
+            except Exception as e:
+                # Task가 실패한 경우 전이: PROC -> FAIL
+                return await self._handle_error(input_data, str(e), executed_steps)
+
+        except asyncio.CancelledError:
+            # abort_task 가 호출되어 강제 종료된 경우.
+            # 코루틴이 살아남아 SUCC/FAIL 을 덮어쓰지 않도록 여기서 한 번만 FAIL 마킹한 뒤 전파한다.
+            self.logger.warning(
+                "[Executor] execute_task cancelled: task=%s",
                 input_data.task_id,
-                input_data.task_type.value,
             )
-            await self.state_manager.update_task_status(
-                UpdateTaskStatusInput(task_id=input_data.task_id, new_stat=TxnStat.SUCC)
-            )
-            return ExecutionResult(
-                task_id=input_data.task_id,
-                final_status=TxnStat.SUCC,
-                steps_executed=0,
-            )
-        await asyncio.sleep(1)
+            try:
+                await self.state_manager.update_task_status(
+                    UpdateTaskStatusInput(
+                        task_id=input_data.task_id,
+                        new_stat=TxnStat.FAIL,
+                        error_code="aborted",
+                    )
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    "[Executor] FAIL marking during cancel failed: task=%s exc=%s",
+                    input_data.task_id,
+                    exc,
+                )
+            raise
 
-        # 2. 시퀀스 분해
+        finally:
+            self._active_executions.pop(input_data.task_id, None)
+
+    async def abort_task(self, task_id: str, reason: str = "aborted") -> None:
+        """진행 중인 execute_task 코루틴을 강제 종료한다."""
+        task = self._active_executions.get(task_id)
+        if task is None or task.done():
+            self.logger.info(
+                "[Executor] abort_task: task not active or already done: task_id=%s",
+                task_id,
+            )
+            return
+        self.logger.warning(
+            "[Executor] abort_task: cancelling task=%s reason=%s",
+            task_id,
+            reason,
+        )
+        task.cancel(msg=reason)
         try:
-            sequence = self._breakdown_sequence(input_data.task_type)
-        except ValueError as e:
-            return await self._handle_error(input_data, str(e), 0)
-
-        executed_steps = 0
-        
-        # 3. 순차 실행
-        try:
-            for step in sequence:
-                # 단계 실행
-                step_result = await self._execute_step(input_data, step)
-                # INSP task 의 AI_INFERENCE_REQUEST step 은 성공/실패 상관 없이 DB 영속화.
-                # 실패도 insp_task_txn FAIL 로 기록해야 다음 cycle 진입이 가능.
-                if (
-                    input_data.task_type == TaskType.INSP
-                    and step.action == "AI_INFERENCE_REQUEST"
-                ):
-                    await self._persist_insp_result(input_data, step_result)
-                if not step_result.success:
-                    raise RuntimeError(step_result.message or f"Adapter failed at step {step.step_id}")
-
-                executed_steps += 1
-                self.logger.info(f"[Executor] Step {step.step_id} completed")
-                await self._handle_step_completion(input_data, step, step_result)
-            
-            # Task가 성공한 경우 전이: PROC -> SUCC
-            await self.state_manager.update_task_status(
-                UpdateTaskStatusInput(task_id=input_data.task_id, new_stat=TxnStat.SUCC)
-            )
-            # asyncio.create_task()로 만들어진 코루틴 객체이기 때문에, return은 현재 사용되지 않음
-            return ExecutionResult(
-                task_id=input_data.task_id,
-                final_status=TxnStat.SUCC,
-                steps_executed=executed_steps
-            )
-
-        except Exception as e:
-            # Task가 실패한 경우 전이: PROC -> FAIL
-            return await self._handle_error(input_data, str(e), executed_steps)
+            await task
+        except (asyncio.CancelledError, Exception):
+            # cancel cleanup 결과는 무시
+            pass
 
     async def handle_emergency_return(self, item_id: int, amr_id: str, arm_id: str) -> None:
             """
             비상 상황 시 로봇팔을 안전하게 복구하고 초기화한다.
+            먼저 bat low AMR 이 잡고 있던 task를 FAIL로 종료시키고
             1. 현재 실행 중인 로봇팔 태스크 중단 (상태 업데이트)
             2. 하드웨어를 통한 안전 하차 및 홈 위치 복귀
             3. 복구 완료 이벤트 발행
@@ -287,6 +343,17 @@ class TaskExecutor:
             self.logger.warning(
                 f"[Executor] Emergency Return initiated: item={item_id}, amr={amr_id}, arm={arm_id}"
             )
+
+            # bat low AMR이 잡고 있던 task의 코루틴 강제 종료
+            aborted_task_id = self.state_manager.get_task_id_for_resource(amr_id)
+            if aborted_task_id:
+                await self.abort_task(aborted_task_id, reason="amr_battery_low_aborted")
+            # 이미 끝났으면
+            else:
+                self.logger.info(
+                    "[Executor] No in-flight task to abort for amr=%s",
+                    amr_id,
+                )
 
             try:
                 # 1. 하드웨어 복구 시퀀스 실행 (Adapter 호출)

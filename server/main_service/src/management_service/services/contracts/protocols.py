@@ -141,6 +141,9 @@ class IStateManager(Protocol):
     def is_res_available(self, res_id: str) -> bool:
         ...
 
+    def get_task_id_for_resource(self, res_id: str) -> str | None:
+        ...
+
     def update_amr_charger_return_state(
         self,
         res_id: str,

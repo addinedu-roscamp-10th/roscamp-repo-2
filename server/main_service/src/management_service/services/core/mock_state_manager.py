@@ -475,6 +475,14 @@ class MockStateManager:
             return False
         return res_meta.get("status") in {"idle", "toidle"} and res_meta.get("item_id") is None
 
+    def get_task_id_for_resource(self, res_id: str) -> str | None:
+        """해당 자원에 현재 할당되어 진행 중인 task_id 를 반환. 없으면 None."""
+        res_meta = self._res_list.get(res_id)
+        if res_meta is None:
+            return None
+        raw = res_meta.get("task_id")
+        return str(raw) if raw is not None else None
+
     def update_amr_charger_return_state(
         self,
         res_id: str,
