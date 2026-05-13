@@ -23,6 +23,7 @@ import sys
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from queue import Empty, Queue
 from typing import Any
 
@@ -30,15 +31,14 @@ import grpc
 from google.protobuf import struct_pb2, timestamp_pb2
 from google.protobuf.json_format import MessageToDict, ParseDict
 
-# generated/ 를 sys.path 에 추가 — server.py 와 동일 패턴.
-_GEN_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__)
-    )))),
-    "generated",
+# generated/ 를 sys.path 에 추가 — 직접 실행/임포트 모두 동일하게 동작하도록
+_THIS_DIR = Path(__file__).resolve().parent
+_GENERATED_DIR = next(
+    (parent / "generated" for parent in _THIS_DIR.parents if (parent / "generated").exists()),
+    None,
 )
-if _GEN_DIR not in sys.path:
-    sys.path.insert(0, _GEN_DIR)
+if _GENERATED_DIR is not None and str(_GENERATED_DIR) not in sys.path:
+    sys.path.insert(0, str(_GENERATED_DIR))
 
 import event_gateway_pb2 as eg_pb  # type: ignore  # noqa: E402
 import event_gateway_pb2_grpc as eg_pb_grpc  # type: ignore  # noqa: E402

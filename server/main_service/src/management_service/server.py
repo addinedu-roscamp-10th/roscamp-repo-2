@@ -28,16 +28,20 @@ import signal
 import sys
 import threading
 from concurrent import futures
+from pathlib import Path
 
 import grpc
 
-# `python server.py` 로 직접 실행 가능하도록 sys.path 보장
-_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-_BACKEND_DIR = os.path.dirname(_THIS_DIR)  # backend/ — app/models 접근용
-_SERVER_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(_THIS_DIR))))
-for p in (_THIS_DIR, _BACKEND_DIR, _SERVER_DIR):
-    if p not in sys.path:
-        sys.path.insert(0, p)
+# `python server.py` 로 직접 실행해도 management/service + server 루트를 모두 찾게 한다.
+_THIS_DIR = Path(__file__).resolve().parent
+_SRC_DIR = _THIS_DIR.parent
+_SERVER_ROOT = next(
+    (parent for parent in _THIS_DIR.parents if (parent / "smart_cast_db").exists()),
+    None,
+)
+for path in (_THIS_DIR, _SRC_DIR, _SERVER_ROOT):
+    if path is not None and str(path) not in sys.path:
+        sys.path.insert(0, str(path))
 
 import management_pb2  # type: ignore  # noqa: E402
 import management_pb2_grpc  # type: ignore  # noqa: E402
