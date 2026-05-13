@@ -5,12 +5,12 @@ import asyncio
 from services.contracts.enums import EventType, TaskType, TxnStat
 from services.contracts.models import AllocateTaskResInput, CreateTaskInput, UpdateTaskStatusInput
 from services.core.event_bridge import EventBridgeImpl
-from services.core.mock_state_manager import MockStateManager
+from services.core.state_manager import StateManager
 from services.core.task_manager import TaskManager
 
 
 def test_seeded_transport_resources_do_not_use_negative_item_sentinel() -> None:
-    state_manager = MockStateManager(enable_persistence=False)
+    state_manager = StateManager(enable_persistence=False)
 
     assert state_manager._res_list["TAT2"]["item_id"] is None
     assert state_manager._res_list["TAT3"]["item_id"] is None
@@ -20,7 +20,7 @@ def test_get_empty_start_slot_falls_back_to_memory_slots_when_repo_is_unavailabl
     """DB 슬롯 조회가 불가해도 메모리 슬롯 테이블로 생산 시작 위치를 계산한다."""
 
     async def scenario() -> None:
-        state_manager = MockStateManager(enable_persistence=False)
+        state_manager = StateManager(enable_persistence=False)
         task_manager = TaskManager(sm=state_manager)
         state_manager.task_manager = task_manager
 
@@ -35,7 +35,7 @@ def test_get_empty_start_slot_requires_contiguous_slots() -> None:
     """빈 슬롯 수가 충분해도 연속 구간이 아니면 시작 위치를 주지 않는다."""
 
     async def scenario() -> None:
-        state_manager = MockStateManager(enable_persistence=False)
+        state_manager = StateManager(enable_persistence=False)
         task_manager = TaskManager(sm=state_manager)
         state_manager.task_manager = task_manager
 
@@ -53,7 +53,7 @@ def test_update_item_storage_location_stores_tuple_in_memory() -> None:
     """적재 위치는 메모리에서 row-col 문자열 대신 tuple로 유지한다."""
 
     async def scenario() -> None:
-        state_manager = MockStateManager(enable_persistence=False)
+        state_manager = StateManager(enable_persistence=False)
 
         await state_manager.update_item_storage_location(1001, (2, 4))
         item = await state_manager.get_item(1001)
@@ -75,7 +75,7 @@ def test_update_item_storage_location_defers_repository_write_until_pa_gp_succes
 
     async def scenario() -> None:
         repo = _Repo()
-        state_manager = MockStateManager(repository=repo)
+        state_manager = StateManager(repository=repo)
 
         await state_manager.update_item_storage_location(1001, (2, 4))
 
@@ -107,7 +107,7 @@ def test_get_order_target_qty_prefers_repository_and_syncs_memory() -> None:
             return 10
 
     async def scenario() -> None:
-        state_manager = MockStateManager(repository=_Repo())
+        state_manager = StateManager(repository=_Repo())
 
         target_qty = await state_manager.get_order_target_qty(3)
 
@@ -129,7 +129,7 @@ def test_reserve_storage_slots_passes_start_position_and_quantity_to_repository(
             return target_qty
 
     repo = _Repo()
-    state_manager = MockStateManager(repository=repo)
+    state_manager = StateManager(repository=repo)
 
     reserved_count = state_manager.reserve_storage_slots((1, 2), 3)
 
@@ -174,7 +174,7 @@ def test_tochg_proc_marks_amr_as_toidle_and_releases_it_for_allocation() -> None
             "test.tochg.resource_available",
         )
 
-        state_manager = MockStateManager(event_bridge=event_bridge, enable_persistence=False)
+        state_manager = StateManager(event_bridge=event_bridge, enable_persistence=False)
         txn_id = await state_manager.insert_task_txn(
             CreateTaskInput(item_id=1001, task_type=TaskType.ToCHG)
         )
@@ -205,7 +205,7 @@ def test_battery_low_tochg_proc_keeps_amr_unavailable_until_charged() -> None:
             "test.battery_low_tochg.resource_available",
         )
 
-        state_manager = MockStateManager(event_bridge=event_bridge, enable_persistence=False)
+        state_manager = StateManager(event_bridge=event_bridge, enable_persistence=False)
         state_manager._res_list["TAT1"]["condition"] = "BATTERY_LOW"
         txn_id = await state_manager.insert_task_txn(
             CreateTaskInput(
@@ -246,7 +246,7 @@ def test_tochg_completion_does_not_overwrite_newer_resource_assignment() -> None
     """충전 복귀 task가 늦게 끝나도 그 사이 생긴 새 배정을 덮어쓰지 않아야 한다."""
 
     async def scenario() -> None:
-        state_manager = MockStateManager(enable_persistence=False)
+        state_manager = StateManager(enable_persistence=False)
         tochg_txn_id = await state_manager.insert_task_txn(
             CreateTaskInput(item_id=1001, task_type=TaskType.ToCHG)
         )

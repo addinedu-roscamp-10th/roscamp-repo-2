@@ -1,6 +1,6 @@
 """DB write-through repository for Management runtime state.
 
-This module keeps SQLAlchemy and schema mapping details out of MockStateManager.
+This module keeps SQLAlchemy and schema mapping details out of StateManager.
 The state manager remains the fast in-memory source for orchestration decisions,
 while this repository mirrors durable runtime snapshots into smart_cast_db.
 """
@@ -262,7 +262,7 @@ class RuntimeStateRepository:
                 item_ids.append(int(new_item_id))
 
             # 초기 MM equip_task_txn 은 TaskManager.create_next_task(flow_stat=="CREATED") 가
-            # MockStateManager.insert_task_txn 를 통해 한 번만 만든다. 여기서 미리 만들면
+            # StateManager.insert_task_txn 를 통해 한 번만 만든다. 여기서 미리 만들면
             # 같은 item 에 MM txn 두 개가 생성되어 자원 할당 / 상태 추적이 어긋난다.
 
             db.commit()
