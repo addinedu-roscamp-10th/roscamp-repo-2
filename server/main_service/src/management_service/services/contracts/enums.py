@@ -59,6 +59,11 @@ class EventType(str, Enum):
     TOF1_ENTRY = "TOF1_ENTRY"                         # 카메라 앞 진입 (ESP→Jetson→Backend→PyQt)
     INSP_COMPLETED = "INSP_COMPLETED"                 # 검사 완료 → ESP32 RUN (Backend→Jetson)
     ITEM_LOOKUP_RESULT = "ITEM_LOOKUP_RESULT"         # ITEM_LOOKUP_REQUESTED 응답 (Backend→PyQt)
+    # 카메라 밑 캡처 이미지가 backend 에 도착 + 디스크 저장까지 완료된 시점.
+    # publisher: UploadInspectionImage RPC (hardware_rpc.py)
+    # subscribers: task_executor (ToINSP task waiter 해제), container.insp_image_responder
+    #              (현재는 task_executor orchestrator dispatch 미구현 보완용 fallback).
+    INSP_IMAGE_UPLOADED = "INSP_IMAGE_UPLOADED"
 
 ## Task Executor
 class TxnStat(str, Enum):

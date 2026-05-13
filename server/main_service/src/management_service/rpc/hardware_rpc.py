@@ -3,13 +3,19 @@
 이 파일은 PR #9 (UploadInspectionImage RPC + dedup + disk save) 와
 본 PR (AI inspection chain wiring) 의 통합 형태이다. PR #9 가 먼저 dev 에
 머지될 경우 본 파일과 conflict 가 발생하며, conflict 해결 시 "ours"
-(InspectionImageSinkCommand + AI 어댑터 dispatch 포함된 본 버전) 을 채택하면
-e2e 사슬이 자동 트리거된다.
+(InspectionImageSinkCommand + INSP_IMAGE_UPLOADED publish 포함된 본 버전)
+을 채택하면 e2e 사슬이 자동 트리거된다.
+
+2026-05-13 (P0-3): UploadInspectionImage 가 디스크 저장 완료 후 직접 AIAdapter 를
+호출하던 백그라운드 dispatch 를 제거하고, EventBridge.publish(INSP_IMAGE_UPLOADED)
+단일 채널로 일원화. task_executor 의 ToINSP task 가 본 이벤트를 기다려 종결되고,
+이후 INSP task 가 AI 추론을 담당한다 (현재는 container.insp_image_responder
+fallback 이 동일 이벤트를 받아 직접 AIAdapter 호출 — orchestrator dispatch 복구
+시 fallback 은 제거 예정).
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 import time
@@ -19,6 +25,8 @@ import management_pb2  # type: ignore
 import management_pb2_grpc  # type: ignore
 
 from services.command.inspection_image_sink_command import InspectionImageSinkCommand
+from services.contracts.enums import EventType
+from services.contracts.models import Event
 from services.legacy.command_queue import queue as command_queue
 
 logger = logging.getLogger(__name__)
@@ -57,56 +65,66 @@ def _insp_dedup_record(key: str, stored_path: str) -> None:
         _insp_dedup_seen[key] = (time.time(), stored_path)
 
 
-def _dispatch_ai_inference(
-    *, item_id: int, image_path: str, captured_at: float, label: str
+def _publish_insp_image_uploaded(
+    *,
+    item_id: int,
+    image_path: str,
+    captured_at: float,
+    stage: str,
+    camera_id: str,
+    idempotency_key: str,
 ) -> None:
-    """AI 어댑터로 비동기 dispatch — gRPC handler 가 즉시 응답하도록 백그라운드 스레드 사용.
+    """EventBridge.publish(INSP_IMAGE_UPLOADED) — ToINSP task 종결 + INSP 사슬 시작 trigger.
 
-    AI 호출 + DB 기록 (insp_task_txn SUCC + ai_inference_txn + insp_stat + item) 은
-    ai_adapter.execute() 안에서 일어난다. INSP_COMPLETED publish 는 이 시점이 아니라
-    ToPAWait/CONV_ALLOW_MOVE 단계 (conv_adapter) 에서 발생하여 AMR 도착 후에만
-    컨베이어가 RUN 하도록 한다 (commit 2593b9e). 실패 path 에서는 ai_adapter 가
-    inspection_result_command.record_inspection_failure 를 호출해 insp_task_txn 을
-    FAIL 로 마감한다.
+    구독자:
+      - task_executor: ToINSP task step 1 (WAIT_SUBTASK_COMPLETED) waiter 해제
+        → ToINSP task SUCC → TaskManager 가 INSP task 생성
+        → INSP task step 1 (AI_INFERENCE_REQUEST) 실행 → AIAdapter
+      - container.insp_image_responder (fallback): orchestrator dispatch 복구 전까지
+        직접 insp_task_txn INSERT + AIAdapter.execute() 호출
+
+    AIAdapter 는 EventBridge 를 사용하지 않으며, 추론 결과는 AdapterResult 로만
+    반환되어 task_executor 가 StateManager 에게 위임 (목표 상태).
+
+    publish 실패는 warning 로깅만 — INSP 흐름 누락은 다음 cycle 까지 추적 필요.
     """
     try:
-        # 지연 import — container 초기화 순서 의존성 (server.py 가 import 시 container 가 준비됨)
+        # 지연 import — container 초기화 순서 의존성
         from container import container
     except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "UploadInspectionImage: container import 실패 — AI dispatch skip (%s)", exc,
+            "UploadInspectionImage: container import 실패 — INSP_IMAGE_UPLOADED publish skip (%s)",
+            exc,
         )
         return
 
-    payload = json.dumps(
-        {
-            "image_path": image_path,
-            "item_id": item_id,
-            "captured_at": captured_at,
-            "label": label,
-        },
-        ensure_ascii=True,
-    ).encode("utf-8")
-
-    def _run() -> None:
-        try:
-            adapter = container.adapter._ai_adapter  # noqa: SLF001  (AdapterRouter 내부 어댑터 직참조)
-            result = adapter.execute(item_id, "AI", "AI_INFERENCE_REQUEST", payload)
-            logger.info(
-                "UploadInspectionImage AI dispatch result: success=%s message=%s",
-                result.success,
-                result.message,
+    try:
+        container.event_bridge.publish(
+            Event(
+                event_type=EventType.INSP_IMAGE_UPLOADED,
+                item_id=item_id,
+                payload={
+                    "item_id": item_id,
+                    "image_path": image_path,
+                    "captured_at": captured_at,
+                    "stage": stage,
+                    "camera_id": camera_id,
+                    "label": stage,
+                    "_idempotency_key": idempotency_key,
+                },
             )
-        except Exception as exc:  # noqa: BLE001 — handler 격리
-            logger.warning(
-                "UploadInspectionImage AI dispatch 실패 item_id=%d exc=%s",
-                item_id,
-                exc,
-            )
-
-    threading.Thread(
-        target=_run, name=f"ai-dispatch-item-{item_id}", daemon=True
-    ).start()
+        )
+        logger.info(
+            "UploadInspectionImage → INSP_IMAGE_UPLOADED publish item_id=%d path=%s",
+            item_id,
+            image_path,
+        )
+    except Exception as exc:  # noqa: BLE001 — handler 격리
+        logger.warning(
+            "UploadInspectionImage: INSP_IMAGE_UPLOADED publish 실패 item_id=%d exc=%s",
+            item_id,
+            exc,
+        )
 
 
 class HardwareRpcMixin:
@@ -135,14 +153,19 @@ class HardwareRpcMixin:
         logger.info("WatchConveyorCommands closed subscriber=%s", subscriber_id)
 
     def UploadInspectionImage(self, request, context):
-        """Jetson Vision Controller 검사 이미지 → backend disk + AI 어댑터 dispatch.
+        """Jetson Vision Controller 검사 이미지 → backend disk + INSP_IMAGE_UPLOADED publish.
 
         흐름:
             1. jpeg_bytes 검증 + idempotency dedup (60s TTL)
             2. InspectionImageSinkCommand → MGMT_INSP_IMAGE_SAVE_DIR/<item_id>/<ts>.jpg 저장
-            3. AI 어댑터 비동기 dispatch → AI 서버 forward → DB 4-table 갱신 →
-               INSP_COMPLETED publish → Jetson 컨베이어 재가동
-            4. InspectionImageAck 즉시 반환 (AI 처리는 background)
+            3. EventBridge.publish(INSP_IMAGE_UPLOADED, payload={image_path, ...})
+               → task_executor ToINSP task waiter 해제 → INSP task → AIAdapter
+               → AI 결과 반환 → StateManager 가 DB 4-table 갱신
+               → INSP_COMPLETED publish (conv_adapter ToPAWait/CONV_ALLOW_MOVE) → 컨베이어 재가동
+            4. InspectionImageAck 즉시 반환
+
+        AIAdapter 직접 호출은 본 핸들러에서 제거됨 (2026-05-13). EventBridge 단일 채널로
+        일원화되어 task_executor 의 INSP task 가 추론 흐름의 owner.
 
         env:
             MGMT_INSP_IMAGE_SAVE_DIR  저장 루트 (기본 /var/lib/casting/inspections)
@@ -198,17 +221,20 @@ class HardwareRpcMixin:
             item_id, camera_id, stage, saved.size_bytes, stored_path,
         )
 
-        # AI 사슬 트리거 (background) — disk 저장 성공 시에만 dispatch
+        # ToINSP task 종결 + INSP 사슬 시작 trigger — EventBridge 단일 채널 publish.
+        # disk 저장 성공 시에만 publish (item_id<=0 인 테스트 스모크 호출은 skip).
         if item_id > 0:
-            _dispatch_ai_inference(
+            _publish_insp_image_uploaded(
                 item_id=item_id,
                 image_path=stored_path,
                 captured_at=captured_at,
-                label=stage,
+                stage=stage,
+                camera_id=camera_id,
+                idempotency_key=idem,
             )
         else:
             logger.info(
-                "UploadInspectionImage: item_id=0 — AI dispatch skip (테스트/스모크)",
+                "UploadInspectionImage: item_id=0 — INSP_IMAGE_UPLOADED publish skip (테스트/스모크)",
             )
 
         return management_pb2.InspectionImageAck(

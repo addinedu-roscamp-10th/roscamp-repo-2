@@ -157,7 +157,7 @@ def test_wait_subtask_completed_returns_immediately_for_preobserved_event() -> N
     [
         (EventType.HANDOFF_ACK, TaskType.ToPP),
         (EventType.PP_DONE_REQUESTED, TaskType.PP),
-        (EventType.ITEM_LOOKUP_REQUESTED, TaskType.ToINSP),
+        (EventType.INSP_IMAGE_UPLOADED, TaskType.ToINSP),
     ],
 )
 def test_wait_subtask_completed_resumes_when_matching_external_event_arrives(

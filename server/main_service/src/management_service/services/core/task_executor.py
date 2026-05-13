@@ -19,6 +19,9 @@ class TaskExecutor:
         EventType.HANDOFF_ACK,
         EventType.PP_DONE_REQUESTED,
         EventType.ITEM_LOOKUP_REQUESTED,
+        # ToINSP task 종결 신호 — 카메라 밑에서 캡처된 이미지가 backend 에 도착하고
+        # 디스크 저장까지 완료된 시점. UploadInspectionImage RPC 가 publish.
+        EventType.INSP_IMAGE_UPLOADED,
     }
 
     def __init__(
@@ -151,12 +154,13 @@ class TaskExecutor:
                     timeout_sec=600,
                 ),
             ],
-            # 컨베이어 이동 후 이미지 수신이 종료 조건
+            # 컨베이어 이동 후 카메라 밑 캡처 이미지가 backend 에 도착하면 종료.
+            # UploadInspectionImage RPC 가 디스크 저장 성공 후 INSP_IMAGE_UPLOADED publish.
             TaskType.ToINSP: [
                 CommandStep(
                     step_id=1,
                     action="WAIT_SUBTASK_COMPLETED",
-                    params={"subtask_type": EventType.ITEM_LOOKUP_REQUESTED.value},
+                    params={"subtask_type": EventType.INSP_IMAGE_UPLOADED.value},
                     timeout_sec=600,
                 ),
             ],
