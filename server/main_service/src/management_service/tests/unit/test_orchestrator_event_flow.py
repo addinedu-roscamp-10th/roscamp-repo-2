@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from services.contracts.enums import EventType, TaskType, TxnStat
 from services.contracts.models import (
@@ -137,6 +138,13 @@ class _RecordingStateManager:
         self.get_item_calls.append(item_id)
         item = self.items[item_id]
         return item.model_copy(deep=True)
+
+    async def get_items_by_order(self, ord_id: int) -> list[ItemStatusRecord]:
+        return [
+            item.model_copy(deep=True)
+            for item in self.items.values()
+            if item.order_id == ord_id
+        ]
 
     def is_res_available(self, res_id: str) -> bool:
         return self.available_resources.get(res_id, False)
@@ -275,6 +283,36 @@ def test_start_production_uses_state_manager_target_qty_for_rack_reservation() -
     asyncio.run(scenario())
 
 
+def test_start_production_logs_rejected_order_reasons(caplog) -> None:
+    """라인 투입 거절 시 주문별 이유를 경고 로그로 남긴다."""
+
+    async def scenario() -> None:
+        event_bridge = EventBridgeImpl()
+        task_manager = _RecordingTaskManager()
+        allocator = _SequencedAllocator([])
+        executor = _RecordingExecutor()
+        state_manager = _RecordingStateManager({})
+        state_manager.orders[4] = {"target": 50}
+
+        async def _no_empty_start_slot(target_qty: int) -> tuple[int, int] | None:
+            state_manager.start_slots.append(target_qty)
+            return None
+
+        state_manager.get_empty_start_slot = _no_empty_start_slot  # type: ignore[method-assign]
+        orchestrator = Orchestrator(task_manager, allocator, state_manager, event_bridge, executor)
+
+        with caplog.at_level(logging.WARNING, logger="services.core.orchestrator"):
+            result = await orchestrator.start_production([4])
+
+        assert result.accepted_count == 0
+        assert result.rejected_count == 1
+        assert state_manager.start_slots == [50]
+        assert "start production rejected: ord_id=4 reason=Not enough rack slots. target_qty=50" in caplog.messages
+        assert "start production rejected orders: [{'ord_id': 4, 'reason': 'Not enough rack slots. target_qty=50'}]" in caplog.messages
+
+    asyncio.run(scenario())
+
+
 def test_failed_task_completed_event_does_not_plan_any_follow_up_task() -> None:
     """실패로 끝난 TASK_COMPLETED 이벤트는 다음 태스크 계획으로 이어지지 않는다."""
 
@@ -370,7 +408,7 @@ def test_start_shipping_collects_item_locations_and_executes_ship_task() -> None
             {
                 "order_id": 501,
                 "item_locations": [(1001, 2, 4), (1002, 1, 2)],
-                "event": None,
+                "event": "ship_start",
             }
         ]
         assert allocator.calls == [

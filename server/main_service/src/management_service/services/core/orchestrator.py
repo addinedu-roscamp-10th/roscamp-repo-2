@@ -102,7 +102,6 @@ class Orchestrator(IOrchestrator):
         results: list[StartProductionOrderAckModel] = []
         accepted = 0
         rejected = 0
-
         for ord_id in ord_ids:
             try:
                 # 주문 수량 확인
@@ -115,7 +114,12 @@ class Orchestrator(IOrchestrator):
                     result = self._build_rejected_ack(
                         ord_id,
                         f"Not enough rack slots. target_qty={target_qty}",
-                )
+                    )
+                    logger.warning(
+                        "start production rejected: ord_id=%s reason=%s",
+                        ord_id,
+                        result.reason,
+                    )
                     rejected += 1
                     results.append(result)
                     continue
@@ -135,6 +139,7 @@ class Orchestrator(IOrchestrator):
 
                 # SM item 생성
                 result = await self.state_manager.start_production(ord_id)
+
             except Exception as exc:
                 logger.warning("start production failed: ord_id=%s reason=%s", ord_id, exc)
                 result = self._build_rejected_ack(ord_id, str(exc))
@@ -147,15 +152,28 @@ class Orchestrator(IOrchestrator):
                     )
             else:
                 rejected += 1
+                logger.warning(
+                    "start production rejected: ord_id=%s reason=%s",
+                    ord_id,
+                    result.reason or "unknown",
+                )
 
             results.append(result)
 
         batch_result = self._build_batch_ack(ord_ids, results, accepted, rejected)
+        rejected_orders = [
+            {"ord_id": order_result.ord_id, "reason": order_result.reason or "unknown"}
+            for order_result in results
+            if not order_result.accepted
+        ]
         logger.info(
-            "start production completed: requested=%d accepted=%d",
+            "start production completed: requested=%d accepted=%d rejected=%d",
             batch_result.requested_count,
             batch_result.accepted_count,
+            batch_result.rejected_count,
         )
+        if rejected_orders:
+            logger.warning("start production rejected orders: %s", rejected_orders)
         return batch_result
 
     async def start_shipping(self, ord_id: int | None = None) -> list[int]:

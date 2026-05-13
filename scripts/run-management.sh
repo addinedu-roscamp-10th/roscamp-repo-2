@@ -11,10 +11,11 @@ PY=".venv/bin/python"
 [ -x "$PY" ] || { echo "✗ $PY 없음. ./scripts/setup.sh 다시 실행."; exit 1; }
 
 "$PY" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else "backend .venv 가 Python 3.11 미만입니다. Python 3.11 설치 후 ./scripts/setup.sh 를 다시 실행하세요.")'
-export PYTHONPATH=src/management_service:src/interface_service:src
+export PYTHONPATH="../:src/management_service:src/interface_service:src${PYTHONPATH:+:$PYTHONPATH}"
 
 # ROS2 jazzy setup
 ROS2_SETUP="${MGMT_ROS2_SETUP:-/opt/ros/jazzy/setup.bash}"
+CAST_PYTHON_SETUP="${MGMT_CAST_PYTHON_SETUP:-$ROOT/device/smartcast_arm/mat/cast_python/install/local_setup.bash}"
 
 enable_ros2=false
 case "${1:-}" in
@@ -35,6 +36,10 @@ if [ "$enable_ros2" = true ]; then
     echo "✗ ROS2 base setup not found: $ROS2_SETUP"
     exit 1
   fi
+  if [ ! -f "$CAST_PYTHON_SETUP" ]; then
+    echo "✗ cast_python setup not found: $CAST_PYTHON_SETUP"
+    exit 1
+  fi
 
   # ros2 setup에 정의되지 않은 변수 때문에 튕기지 않도록 설정(set -u 잠시 off)
   had_nounset=false
@@ -47,6 +52,8 @@ if [ "$enable_ros2" = true ]; then
 
   . "$ROS2_SETUP"
   echo "→ sourced ROS2 base"
+  . "$CAST_PYTHON_SETUP"
+  echo "→ sourced cast_python overlay"
 
   if [ "$had_nounset" = true ]; then
     set -u

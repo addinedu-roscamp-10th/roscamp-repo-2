@@ -26,10 +26,12 @@ import grpc
 
 logger = logging.getLogger("app.clients.management")
 
-# Management 의 proto 산출물은 src/main_service/management/ 에 있음 — sys.path 에 등록.
+# Management 의 proto 산출물은 src/management_service/ 에 *_pb2.py 형태로 위치.
+# 2026-05-13: 이전 코드는 src/main_service/management 를 가리켜 proto import 가 항상 실패하고
+#             ManagementUnavailable("proto stubs not compiled") 으로 폴백하던 버그를 수정.
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _SRC_DIR = os.path.abspath(os.path.join(_THIS_DIR, "..", "..", ".."))
-_MGMT_DIR = os.path.join(_SRC_DIR, "main_service", "management")
+_MGMT_DIR = os.path.join(_SRC_DIR, "management_service")
 if _MGMT_DIR not in sys.path:
     sys.path.insert(0, _MGMT_DIR)
 
@@ -191,6 +193,35 @@ class ManagementClient:
             return _Result()
 
         raise ManagementUnavailable("StartProduction returned no result payload")
+
+    def start_shipping(self, ord_id: int) -> dict:
+        """출하 트리거 — Management.StartShipping RPC proxy.
+
+        Returns: {"ord_id": int, "item_ids": list[int], "accepted": bool, "message": str}
+        Raises:
+            ValueError — INVALID_ARGUMENT (예: ord_id <= 0)
+            ManagementUnavailable — Mgmt 미가동, timeout, INTERNAL 에러
+        """
+        try:
+            self._ensure_channel()
+            assert self._stub is not None
+            resp = self._stub.StartShipping(
+                management_pb2.StartShippingRequest(ord_id=int(ord_id)),
+                timeout=self._timeout,
+            )
+        except grpc.RpcError as exc:
+            code = exc.code() if hasattr(exc, "code") else None
+            if code == grpc.StatusCode.INVALID_ARGUMENT:
+                raise ValueError(exc.details() or "invalid argument") from exc
+            raise ManagementUnavailable(
+                f"StartShipping failed ({code}): {exc.details() if hasattr(exc, 'details') else exc}"
+            ) from exc
+        return {
+            "ord_id": int(resp.ord_id),
+            "item_ids": [int(x) for x in resp.item_ids],
+            "accepted": bool(resp.accepted),
+            "message": resp.message or "",
+        }
 
     def register_pattern(self, ord_id: int, ptn_loc_id: int):
         """발주↔패턴 위치 등록 proxy."""

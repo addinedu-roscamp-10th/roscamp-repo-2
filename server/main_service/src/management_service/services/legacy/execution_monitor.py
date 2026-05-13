@@ -255,7 +255,7 @@ class ExecutionMonitor:
                         severity=r.severity or "info",
                         error_code=r.error_code or "",
                         message=r.message or "",
-                        equipment_id=r.equipment_id or "",
+                        equipment_id=r.res_id or "",
                         zone=r.zone or "",
                         at=management_pb2.Timestamp(iso8601=r.timestamp or _now_iso()),
                     )

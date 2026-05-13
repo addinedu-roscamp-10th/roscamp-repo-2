@@ -65,6 +65,7 @@ pytest tests/ --cov=services --cov-report=term-missing
 | `MGMT_POLL_QUIET_CYCLES` | `5` | quiet 사이클 N건 누적 시 backoff |
 | `MGMT_POLL_BACKOFF_FACTOR` | `2.0` | backoff 시 interval 곱셈 |
 | `MGMT_MAX_POLL_INTERVAL_SEC` | `8.0` | adaptive interval 상한 |
+| `MGMT_BYPASS_NON_ROBOT_HARDWARE` | `0` | `1` 이면 `PP` / `ToINSP` / `INSP` / `ToPAWait` 와 외부 센서 wait 를 즉시 성공 처리 |
 | `MGMT_AI_HOST` | (미설정) | **★ V6 AI Server (Phase 1 SSH 업로드): 호스트 (예: `100.66.177.119`)** |
 | `MGMT_AI_USER` | (미설정) | AI Server 사용자명 (예: `team2`) |
 | `MGMT_AI_PORT` | `22` | SSH 포트 |
