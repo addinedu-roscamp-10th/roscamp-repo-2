@@ -100,6 +100,8 @@ class NextTaskResult(BaseModel): # tm -> ok
     priority: int = 5
     strg_loc: Optional[str] = None
     chg_loc : Optional[tuple[int, int]] = None #ToCHG 일때 할당받는 주차 자리(row, col)
+    batch: list[tuple[int, int, int]] | None = None
+
 
 class ShipTaskResult(BaseModel): #tm -> ok 출고 Task 정보
     txn_id: int

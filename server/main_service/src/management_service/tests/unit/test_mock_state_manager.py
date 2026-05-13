@@ -9,6 +9,13 @@ from services.core.mock_state_manager import MockStateManager
 from services.core.task_manager import TaskManager
 
 
+def test_seeded_transport_resources_do_not_use_negative_item_sentinel() -> None:
+    state_manager = MockStateManager(enable_persistence=False)
+
+    assert state_manager._res_list["TAT2"]["item_id"] is None
+    assert state_manager._res_list["TAT3"]["item_id"] is None
+
+
 def test_get_empty_start_slot_falls_back_to_memory_slots_when_repo_is_unavailable() -> None:
     """DB 슬롯 조회가 불가해도 메모리 슬롯 테이블로 생산 시작 위치를 계산한다."""
 

@@ -119,8 +119,8 @@ class MockStateManager:
     def _seed_res_pool(self) -> None:
         seed_resources = [
             ("TAT1", "TAT", 0.0, 0.0, 80, "idle", None),
-            ("TAT2", "TAT", 0.0, 0.0, 65, "allocated", -1),
-            ("TAT3", "TAT", 0.0, 0.0, 50, "allocated", -1),
+            ("TAT2", "TAT", 0.0, 0.0, 65, "ALLOC", None),
+            ("TAT3", "TAT", 0.0, 0.0, 50, "idle", None),
             ("CONV1", "CONV", 0.0, 0.0, 100, "idle", None),
             ("PAT", "PAT", 0.0, 0.0, 100, "idle", None),
             ("MAT", "MAT", 0.0, 0.0, 100, "idle", None),

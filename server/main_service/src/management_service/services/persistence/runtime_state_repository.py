@@ -62,6 +62,16 @@ def _task_id_to_int(task_id: Any) -> int | None:
         return None
 
 
+def _normalize_item_id(item_id: Any) -> int | None:
+    if item_id is None:
+        return None
+    try:
+        normalized = int(item_id)
+    except (TypeError, ValueError):
+        return None
+    return normalized if normalized > 0 else None
+
+
 def _res_kind(res_id: Any) -> str | None:
     if not isinstance(res_id, str) or not res_id:
         return None
@@ -677,13 +687,14 @@ class RuntimeStateRepository:
             return
 
         now = datetime.utcnow()
+        item_id = _normalize_item_id(res_meta.get("item_id"))
         with self._session_factory() as db:
             if _res_kind(res_id) == "trans" and self._trans_stat_model is not None:
                 stat = db.get(self._trans_stat_model, res_id)
                 if stat is None:
                     stat = self._trans_stat_model(res_id=res_id)
                     db.add(stat)
-                stat.item_id = res_meta.get("item_id")
+                stat.item_id = item_id
                 stat.cur_stat = _trans_stat_value(res_meta.get("status"))
                 if res_meta.get("battery_pct") is not None:
                     stat.battery_pct = res_meta.get("battery_pct")
@@ -693,7 +704,7 @@ class RuntimeStateRepository:
                 if stat is None:
                     stat = self._equip_stat_model(res_id=res_id)
                     db.add(stat)
-                stat.item_id = res_meta.get("item_id")
+                stat.item_id = item_id
                 stat.txn_type = res_meta.get("task_type")
                 stat.cur_stat = _equip_stat_value(res_meta.get("status"))
                 stat.updated_at = now
