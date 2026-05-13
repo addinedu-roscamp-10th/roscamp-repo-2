@@ -447,10 +447,17 @@ class EspBridge:
 
         매 ~335ms 폴링되므로 edge detection 적용:
           - rfid.uid 가 이전과 다를 때만 RFID 이벤트 enqueue
-          - tof1.det 가 이전과 다를 때만 backend 에 sensor state HTTP POST (1.7.0~)
+          - tof1.det 가 이전과 다를 때만 backend 에 sensor state HTTP POST (PyQt 표시용)
         rfid.text 가 비어있으면 NDEF Text 가 굽혀지지 않은 태그 → warning + skip.
+
+        2026-05-13: TOF1_ENTRY EventGateway publish 제거.
+        ToINSP task 종결 신호는 backend 가 UploadInspectionImage RPC 도착 후 publish
+        하는 INSP_IMAGE_UPLOADED 가 담당한다. TOF1 센서는 PyQt 후처리 완료 버튼
+        (PP_DONE_REQUESTED) 으로 의미가 대체되었으므로 본 시점의 publish 는 무의미.
+        HTTP POST sensor state (_push_sensor_state) 는 PyQt indicator 실시간 표시
+        용도이므로 유지한다.
         """
-        # --- TOF1 edge push (1.7.0, 2026-05-08) — PyQt indicator 실시간 ---
+        # --- TOF1 edge: PyQt indicator HTTP POST 만 발행 (EventGateway publish 제거됨) ---
         tof1 = snap.get("tof1") or {}
         if isinstance(tof1, dict):
             tof1_det = bool(tof1.get("det"))
@@ -458,19 +465,6 @@ class EspBridge:
                 self._last_tof1_det = tof1_det
                 raw_mm = tof1.get("mm") if isinstance(tof1.get("mm"), int) else None
                 self._push_sensor_state("tof1", tof1_det, raw_mm)
-                # EventGateway channel — TOF1 ON edge 만 publish (= 카메라 앞 정지 시점).
-                if tof1_det:
-                    now_ms = int(time.time() * 1000)
-                    self._publish_via_event_gateway(
-                        event_type="TOF1_ENTRY",
-                        resource_id=self._conveyor_res_id,
-                        payload={
-                            "sensor_id": "tof1",
-                            "on": True,
-                            "raw_mm": raw_mm,
-                        },
-                        idempotency_key=f"{self._conveyor_res_id}:tof1:{now_ms}",
-                    )
 
         # --- RFID edge enqueue (기존 SPEC-RFID-001) ---
         rfid = snap.get("rfid") or {}
