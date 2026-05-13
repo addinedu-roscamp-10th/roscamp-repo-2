@@ -10,7 +10,7 @@ from app.styles.qss.badges_alerts import _alerts_list, _badges_alerts, _toast
 from app.styles.qss.base import _global, _main, _scrollbar
 from app.styles.qss.canvas_map import _canvas, _factory_map
 from app.styles.qss.content import _buttons, _cards, _inputs, _tables
-from app.styles.qss.domain import _amr_card, _battery_bar, _conveyor_card, _defect_panels
+from app.styles.qss.domain import _amr_card, _battery_bar, _conveyor_card, _defect_panels, _pp_worker_boxes
 from app.styles.qss.sidebar import _sidebar
 from app.styles.qss.statusbar import _statusbar
 
@@ -34,6 +34,7 @@ _SECTIONS = (
     _battery_bar,
     _conveyor_card,
     _defect_panels,
+    _pp_worker_boxes,
     _factory_map,
 )
 

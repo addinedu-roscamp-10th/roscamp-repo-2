@@ -48,11 +48,13 @@ from typing import Any
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
+    QAction,
     QGridLayout,
     QGroupBox,
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPushButton,
     QSizePolicy,
@@ -137,6 +139,7 @@ class PpWorkerPage(QWidget):
 
         # ---- 작업자 로그인 (작업 3) ----
         login_box = QGroupBox("작업자 로그인")
+        login_box.setObjectName("ppLoginBox")
         login_grid = QGridLayout(login_box)
         login_grid.addWidget(QLabel("이메일:"), 0, 0)
         self._email_edit = QLineEdit()
@@ -144,23 +147,29 @@ class PpWorkerPage(QWidget):
         self._email_edit.setMinimumWidth(280)
         login_grid.addWidget(self._email_edit, 0, 1)
 
+        self._btn_fetch_operators = QPushButton("불러오기 ▼")
+        self._btn_fetch_operators.setToolTip("DB에서 작업자 목록을 가져와 선택합니다")
+        self._btn_fetch_operators.clicked.connect(self._on_fetch_operators)
+        login_grid.addWidget(self._btn_fetch_operators, 0, 2)
+
         self._btn_login = QPushButton("로그인")
         self._btn_login.clicked.connect(self._on_login)
-        login_grid.addWidget(self._btn_login, 0, 2)
+        login_grid.addWidget(self._btn_login, 0, 3)
 
         self._btn_logout = QPushButton("로그아웃")
         self._btn_logout.clicked.connect(self._on_logout)
-        login_grid.addWidget(self._btn_logout, 0, 3)
+        login_grid.addWidget(self._btn_logout, 0, 4)
 
         self._operator_label = QLabel("현재: 비로그인")
         self._operator_label.setProperty("tone", "muted")
-        login_grid.addWidget(self._operator_label, 0, 4)
-        login_grid.setColumnStretch(4, 1)
+        login_grid.addWidget(self._operator_label, 0, 5)
+        login_grid.setColumnStretch(5, 1)
 
         root.addWidget(login_box)
 
         # ---- 상단 컨트롤 ----
         ctrl_box = QGroupBox("후처리 작업자 컨트롤")
+        ctrl_box.setObjectName("ppCtrlBox")
         grid = QGridLayout(ctrl_box)
         grid.setSpacing(8)
 
@@ -173,17 +182,17 @@ class PpWorkerPage(QWidget):
         self._payload_edit.setMinimumWidth(320)
         grid.addWidget(self._payload_edit, 0, 1)
 
-        self._btn_handoff = QPushButton("① 핸드오프 ACK (버튼)")
+        self._btn_handoff = QPushButton("① 하차완료")
         self._btn_handoff.clicked.connect(self._on_handoff_ack)
         grid.addWidget(self._btn_handoff, 0, 2)
 
-        self._btn_scan = QPushButton("② RFID 스캔")
+        self._btn_scan = QPushButton("② 후처리 검색")
         self._btn_scan.clicked.connect(self._on_rfid_scan)
         grid.addWidget(self._btn_scan, 0, 3)
 
         # ③ 후처리 완료 — 3 초 카운트다운 후 실 컨베이어 모터 구동.
         # 종전(2026-04~05) "TOF1 입구 트리거" 폐기 후 새 시작 신호.
-        self._btn_pp_done = QPushButton("③ 후처리 완료 — 컨베이어 3 초 후 구동")
+        self._btn_pp_done = QPushButton("③ 후처리 완료")
         self._btn_pp_done.setProperty("tone", "primary")
         self._btn_pp_done.setToolTip(
             "후처리 작업이 끝났음을 알리고 컨베이어 모터를 구동합니다.\n"
@@ -191,12 +200,7 @@ class PpWorkerPage(QWidget):
             "→ ESP32 firmware motor ON."
         )
         self._btn_pp_done.clicked.connect(self._on_pp_done)
-        grid.addWidget(self._btn_pp_done, 1, 0, 1, 2)
-
-        self._pp_done_countdown_label = QLabel("")
-        self._pp_done_countdown_label.setAlignment(Qt.AlignCenter)
-        self._pp_done_countdown_label.setProperty("tone", "muted")
-        grid.addWidget(self._pp_done_countdown_label, 1, 2)
+        grid.addWidget(self._btn_pp_done, 1, 2)
 
         self._btn_pp_done_cancel = QPushButton("취소")
         self._btn_pp_done_cancel.setToolTip("3 초 카운트다운 중에만 활성화")
@@ -204,17 +208,10 @@ class PpWorkerPage(QWidget):
         self._btn_pp_done_cancel.setEnabled(False)
         grid.addWidget(self._btn_pp_done_cancel, 1, 3)
 
-        # ④ TOF1 감지 — 비클릭형 ON/OFF 디스플레이 (1.7.0).
-        # 카메라 앞 정지 센서. ON (녹색) = cast 가 카메라 앞 도달 / OFF (회색) = 미감지.
-        # 데이터 source 는 후속 (publisher → backend stream). 현재는 default OFF (회색).
-        self._tof1_indicator_dot = QLabel("●")
-        self._tof1_indicator_dot.setObjectName("tof1IndicatorDot")
-        self._tof1_indicator_dot.setAlignment(Qt.AlignCenter)
-        self._tof1_indicator_dot.setFixedWidth(32)
-        self._tof1_indicator_label = QLabel("④ TOF1 (카메라 앞 정지 센서)")
-        self.set_tof1_state(False)  # default OFF (회색)
-        grid.addWidget(self._tof1_indicator_dot, 2, 2)
-        grid.addWidget(self._tof1_indicator_label, 2, 3)
+        self._pp_done_countdown_label = QLabel("")
+        self._pp_done_countdown_label.setAlignment(Qt.AlignCenter)
+        self._pp_done_countdown_label.setProperty("tone", "muted")
+        grid.addWidget(self._pp_done_countdown_label, 2, 2, 1, 2)
 
         self._status_label = QLabel("")
         self._status_label.setProperty("tone", "muted")
@@ -225,6 +222,7 @@ class PpWorkerPage(QWidget):
 
         # ---- item 정보 ----
         item_box = QGroupBox("선택 item 정보")
+        item_box.setObjectName("ppItemBox")
         item_grid = QGridLayout(item_box)
         item_grid.setSpacing(6)
         self._item_labels: dict[str, QLabel] = {}
@@ -249,6 +247,7 @@ class PpWorkerPage(QWidget):
 
         # ---- 후처리 옵션 표 ----
         opts_box = QGroupBox("필요 후처리 옵션 (정의 + 진행 현황)")
+        opts_box.setObjectName("ppOptsBox")
         opts_v = QVBoxLayout(opts_box)
         self._opts_table = QTableWidget(0, 5)
         self._opts_table.setHorizontalHeaderLabels(
@@ -284,6 +283,33 @@ class PpWorkerPage(QWidget):
 
     def _payload(self) -> str:
         return (self._payload_edit.text() or "").strip()
+
+    # ---- 작업자 목록 불러오기 ----
+    def _on_fetch_operators(self) -> None:
+        """gRPC ListOperators 로 DB 작업자 목록을 가져와 드롭다운 메뉴로 표시."""
+        try:
+            from app.management_client import ManagementClient
+            client = ManagementClient()
+            operators = client.list_operators(role_filter="operator")
+            client.close()
+        except Exception as exc:
+            QMessageBox.warning(self, "작업자 목록 오류", f"gRPC 조회 실패:\n{exc}")
+            return
+
+        if not operators:
+            QMessageBox.information(self, "작업자 목록", "등록된 작업자가 없습니다.")
+            return
+
+        menu = QMenu(self)
+        for op in operators:
+            label = f"{op['user_nm']}  ({op['email']})"
+            action = QAction(label, self)
+            action.setData(op["email"])
+            action.triggered.connect(lambda checked, e=op["email"]: self._email_edit.setText(e))
+            menu.addAction(action)
+
+        btn = self._btn_fetch_operators
+        menu.exec_(btn.mapToGlobal(btn.rect().bottomLeft()))
 
     # ---- 로그인 ----
     def _on_login(self) -> None:
@@ -486,7 +512,7 @@ class PpWorkerPage(QWidget):
             return
         try:
             self._eg_watcher = WatchEventsThread(
-                event_types=["RFID_SCANNED", "TOF1_ENTRY", "ITEM_LOOKUP_RESULT"],
+                event_types=["RFID_SCANNED", "ITEM_LOOKUP_RESULT"],
                 consumer="pyqt-pp-worker",
             )
             self._eg_watcher.event_received.connect(self._on_event_gateway_event)
@@ -504,8 +530,6 @@ class PpWorkerPage(QWidget):
         payload = decoded.get("payload") or {}
         if et == "RFID_SCANNED":
             self._handle_rfid_scanned_event(payload)
-        elif et == "TOF1_ENTRY":
-            self._handle_tof1_entry_event(payload)
         elif et == "ITEM_LOOKUP_RESULT":
             self._handle_item_lookup_result(payload)
 
@@ -532,12 +556,6 @@ class PpWorkerPage(QWidget):
             ok=True,
         )
 
-    def _handle_tof1_entry_event(self, payload: dict) -> None:
-        """TOF1_ENTRY → indicator 색 갱신 (ON edge 만 publish 예정)."""
-        on = bool(payload.get("on", True))  # publish 가 ON edge 라 default True
-        if self._tof1_indicator_dot.property("on") != on:
-            self.set_tof1_state(on)
-
     def _handle_item_lookup_result(self, payload: dict) -> None:
         """ITEM_LOOKUP_RESULT → ② RFID 스캔 버튼 응답 (item + pp_options) 표시."""
         item = payload.get("item") or {}
@@ -556,22 +574,6 @@ class PpWorkerPage(QWidget):
             f"cur_stat={item.get('cur_stat')} 옵션={len(pp_options)}건 "
             "(상태 변경은 ③ 후처리 완료 시점)"
         )
-
-    # ---- TOF1 indicator setter (외부 worker 가 호출, 1.7.0~) ----
-    def set_tof1_state(self, on: bool) -> None:
-        """TOF1 (카메라 앞 정지 센서) ON/OFF 시각 갱신.
-
-        ON  → 녹색 (#4caf50): cast 가 카메라 앞 도달
-        OFF → 회색 (#757575): 미감지
-
-        데이터 source 는 후속 작업으로 publisher → backend → PyQt 경로 추가 예정.
-        현재는 외부 worker 가 명시적으로 호출하기 전까지 default OFF (회색) 유지.
-        """
-        color = "#4caf50" if on else "#757575"
-        self._tof1_indicator_dot.setStyleSheet(
-            f"QLabel#tof1IndicatorDot {{ color: {color}; font-size: 22px; font-weight: bold; }}"
-        )
-        self._tof1_indicator_dot.setProperty("on", on)
 
     def _refresh_lookup(self, payload: str) -> None:
         try:

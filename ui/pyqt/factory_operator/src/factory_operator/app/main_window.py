@@ -45,7 +45,7 @@ NAV_ITEMS: list[tuple[str, str]] = [
     ("dashboard", "대시보드"),
     ("pattern_control", "패턴 위치 조작 및 생산 시작"),
     ("operations", "실시간 운영 모니터링"),
-    ("pp_worker", "후처리 작업자"),
+    ("pp_worker", "후처리"),
     ("map", "공장 맵"),
     ("production", "생산 모니터링"),
     ("schedule", "생산 계획"),

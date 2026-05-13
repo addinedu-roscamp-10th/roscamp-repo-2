@@ -49,6 +49,7 @@ from rpc.production_rpc import ProductionRpcMixin  # noqa: E402
 from rpc.robot_rpc import RobotRpcMixin  # noqa: E402
 from rpc.task_rpc import TaskRpcMixin  # noqa: E402
 from rpc.traffic_rpc import TrafficRpcMixin  # noqa: E402
+from rpc.user_rpc import UserRpcMixin  # noqa: E402
 from container import container  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -111,6 +112,7 @@ class ManagementServicer(
     RobotRpcMixin,
     FieldEventRpcMixin,
     HardwareRpcMixin,
+    UserRpcMixin,
     management_pb2_grpc.ManagementServiceServicer,
 ):
     """gRPC servicer wiring for Management RPC mixins."""

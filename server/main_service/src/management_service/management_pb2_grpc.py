@@ -163,6 +163,11 @@ class ManagementServiceStub(object):
                 request_serializer=management__pb2.Empty.SerializeToString,
                 response_deserializer=management__pb2.Empty.FromString,
                 _registered_method=True)
+        self.ListOperators = channel.unary_unary(
+                '/casting.management.v1.ManagementService/ListOperators',
+                request_serializer=management__pb2.ListOperatorsRequest.SerializeToString,
+                response_deserializer=management__pb2.ListOperatorsResponse.FromString,
+                _registered_method=True)
         self.WatchCameraFrames = channel.unary_stream(
                 '/casting.management.v1.ManagementService/WatchCameraFrames',
                 request_serializer=management__pb2.WatchFramesRequest.SerializeToString,
@@ -347,6 +352,13 @@ class ManagementServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListOperators(self, request, context):
+        """User / Operator
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def WatchCameraFrames(self, request, context):
         """Stage B — 카메라 프레임 server streaming (image_sink condvar 기반 push)
         """
@@ -490,6 +502,11 @@ def add_ManagementServiceServicer_to_server(servicer, server):
                     servicer.Health,
                     request_deserializer=management__pb2.Empty.FromString,
                     response_serializer=management__pb2.Empty.SerializeToString,
+            ),
+            'ListOperators': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListOperators,
+                    request_deserializer=management__pb2.ListOperatorsRequest.FromString,
+                    response_serializer=management__pb2.ListOperatorsResponse.SerializeToString,
             ),
             'WatchCameraFrames': grpc.unary_stream_rpc_method_handler(
                     servicer.WatchCameraFrames,
@@ -1181,6 +1198,33 @@ class ManagementService(object):
             '/casting.management.v1.ManagementService/Health',
             management__pb2.Empty.SerializeToString,
             management__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListOperators(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/casting.management.v1.ManagementService/ListOperators',
+            management__pb2.ListOperatorsRequest.SerializeToString,
+            management__pb2.ListOperatorsResponse.FromString,
             options,
             channel_credentials,
             insecure,

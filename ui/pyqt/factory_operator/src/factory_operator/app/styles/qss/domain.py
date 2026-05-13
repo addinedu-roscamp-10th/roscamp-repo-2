@@ -135,6 +135,39 @@ def _conveyor_card(t: Tokens) -> str:
 """
 
 
+def _pp_worker_boxes(t: Tokens) -> str:
+    c = t.color
+    r = t.radius
+    sp = t.spacing
+    return f"""
+/* 후처리 탭 섹션 — 제목이 내용 영역과 명확히 구분되도록 */
+QGroupBox#ppLoginBox,
+QGroupBox#ppCtrlBox,
+QGroupBox#ppItemBox,
+QGroupBox#ppOptsBox {{
+    background-color: {c.bg_card};
+    border: 1px solid {c.border_strong};
+    margin-top: 26px;
+    padding-top: {sp.sm}px;
+}}
+QGroupBox#ppLoginBox::title,
+QGroupBox#ppCtrlBox::title,
+QGroupBox#ppItemBox::title,
+QGroupBox#ppOptsBox::title {{
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: {sp.md}px;
+    padding: 4px {sp.md}px;
+    background-color: {c.bg_muted};
+    color: {c.text_secondary};
+    border: 1px solid {c.border_strong};
+    border-radius: {r.md}px;
+    font-weight: 700;
+    font-size: 13px;
+}}
+"""
+
+
 def _defect_panels(t: Tokens) -> str:
     c = t.color
     typo = t.typography

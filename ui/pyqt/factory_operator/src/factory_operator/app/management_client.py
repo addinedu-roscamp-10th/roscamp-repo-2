@@ -531,5 +531,19 @@ class ManagementClient:
         """proto enum 정수 → 코드 문자열 (UI 매핑용)."""
         return _STAGE_CODE.get(code, "UNSPECIFIED")
 
+    def list_operators(self, role_filter: str = "operator") -> list[dict[str, Any]]:
+        """DB의 작업자 목록 조회 (role_filter="" 이면 전체 반환)."""
+        req = management_pb2.ListOperatorsRequest(role_filter=role_filter)
+        resp = self._stub.ListOperators(req, timeout=self._timeout)
+        return [
+            {
+                "user_id": row.user_id,
+                "user_nm": row.user_nm or "",
+                "email": row.email or "",
+                "role": row.role or "",
+            }
+            for row in resp.operators
+        ]
+
     def close(self) -> None:
         self._channel.close()

@@ -513,6 +513,9 @@ service ManagementService {
   // Health
   rpc Health(Empty) returns (Empty);
 
+  // User / Operator
+  rpc ListOperators(ListOperatorsRequest) returns (ListOperatorsResponse);
+
   // Stage B — 카메라 프레임 server streaming (image_sink condvar 기반 push)
   rpc WatchCameraFrames(WatchFramesRequest) returns (stream CameraFrameResponse);
 
@@ -657,6 +660,25 @@ message ImageAck {
   uint64 sequence = 1;          // 처리한 마지막 sequence
   bool   accepted = 2;
   string message  = 3;
+}
+
+// -----------------------------------------------------------------------------
+// User / Operator
+// -----------------------------------------------------------------------------
+
+message ListOperatorsRequest {
+  string role_filter = 1;  // 빈 문자열이면 전체, "operator" 등으로 필터
+}
+
+message OperatorRow {
+  int32  user_id  = 1;
+  string user_nm  = 2;
+  string email    = 3;
+  string role     = 4;
+}
+
+message ListOperatorsResponse {
+  repeated OperatorRow operators = 1;
 }
 
 service ImagePublisherService {

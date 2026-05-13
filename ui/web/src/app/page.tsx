@@ -17,7 +17,7 @@ const entries = [
   {
     href: "/admin/login",
     label: "관리자",
-    desc: "주문/품질/생산 관리를 위한 관리자 포털 (비밀번호 필요)",
+    desc: "주문/품질/생산 관리를 위한 관리자 포털",
     icon: ShieldCheck,
     accent: "from-slate-700 to-slate-900",
     hoverAccent: "group-hover:from-slate-800 group-hover:to-slate-950",
@@ -32,8 +32,8 @@ const entries = [
   },
   {
     href: "/customer/lookup",
-    label: "주문 조회하기",
-    desc: "이메일 주소로 내 주문 현황을 실시간 조회",
+    label: "주문 조회",
+    desc: "내 주문 현황을 실시간 조회",
     icon: Search,
     accent: "from-amber-500 to-yellow-500",
     hoverAccent: "group-hover:from-amber-600 group-hover:to-yellow-600",
@@ -62,9 +62,9 @@ export default function LandingPage() {
             SmartCast Robotics
           </h1>
           <p className="mt-4 text-base text-gray-600 sm:text-lg">
-            주물 생산 전 공정을 자동화하는 스마트 공장 관제 시스템.
+            사형 주조 공정 전 과정을 AMR · 로봇 · AI 검사로 자동화합니다.
             <br className="hidden sm:block" />
-            원하는 서비스를 선택해 주세요.
+            주문부터 출하까지 실시간으로 관제하세요.
           </p>
         </div>
 
@@ -107,7 +107,7 @@ export default function LandingPage() {
 
         {/* 푸터 */}
         <div className="mt-16 text-center text-xs text-gray-400">
-          © 2026 SmartCast Robotics. 주물 공장 스마트 관제 시스템.
+          © 2026 SmartCast Robotics. 사형 주조 공정 스마트 팩토리 시스템 구축 서비스.
         </div>
       </div>
     </main>
