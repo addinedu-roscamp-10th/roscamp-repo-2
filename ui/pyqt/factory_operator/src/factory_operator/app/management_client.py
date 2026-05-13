@@ -453,6 +453,31 @@ class ManagementClient:
         req = management_pb2.WatchAlertsRequest(severity_filter=severity_filter or "")
         return self._stub.WatchAlerts(req)
 
+    def list_alerts(
+        self,
+        severity_filter: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """alerts_stat 최근 알림 목록 조회 (일회성 unary RPC)."""
+        req = management_pb2.ListAlertsRequest(
+            severity_filter=severity_filter or "",
+            limit=limit,
+        )
+        resp = self._stub.ListAlerts(req, timeout=self._timeout)
+        return [
+            {
+                "id": a.id,
+                "level": a.severity or "info",
+                "source": a.equipment_id or a.zone or "",
+                "message": a.message or "",
+                "created_at": a.at.iso8601 or "",
+                "type": a.type or "",
+                "error_code": a.error_code or "",
+                "zone": a.zone or "",
+            }
+            for a in resp.alerts
+        ]
+
     def get_robot_status(self) -> list[dict]:
         """AMR/Cobot 실시간 상태 조회. dict list 반환."""
         try:

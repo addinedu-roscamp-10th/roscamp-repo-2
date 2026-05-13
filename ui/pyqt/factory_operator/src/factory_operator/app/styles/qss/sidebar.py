@@ -17,11 +17,12 @@ def _sidebar(t: Tokens) -> str:
 #sidebarLogo {{
     background-color: {c.sidebar_bg_top};
     color: {c.sidebar_accent};
-    font-size: {typo.size_lg}px;
+    font-size: {typo.size_2xl}px;
     font-weight: 700;
     padding: {sp.xl}px {sp.md}px;
     border-bottom: 1px solid {c.sidebar_border};
     letter-spacing: 0.5px;
+    line-height: 1.4;
 }}
 #sidebarNav {{
     background-color: {c.sidebar_bg};

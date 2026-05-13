@@ -128,6 +128,11 @@ class ManagementServiceStub(object):
                 request_serializer=management__pb2.WatchAlertsRequest.SerializeToString,
                 response_deserializer=management__pb2.AlertEvent.FromString,
                 _registered_method=True)
+        self.ListAlerts = channel.unary_unary(
+                '/casting.management.v1.ManagementService/ListAlerts',
+                request_serializer=management__pb2.ListAlertsRequest.SerializeToString,
+                response_deserializer=management__pb2.ListAlertsResponse.FromString,
+                _registered_method=True)
         self.GetRobotStatus = channel.unary_unary(
                 '/casting.management.v1.ManagementService/GetRobotStatus',
                 request_serializer=management__pb2.GetRobotStatusRequest.SerializeToString,
@@ -290,6 +295,12 @@ class ManagementServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListAlerts(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def GetRobotStatus(self, request, context):
         """Robot Status
         """
@@ -444,6 +455,11 @@ def add_ManagementServiceServicer_to_server(servicer, server):
                     servicer.WatchAlerts,
                     request_deserializer=management__pb2.WatchAlertsRequest.FromString,
                     response_serializer=management__pb2.AlertEvent.SerializeToString,
+            ),
+            'ListAlerts': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListAlerts,
+                    request_deserializer=management__pb2.ListAlertsRequest.FromString,
+                    response_serializer=management__pb2.ListAlertsResponse.SerializeToString,
             ),
             'GetRobotStatus': grpc.unary_unary_rpc_method_handler(
                     servicer.GetRobotStatus,
@@ -976,6 +992,33 @@ class ManagementService(object):
             '/casting.management.v1.ManagementService/WatchAlerts',
             management__pb2.WatchAlertsRequest.SerializeToString,
             management__pb2.AlertEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListAlerts(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/casting.management.v1.ManagementService/ListAlerts',
+            management__pb2.ListAlertsRequest.SerializeToString,
+            management__pb2.ListAlertsResponse.FromString,
             options,
             channel_credentials,
             insecure,
