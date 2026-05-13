@@ -312,10 +312,15 @@ class Orchestrator(IOrchestrator):
             logger.info("no next task planned: item_id=%s", input_data.item_id)
             return
 
+        # 
         for next_task in next_tasks:
+            task_item_info = item_info
+            if next_task.item_id != item_info.item_id:  # PA_DP의 경우 불량과 보충 task의 item info가 다름
+                task_item_info = await self.state_manager.get_item(next_task.item_id)
+
             await self._allocate_and_execute(
                 next_task,
-                item_info,
+                task_item_info,
                 req_res_id=input_data.req_res_id,
             )
 

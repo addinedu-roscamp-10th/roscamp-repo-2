@@ -222,7 +222,7 @@ class TaskManager(ITaskManager):
                     # 1. 불량 보충 아이템 생성 및 MM 태스크 발행 (우선순위 10)
                     replacement_id = await self.sm.create_empty_item(item_info.order_id)
                     task_results.append(NextTaskResult(
-                        item_id=item_info.item_id, 
+                        item_id=replacement_id,
                         txn_id=await self.sm.insert_task_txn(CreateTaskInput(item_id=replacement_id, task_type=TaskType.MM)),
                         task_type=TaskType.MM, 
                         priority=10
