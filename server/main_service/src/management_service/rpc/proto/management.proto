@@ -412,6 +412,15 @@ message WatchAlertsRequest {
   string severity_filter = 1;  // "" (모두) | "warning" | "critical"
 }
 
+message ListAlertsRequest {
+  string severity_filter = 1;  // "" (모두) | "warning" | "critical"
+  int32  limit           = 2;  // 0 = default (20)
+}
+
+message ListAlertsResponse {
+  repeated AlertEvent alerts = 1;
+}
+
 // -----------------------------------------------------------------------------
 // Robot Status (AMR / Cobot 실시간 상태)
 // -----------------------------------------------------------------------------
@@ -480,6 +489,7 @@ service ManagementService {
   // Execution Monitor — server streaming
   rpc WatchItems(WatchItemsRequest) returns (stream ItemEvent);
   rpc WatchAlerts(WatchAlertsRequest) returns (stream AlertEvent);
+  rpc ListAlerts(ListAlertsRequest) returns (ListAlertsResponse);
 
   // Robot Status
   rpc GetRobotStatus(GetRobotStatusRequest) returns (GetRobotStatusResponse);

@@ -284,7 +284,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.06
+        inflation_radius: 0.1
       always_send_full_costmap: True
 
 # The yaml_filename does not need to be specified since it going to be set by defaults in launch.
@@ -425,19 +425,19 @@ docking_server:
     ToINSP:
       type: "aruco_dock"  # 이 dock 인스턴스가 사용할 dock plugin 타입
       frame: "map"  # 이 dock pose가 표현된 기준 프레임
-      pose: [-0.67, -0.10, -1.57]  # [x, y, theta]
+      pose: [-0.67, -0.15, -1.57]  # [x, y, theta]
       id: "ToINSP"  # plugin에서 필요 시 사용할 수 있는 선택적 식별자
 
     ToSHIP:
       type: "aruco_dock"  # 이 dock 인스턴스가 사용할 dock plugin 타입
       frame: "map"  # 이 dock pose가 표현된 기준 프레임
-      pose: [-0.67, 0.45, 1.57]  # [x, y, theta]
+      pose: [-0.67, 0.12, 1.57]  # [x, y, theta]
       id: "ToSHIP"  # plugin에서 필요 시 사용할 수 있는 선택적 식별자
 
     ToCAST:
       type: "aruco_dock"
       frame: "map"
-      pose: [-0.256, 0.2, 1.57]
+      pose: [-0.24, 0.2, 1.57]
       id: "ToCAST"
 
     ToCAST_WAIT:
@@ -449,43 +449,43 @@ docking_server:
     ToCHG1:
       type: "aruco_dock"
       frame: "map"
-      pose: [0.044, 0.095, 0.0]
+      pose: [0.06, 0.095, 0.0]
       id: "ToCHG1"
 
     ToCHG2:
       type: "aruco_dock"
       frame: "map"
-      pose: [0.044, -0.027, 0.0]
+      pose: [0.06, -0.027, 0.0]
       id: "ToCHG2"
 
     ToCHG3:
       type: "aruco_dock"
       frame: "map"
-      pose: [0.044, -0.179, 0.0]
+      pose: [0.06, -0.179, 0.0]
       id: "ToCHG3"
 
     ToSTRG:
-      type: "STRG_dock"
+      type: "aruco_dock"
       frame: "map"
-      pose: [-0.1, -0.465, -1.57]
+      pose: [-0.136, -0.61, 0.0]
       id: "ToSTRG"
 
     ToPICK:
       type: "aruco_dock"
       frame: "map"
-      pose: [-0.223, -0.465, -1.57]
+      pose: [-0.223, -0.5, -1.57]
       id: "ToPICK"
 
     ToPP:
       type: "aruco_dock"
       frame: "map"
-      pose: [-0.447, -1.05, 3.14]
+      pose: [-0.48, -1.05, 3.14]
       id: "ToPP"
 
     ToPP_WAIT:
       type: "aruco_dock"
       frame: "map"
-      pose: [-0.447, -1.13, 3.14]
+      pose: [-0.48, -1.13, 3.14]
       id: "ToPP_WAIT"
 
     controller:
@@ -501,6 +501,6 @@ docking_server:
       costmap_topic: "local_costmap/costmap_raw"  # 충돌 검사에 사용할 costmap topic
       footprint_topic: "local_costmap/published_footprint"  # 충돌 검사에 사용할 footprint topic
       transform_tolerance: 0.8  # TF 조회 허용 오차
-      projection_time: 0.6  # 충돌 검사용 trajectory 예측 시간
+      projection_time: 0.2  # 충돌 검사용 trajectory 예측 시간
       simulation_time_step: 0.1  # trajectory 시뮬레이션 시간 간격
-      dock_collision_threshold: 0.3  # 도크 근처 충돌 검사 예외 거리 기준
+      dock_collision_threshold: 0.7  # 도크 근처 충돌 검사 예외 거리 기준

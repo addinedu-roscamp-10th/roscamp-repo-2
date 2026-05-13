@@ -453,6 +453,31 @@ class ManagementClient:
         req = management_pb2.WatchAlertsRequest(severity_filter=severity_filter or "")
         return self._stub.WatchAlerts(req)
 
+    def list_alerts(
+        self,
+        severity_filter: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """alerts_stat 최근 알림 목록 조회 (일회성 unary RPC)."""
+        req = management_pb2.ListAlertsRequest(
+            severity_filter=severity_filter or "",
+            limit=limit,
+        )
+        resp = self._stub.ListAlerts(req, timeout=self._timeout)
+        return [
+            {
+                "id": a.id,
+                "level": a.severity or "info",
+                "source": a.equipment_id or a.zone or "",
+                "message": a.message or "",
+                "created_at": a.at.iso8601 or "",
+                "type": a.type or "",
+                "error_code": a.error_code or "",
+                "zone": a.zone or "",
+            }
+            for a in resp.alerts
+        ]
+
     def get_robot_status(self) -> list[dict]:
         """AMR/Cobot 실시간 상태 조회. dict list 반환."""
         try:
@@ -476,6 +501,30 @@ class ManagementClient:
         except grpc.RpcError as e:
             logger.warning("GetRobotStatus 실패: %s", e)
             return []
+
+    def calculate_priority(self, ord_ids: list[int]) -> list[dict[str, Any]]:
+        """APPR + 패턴 등록된 선택 주문들의 우선순위 계산.
+
+        Management Service 의 CalculateSchedulePriority RPC 를 호출하고
+        rank 오름차순(1 = 최우선)으로 정렬된 결과를 반환한다.
+        """
+        req = management_pb2.CalculateSchedulePriorityRequest(
+            order_ids=[str(i) for i in ord_ids]
+        )
+        resp = self._stub.CalculateSchedulePriority(req, timeout=self._timeout)
+        results = [
+            {
+                "order_id": int(r.order_id),
+                "rank": r.rank,
+                "total_score": round(r.total_score, 1),
+                "product_summary": r.product_summary or "-",
+                "requested_delivery": r.requested_delivery or "-",
+                "delay_risk": r.delay_risk or "low",
+            }
+            for r in resp.results
+        ]
+        results.sort(key=lambda x: x["rank"])
+        return results
 
     @staticmethod
     def stage_code_to_label(code: int) -> str:

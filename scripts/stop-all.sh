@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 3 서비스 중단 — 기존 tmux 세션 정리 + 포트별 프로세스 kill.
+# 서비스 중단 + 터미널 창 닫기
 set -uo pipefail
 
 # 예전 run-all.sh 로 띄운 tmux 세션이 있으면 같이 정리
@@ -12,7 +12,7 @@ fi
 for PORT in 8000 50051 3001; do
   PIDS=$(lsof -ti :$PORT 2>/dev/null || true)
   if [ -n "$PIDS" ]; then
-    echo "  port $PORT: PID $PIDS kill"
+    echo "  port $PORT → PID $PIDS kill"
     kill $PIDS 2>/dev/null || true
   fi
 done
@@ -22,6 +22,19 @@ PYQT_PIDS=$(pgrep -f "factory_operator.main" 2>/dev/null || true)
 if [ -n "$PYQT_PIDS" ]; then
   echo "  PyQt PID $PYQT_PIDS kill"
   kill $PYQT_PIDS 2>/dev/null || true
+fi
+
+# run-all.sh 가 띄운 터미널 창 닫기 (bash PID kill → gnome-terminal 창 자동 종료)
+TERMS_PIDS_FILE="/tmp/smartcast_terms.pids"
+if [ -f "$TERMS_PIDS_FILE" ]; then
+  while IFS= read -r pid; do
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      kill "$pid" 2>/dev/null || true
+      echo "  터미널 bash PID $pid kill"
+    fi
+  done < "$TERMS_PIDS_FILE"
+  rm -f "$TERMS_PIDS_FILE"
+  echo "✓ 터미널 창 닫기 완료"
 fi
 
 echo "✓ 정리 완료"

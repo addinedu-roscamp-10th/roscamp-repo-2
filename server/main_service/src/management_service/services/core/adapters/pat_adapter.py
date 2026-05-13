@@ -78,17 +78,39 @@ class PatAdapter:
         except json.JSONDecodeError:
             return (False, "invalid_json_payload")
 
-        order = self._build_order(command, params)
-        if order is None:
-            return (False, f"{command}_requires_strg_loc_id")
+        # 출고는 여러 item을 옮겨야할 때가 있어서, batch로 받기
+        if command == self.RETRIEVE_ACTION and params.get("batch"):
+            batch = self._storage_batch(params.get("batch"))
+            if batch is None:
+                return (False, f"{command}_requires_valid_batch")
 
+            orders = [200 + row * 10 + col for _, row, col in batch]
+            return self._send_goals(orders, success_message="batch_retrieve_succeeded")
+
+        order = self._build_goal(command, params)
+        if order is None:
+            return (False, f"{command}_requires_strg_loc")
+
+        return self._send_goals([order])
+
+    def _send_goals(
+        self,
+        orders: list[int],
+        success_message: str | None = None,
+    ) -> tuple[bool, str]:
+        """PAT action goal들을 순서대로 전송한다."""
         self.start()
         if not self._started or self._client is None or self._goal_cls is None:
             return (False, "pat_adapter_unavailable")
 
-        return self._send_goal(order)
+        for order in orders:
+            ok, message = self._send_goal(order)
+            if not ok:
+                return (False, message)
+        return (True, success_message or f"pat_order_{orders[-1]}_succeeded")
 
     def _send_goal(self, order: int) -> tuple[bool, str]:
+        """PAT action goal을 전송한다."""
         if not self._client.wait_for_server(timeout_sec=self._WAIT_SERVER_SEC):
             return (False, f"pat_action_server_unavailable:{self._ACTION_NAME}")
 
@@ -131,35 +153,63 @@ class PatAdapter:
             return (False, f"pat_action_timeout:{order}")
         return (bool(state["success"]), str(state["message"]))
 
-    def _build_order(self, command: str, params: dict[str, Any]) -> int | None:
+    def _build_goal(self, command: str, params: dict[str, Any]) -> int | None:
+        """명령을 action request에 맞춰서 수정"""
         if command == self.PICK_ACTION:
             return 400
         if command == self.DEFECT_ACTION:
             return 300
 
-        location = self._strg_location(params.get("strg_loc_id"))
+        location = self._storage_location(params.get("strg_loc"))
         if location is None:
             return None
-        floor, cell = location
+        row, col = location
         if command == self.PLACE_ACTION:
-            return 100 + floor * 10 + cell
+            return 100 + row * 10 + col
         if command == self.RETRIEVE_ACTION:
-            return 200 + floor * 10 + cell
+            return 200 + row * 10 + col
         return None
 
-    @staticmethod
-    def _strg_location(raw: Any | None) -> tuple[int, int] | None:
+    # 타입 검증
+    @classmethod
+    def _storage_location(cls, raw: Any | None) -> tuple[int, int] | None:
         if raw is None:
             return None
-        try:
-            loc_id = int(raw)
-        except (TypeError, ValueError):
+        if isinstance(raw, (tuple, list)) and len(raw) == 2:
+            try:
+                row = int(raw[0])
+                col = int(raw[1])
+            except (TypeError, ValueError):
+                return None
+            if row < 1 or row > (cls._STRG_SLOT_COUNT // cls._STRG_COLUMNS):
+                return None
+            if col < 1 or col > cls._STRG_COLUMNS:
+                return None
+            return (row, col)
+        return None
+
+    # 배치 타입 검증
+    @classmethod
+    def _storage_batch(cls, raw: Any | None) -> list[tuple[int, int, int]] | None:
+        if raw is None or not isinstance(raw, (tuple, list)) or len(raw) == 0:
             return None
-        if loc_id < 1 or loc_id > PatAdapter._STRG_SLOT_COUNT:
-            return None
-        floor = ((loc_id - 1) // PatAdapter._STRG_COLUMNS) + 1
-        cell = ((loc_id - 1) % PatAdapter._STRG_COLUMNS) + 1
-        return (floor, cell)
+
+        batch: list[tuple[int, int, int]] = []
+        for entry in raw:
+            if not isinstance(entry, (tuple, list)) or len(entry) != 3:
+                return None
+            try:
+                item_id = int(entry[0])
+            except (TypeError, ValueError):
+                return None
+
+            location = cls._storage_location((entry[1], entry[2]))
+            if location is None:
+                return None
+            row, col = location
+            batch.append((item_id, row, col))
+
+        return batch
 
     def close(self) -> None:
         if self._node is None:

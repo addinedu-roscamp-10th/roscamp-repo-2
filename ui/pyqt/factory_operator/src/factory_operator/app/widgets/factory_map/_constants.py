@@ -11,10 +11,10 @@ from __future__ import annotations
 from PyQt5.QtGui import QColor
 
 # ---------------------------------------------------------------------------
-# 씬 크기 (이미지 비율 ~1300x650)
+# 씬 크기 — real_maplayout.png 실제 해상도에 맞춤 (1150×625)
 # ---------------------------------------------------------------------------
-SCENE_W = 1300
-SCENE_H = 700
+SCENE_W = 1150
+SCENE_H = 625
 
 # ---------------------------------------------------------------------------
 # 색상
@@ -49,34 +49,41 @@ STATUS_COLORS: dict[str, dict[str, str]] = {
 # ---------------------------------------------------------------------------
 # 주요 좌표 상수 (zone 내부 + 통로 웨이포인트)
 _POS = {
-    "mold": (927, 480),
-    "cast_wait": (970, 320),
-    "amr1_home": (562, 527),
-    "amr2_home": (672, 527),
-    "amr3_home": (782, 527),
-    "cast_pickup": (870, 320),
-    "unload_worker": (90, 170),
-    "pp_worker": (160, 155),
-    "conv_left": (230, 117),
-    "conv_right": (490, 117),
-    "conv_wait": (560, 117),
-    "conv_pickup": (600, 245),
-    "putaway": (310, 430),
-    "rack": (95, 530),
-    "rack_pickup": (200, 530),
-    "outbound": (1165, 125),
-    # 통로 웨이포인트 (zone 밖)
-    "corridor_top": (450, 250),
-    "corridor_right": (850, 250),
-    "corridor_left": (90, 250),
-    "corridor_mid": (600, 250),
-    "corridor_bottom_left": (450, 430),
-    "corridor_outbound_r": (1050, 250),
-    "corridor_outbound_up": (1165, 250),
-    "corridor_storage_bot": (450, 530),
-    "corridor_charge_exit_1": (562, 440),
-    "corridor_charge_exit_2": (672, 440),
-    "corridor_charge_exit_3": (782, 440),
+    # 주조 기계 (이미지 좌측 끝)
+    "mold": (100, 465),
+    # Casting waiting zone (중앙)
+    "cast_wait": (640, 325),
+    "cast_pickup": (560, 265),
+    # Charging zone (중앙 하단) — AMR 홈
+    "amr1_home": (525, 528),
+    "amr2_home": (638, 528),
+    "amr3_home": (750, 528),
+    # Postprocessing zone (좌상단)
+    "unload_worker": (225, 105),
+    "pp_worker": (325, 105),
+    "conv_left": (345, 155),
+    "conv_right": (590, 155),
+    "conv_wait": (640, 155),
+    "conv_pickup": (555, 252),
+    # Staging location (좌하단 위 박스)
+    "rack": (160, 340),
+    "rack_pickup": (268, 340),
+    # Putaway waiting zone (좌하단 아래 박스)
+    "putaway": (215, 515),
+    # Shipping zone (우상단)
+    "outbound": (1000, 115),
+    # 통로 웨이포인트
+    "corridor_top": (450, 238),
+    "corridor_right": (760, 238),
+    "corridor_left": (185, 238),
+    "corridor_mid": (580, 238),
+    "corridor_bottom_left": (375, 440),
+    "corridor_outbound_r": (875, 238),
+    "corridor_outbound_up": (1000, 238),
+    "corridor_storage_bot": (375, 440),
+    "corridor_charge_exit_1": (525, 440),
+    "corridor_charge_exit_2": (638, 440),
+    "corridor_charge_exit_3": (750, 440),
 }
 
 # 시뮬레이션 파라미터

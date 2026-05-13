@@ -26,7 +26,7 @@ class AmrStateMonitorNode:
 
     def __init__(self, state_manager: IStateManager, service: "AmrStateMonitorService"):
         import rclpy
-        from geometry_msgs.msg import Pose
+        from geometry_msgs.msg import PoseWithCovarianceStamped
         from rclpy.node import Node
         from std_msgs.msg import Float32
 
@@ -56,7 +56,7 @@ class AmrStateMonitorNode:
                     )
                     self.amr_state_subscriptions.append(
                         self.create_subscription(
-                            Pose,
+                            PoseWithCovarianceStamped,
                             amcl_topic,
                             lambda msg, amr_name=amr: self.amcl_callback(amr_name, msg),
                             10,
@@ -75,8 +75,8 @@ class AmrStateMonitorNode:
 
             def amcl_callback(self, amr_name, msg) -> None:
                 """좌표 콜백함수."""
-                x = float(msg.position.x)
-                y = float(msg.position.y)
+                x = float(msg.pose.pose.position.x)
+                y = float(msg.pose.pose.position.y)
                 self.status[amr_name]["position"] = [x, y]
                 service.update_status(amr_name, x=x, y=y) # state manager에 좌표 저장
                 state_manager.update_amr_runtime_memory(
