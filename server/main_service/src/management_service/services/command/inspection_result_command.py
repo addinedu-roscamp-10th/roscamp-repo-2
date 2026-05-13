@@ -1,0 +1,221 @@
+"""검사 결과 DB 영속화 — insp_task_txn 종결 + ai_inference_txn + insp_stat + item.
+
+AI 서버 응답을 받은 직후 호출되어 단일 트랜잭션 내에서:
+    1. insp_task_txn PROC → SUCC 전이 + result + end_at
+    2. ai_inference_txn INSERT (model_id, step_type, txn_stat=SUCC, start/end_at)
+    3. insp_stat INSERT (predicted_class, yolo_confidence, anomaly_score, ...)
+    4. item.is_defective 갱신
+
+모든 단계가 한 commit 으로 묶이므로 부분 성공이 없다. 실패 시 ROLLBACK.
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any
+
+from smart_cast_db.database import SessionLocal
+from smart_cast_db.models import AiInferenceTxn, AiModel, InspStat, InspTaskTxn, Item
+
+logger = logging.getLogger(__name__)
+
+_AI_INFERENCE_STEP_TYPE = "CLASSIFICATION"
+
+
+@dataclass(frozen=True)
+class InspectionResultRow:
+    """기록 결과 projection — caller 가 후속 INSP_COMPLETED publish 시 사용."""
+
+    insp_txn_id: int
+    item_id: int
+    inference_id: int
+    model_id: int
+    result: str  # "OK" | "NG"
+    is_defective: bool
+    predicted_class: str | None
+    recorded_at: datetime
+
+
+class InspectionResultCommand:
+    """검사 결과 한 사이클 분 DB 기록."""
+
+    def record_inspection_result(
+        self,
+        *,
+        item_id: int,
+        is_defective: bool,
+        predicted_class: str | None = None,
+        yolo_confidence: float | None = None,
+        anomaly_score: float | None = None,
+        anomaly_threshold: float | None = None,
+        model_id: int | None = None,
+        model_type: str | None = None,
+        step_type: str | None = None,
+        started_at: datetime | None = None,
+        completed_at: datetime | None = None,
+        raw_inference_payload: dict[str, Any] | None = None,
+    ) -> InspectionResultRow:
+        """PROC insp_task_txn → SUCC 종결 + 부속 결과 영속화.
+
+        Raises:
+            LookupError: 활성 PROC insp_task_txn 가 없거나 활성 ai_model 이 없을 때
+        """
+        if item_id <= 0:
+            raise ValueError(f"invalid item_id={item_id}")
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        started_at = started_at or now
+        completed_at = completed_at or now
+
+        with SessionLocal() as db:
+            insp_row: InspTaskTxn | None = (
+                db.query(InspTaskTxn)
+                .filter(InspTaskTxn.item_id == item_id)
+                .filter(InspTaskTxn.txn_stat == "PROC")
+                .order_by(InspTaskTxn.req_at.desc(), InspTaskTxn.txn_id.desc())
+                .with_for_update(of=InspTaskTxn)
+                .first()
+            )
+            if insp_row is None:
+                raise LookupError(
+                    f"active PROC insp_task_txn not found for item_id={item_id}"
+                )
+
+            resolved_model_id = _resolve_model_id(db, model_id, model_type)
+
+            insp_row.txn_stat = "SUCC"
+            insp_row.result = not is_defective
+            insp_row.end_at = completed_at
+            if insp_row.start_at is None:
+                insp_row.start_at = started_at
+
+            inference = AiInferenceTxn(
+                insp_txn_id=insp_row.txn_id,
+                model_id=resolved_model_id,
+                step_type=(step_type or _AI_INFERENCE_STEP_TYPE).upper(),
+                txn_stat="SUCC",
+                start_at=started_at,
+                end_at=completed_at,
+            )
+            db.add(inference)
+            db.flush()  # inference_id 확보
+
+            final_result = "DP" if is_defective else "GP"
+            insp_stat = InspStat(
+                insp_txn_id=insp_row.txn_id,
+                item_id=item_id,
+                yolo_inference_id=inference.inference_id,
+                predicted_class=_normalize_class(predicted_class),
+                yolo_confidence=yolo_confidence,
+                anomaly_score=anomaly_score,
+                anomaly_threshold=anomaly_threshold,
+                final_result=final_result,
+                result_json=raw_inference_payload or None,
+                updated_at=completed_at,
+            )
+            db.merge(insp_stat)
+
+            item: Item | None = db.get(Item, item_id)
+            if item is not None:
+                item.is_defective = is_defective
+                item.updated_at = completed_at
+            else:
+                logger.warning(
+                    "InspectionResultCommand.record_inspection_result: item 행 미존재 item_id=%d "
+                    "→ is_defective 갱신 skip (검사 결과는 저장됨)",
+                    item_id,
+                )
+
+            db.commit()
+
+            logger.info(
+                "InspectionResultCommand: item_id=%d insp_txn=%d inference=%d result=%s class=%s",
+                item_id,
+                insp_row.txn_id,
+                inference.inference_id,
+                final_result,
+                predicted_class or "<none>",
+            )
+            return InspectionResultRow(
+                insp_txn_id=insp_row.txn_id,
+                item_id=item_id,
+                inference_id=inference.inference_id,
+                model_id=resolved_model_id,
+                result="NG" if is_defective else "OK",
+                is_defective=is_defective,
+                predicted_class=_normalize_class(predicted_class),
+                recorded_at=completed_at,
+            )
+
+    def record_inspection_failure(self, *, item_id: int, reason: str) -> None:
+        """AI 서버 호출 실패 시 insp_task_txn 만 FAIL 로 종결.
+
+        ai_inference_txn / insp_stat / item.is_defective 는 손대지 않는다 — 추론 결과가
+        없으므로. 다음 cycle 진입을 막지 않기 위해 호출자가 INSP_COMPLETED 를 publish
+        할지 결정한다 (단일 라인이라면 일반적으로 publish 함).
+        """
+        if item_id <= 0:
+            return
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        with SessionLocal() as db:
+            insp_row: InspTaskTxn | None = (
+                db.query(InspTaskTxn)
+                .filter(InspTaskTxn.item_id == item_id)
+                .filter(InspTaskTxn.txn_stat == "PROC")
+                .order_by(InspTaskTxn.req_at.desc(), InspTaskTxn.txn_id.desc())
+                .first()
+            )
+            if insp_row is None:
+                logger.warning(
+                    "InspectionResultCommand.record_inspection_failure: PROC 미존재 "
+                    "item_id=%d reason=%s",
+                    item_id,
+                    reason,
+                )
+                return
+            insp_row.txn_stat = "FAIL"
+            insp_row.end_at = now
+            if insp_row.start_at is None:
+                insp_row.start_at = now
+            db.commit()
+            logger.warning(
+                "InspectionResultCommand.record_inspection_failure: item_id=%d "
+                "insp_txn=%d FAIL reason=%s",
+                item_id,
+                insp_row.txn_id,
+                reason,
+            )
+
+
+def _resolve_model_id(db, model_id: int | None, model_type: str | None) -> int:
+    """주어진 model_id 가 ai_model 에 존재하면 그대로 사용, 아니면 활성 모델로 대체."""
+    if model_id is not None and model_id > 0:
+        exists = db.query(AiModel).filter(AiModel.model_id == model_id).first()
+        if exists is not None:
+            return model_id
+        logger.info(
+            "InspectionResultCommand._resolve_model_id: 지정된 model_id=%d 가 DB 에 없음 "
+            "→ 활성 모델로 대체",
+            model_id,
+        )
+
+    q = db.query(AiModel).filter(AiModel.is_active.is_(True))
+    if model_type:
+        q = q.filter(AiModel.model_type == model_type)
+    active = q.order_by(AiModel.model_id.asc()).first()
+    if active is None:
+        raise LookupError(
+            f"no active ai_model row (requested model_id={model_id} type={model_type})"
+        )
+    return int(active.model_id)
+
+
+def _normalize_class(value: str | None) -> str | None:
+    if value is None:
+        return None
+    value = value.strip().upper()
+    if value in ("CMH", "RMH", "EMH"):
+        return value
+    return None
