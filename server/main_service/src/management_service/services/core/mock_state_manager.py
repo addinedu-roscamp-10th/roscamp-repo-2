@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from ..contracts.enums import EventType
@@ -25,6 +26,34 @@ from ..contracts.models import (
 
 logger = logging.getLogger(__name__)
 ITEM_AFFINITY_PREDECESSORS = {"MM", "POUR", "PP", "ToINSP", "INSP"}
+
+
+def _parse_iso(value: Any) -> datetime | None:
+    """ISO 8601 문자열 또는 UNIX timestamp 를 naive UTC datetime 으로 변환."""
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            return value.astimezone(timezone.utc).replace(tzinfo=None)
+        return value
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.utcfromtimestamp(float(value))
+        except (TypeError, ValueError, OverflowError):
+            return None
+    if isinstance(value, str):
+        try:
+            normalized = value.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(normalized)
+        except ValueError:
+            try:
+                return datetime.utcfromtimestamp(float(value))
+            except (TypeError, ValueError):
+                return None
+        if dt.tzinfo is not None:
+            return dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
+    return None
 
 
 def _normalize_task_type(task_type: Any) -> TaskType | None:
@@ -57,13 +86,19 @@ class MockStateManager:
         self._res_list: dict[str, dict[str, Any]] = {}
         self.items = self._items
         self.orders: dict[int, dict[str, Any]] = {}
-        
+
         self._event_bridge = event_bridge
         self._next_item_id = 1000
         self._next_equip_task_txn_id = 2000
         self._db_ready = False
         self._repo = repository
         self.task_manager = task_manager
+        # INSP task payload 빌드 시 사용할 검사 이미지 정보 (item_id → payload dict).
+        # UploadInspectionImage RPC 가 publish 한 INSP_IMAGE_UPLOADED 이벤트를
+        # container.insp_image_responder 가 update_inspection_image() 로 저장하고,
+        # orchestrator._build_execute_payload(INSP) 가 consume_inspection_image() 로
+        # 1회 소비한다 (stale 방지).
+        self._pending_inspection_images: dict[int, dict[str, Any]] = {}
         self._seed_res_pool()
         if self._repo is None and enable_persistence:
             try:
@@ -787,6 +822,128 @@ class MockStateManager:
 
 
         return is_complete
+
+    def update_inspection_image(
+        self,
+        item_id: int,
+        payload: dict[str, Any],
+    ) -> None:
+        """INSP_IMAGE_UPLOADED 시 image_path 등 검사 이미지 정보 저장.
+
+        UploadInspectionImage RPC 가 발행한 INSP_IMAGE_UPLOADED 이벤트를
+        container.insp_image_responder 가 받아 본 메서드로 위임.
+        같은 item_id 가 재호출되면 마지막 payload 로 덮어쓴다 (재캡처 케이스).
+        """
+        if item_id <= 0:
+            return
+        self._pending_inspection_images[int(item_id)] = dict(payload or {})
+        logger.info(
+            "[MockStateManager] update_inspection_image: item_id=%s keys=%s",
+            item_id,
+            sorted(self._pending_inspection_images[int(item_id)].keys()),
+        )
+
+    def consume_inspection_image(
+        self,
+        item_id: int,
+    ) -> dict[str, Any] | None:
+        """INSP task payload 빌드 시 사용. 1회 소비 후 clear (stale 방지)."""
+        if item_id <= 0:
+            return None
+        return self._pending_inspection_images.pop(int(item_id), None)
+
+    async def record_inspection_result(
+        self,
+        *,
+        item_id: int,
+        inference: dict[str, Any] | None,
+    ) -> bool:
+        """INSP task 의 AI_INFERENCE_REQUEST step 결과를 받아 DB 4-table 갱신.
+
+        task_executor 가 AIAdapter step 종료 직후 호출. AIAdapter 는 DB 를 건드리지
+        않으므로 본 메서드가 단일 ownership 으로 영속화 책임을 수행한다.
+
+        성공 시: insp_task_txn SUCC + ai_inference_txn / insp_stat INSERT + item.is_defective.
+        실패 시 (inference.ok=False 또는 예외): insp_task_txn FAIL.
+
+        Returns:
+            True 면 4-table 갱신 성공, False 면 실패 (FAIL row 까지 기록 완료).
+        """
+        if item_id is None or int(item_id) <= 0:
+            logger.warning(
+                "[MockStateManager] record_inspection_result: invalid item_id=%s — skip",
+                item_id,
+            )
+            return False
+        item_id_int = int(item_id)
+        inference = inference or {}
+
+        try:
+            from services.command.inspection_result_command import (
+                InspectionResultCommand,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[MockStateManager] record_inspection_result: import 실패 item_id=%d exc=%s",
+                item_id_int,
+                exc,
+            )
+            return False
+
+        cmd = InspectionResultCommand()
+
+        if not inference.get("ok"):
+            reason = inference.get("error_reason") or "ai_inference_failed"
+            try:
+                cmd.record_inspection_failure(item_id=item_id_int, reason=reason)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[MockStateManager] record_inspection_failure 실패 item_id=%d exc=%s",
+                    item_id_int,
+                    exc,
+                )
+            return False
+
+        try:
+            recorded = cmd.record_inspection_result(
+                item_id=item_id_int,
+                is_defective=bool(inference.get("is_defective")),
+                predicted_class=inference.get("predicted_class"),
+                yolo_confidence=inference.get("yolo_confidence"),
+                anomaly_score=inference.get("anomaly_score"),
+                anomaly_threshold=inference.get("anomaly_threshold"),
+                model_id=inference.get("model_id"),
+                model_type=inference.get("model_type"),
+                step_type=inference.get("step_type"),
+                started_at=_parse_iso(inference.get("started_at")),
+                completed_at=_parse_iso(inference.get("completed_at")),
+                raw_inference_payload=inference.get("raw_payload"),
+            )
+            logger.info(
+                "[MockStateManager] record_inspection_result OK: item_id=%d insp_txn=%d "
+                "result=%s class=%s",
+                item_id_int,
+                recorded.insp_txn_id,
+                recorded.result,
+                recorded.predicted_class or "<none>",
+            )
+            return True
+        except (LookupError, ValueError) as exc:
+            logger.warning(
+                "[MockStateManager] record_inspection_result 실패 item_id=%d exc=%s — FAIL 기록 시도",
+                item_id_int,
+                exc,
+            )
+            try:
+                cmd.record_inspection_failure(item_id=item_id_int, reason=str(exc))
+            except Exception as exc2:  # noqa: BLE001
+                logger.warning(
+                    "[MockStateManager] record_inspection_failure (after persist err) 실패 "
+                    "item_id=%d exc=%s",
+                    item_id_int,
+                    exc2,
+                )
+            return False
 
     async def publish_subtask_completed(
         self,

@@ -286,11 +286,10 @@ def run_sim_mode(timeout_sec: int, keep_data: bool) -> int:
         return 1
     print(f"  [SIM] 검사 이미지 저장 — {saved.path}")
 
-    # 4. AIAdapter 실 호출 (mock AI 서버 + 실 DB) — DB 기록만, INSP_COMPLETED publish 책임 없음
-    adapter = AIAdapter(
-        ai_command=AiInferenceCommand(),
-        result_command=InspectionResultCommand(),
-    )
+    # 4. AIAdapter 실 호출 (mock AI 서버) — 추론 결과만 반환, DB 갱신은 별도 단계
+    # P2.4 (2026-05-13): AIAdapter 가 InspectionResultCommand 를 직접 호출하지 않으므로
+    # 본 e2e 시뮬레이션도 추론 결과를 직접 받아서 DB 영속화를 별도로 트리거한다.
+    adapter = AIAdapter(ai_command=AiInferenceCommand())
     payload = json.dumps(
         {
             "image_path": str(saved.path),
@@ -307,6 +306,45 @@ def run_sim_mode(timeout_sec: int, keep_data: bool) -> int:
     )
     elapsed_ms = (time.time() - started) * 1000.0
     print(f"  [SIM] AIAdapter.execute → success={result.success} ({elapsed_ms:.1f}ms)")
+
+    # 4b. DB 4-table 영속화 — 실 HW 흐름에서는 task_executor 가
+    # state_manager.record_inspection_result 를 호출. SIM 모드에서는 직접 호출.
+    inference_dict = (result.payload or {}).get("inference") or {}
+    result_cmd = InspectionResultCommand()
+    if inference_dict.get("ok"):
+        from datetime import datetime as _dt
+        def _to_dt(value):
+            if not value:
+                return None
+            if isinstance(value, _dt):
+                return value
+            try:
+                return _dt.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
+            except ValueError:
+                return None
+        try:
+            result_cmd.record_inspection_result(
+                item_id=item_id,
+                is_defective=bool(inference_dict.get("is_defective")),
+                predicted_class=inference_dict.get("predicted_class"),
+                yolo_confidence=inference_dict.get("yolo_confidence"),
+                anomaly_score=inference_dict.get("anomaly_score"),
+                anomaly_threshold=inference_dict.get("anomaly_threshold"),
+                model_id=inference_dict.get("model_id"),
+                model_type=inference_dict.get("model_type"),
+                step_type=inference_dict.get("step_type"),
+                started_at=_to_dt(inference_dict.get("started_at")),
+                completed_at=_to_dt(inference_dict.get("completed_at")),
+                raw_inference_payload=inference_dict.get("raw_payload"),
+            )
+            print("  [SIM] InspectionResultCommand.record_inspection_result OK")
+        except (LookupError, ValueError) as exc:
+            print(f"  [SIM] record_inspection_result 예외 → record_inspection_failure: {exc}")
+            result_cmd.record_inspection_failure(item_id=item_id, reason=str(exc))
+    else:
+        reason = inference_dict.get("error_reason") or "ai_inference_failed"
+        result_cmd.record_inspection_failure(item_id=item_id, reason=reason)
+        print(f"  [SIM] InspectionResultCommand.record_inspection_failure reason={reason}")
 
     # 5. ToPAWait/CONV_ALLOW_MOVE 시뮬레이션 — conv_adapter 가 INSP_COMPLETED publish
     # 실 HW 흐름에서는 AMR 이 ToINSP pose 도착 후 ToPAWait step 3 가 conv_adapter 호출.

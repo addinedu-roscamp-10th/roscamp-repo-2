@@ -19,6 +19,9 @@ class TaskExecutor:
         EventType.HANDOFF_ACK,
         EventType.PP_DONE_REQUESTED,
         EventType.ITEM_LOOKUP_REQUESTED,
+        # ToINSP task 종결 신호 — 카메라 밑에서 캡처된 이미지가 backend 에 도착하고
+        # 디스크 저장까지 완료된 시점. UploadInspectionImage RPC 가 publish.
+        EventType.INSP_IMAGE_UPLOADED,
     }
 
     def __init__(
@@ -151,12 +154,13 @@ class TaskExecutor:
                     timeout_sec=600,
                 ),
             ],
-            # 컨베이어 이동 후 이미지 수신이 종료 조건
+            # 컨베이어 이동 후 카메라 밑 캡처 이미지가 backend 에 도착하면 종료.
+            # UploadInspectionImage RPC 가 디스크 저장 성공 후 INSP_IMAGE_UPLOADED publish.
             TaskType.ToINSP: [
                 CommandStep(
                     step_id=1,
                     action="WAIT_SUBTASK_COMPLETED",
-                    params={"subtask_type": EventType.ITEM_LOOKUP_REQUESTED.value},
+                    params={"subtask_type": EventType.INSP_IMAGE_UPLOADED.value},
                     timeout_sec=600,
                 ),
             ],
@@ -214,9 +218,16 @@ class TaskExecutor:
             for step in sequence:
                 # 단계 실행
                 step_result = await self._execute_step(input_data, step)
+                # INSP task 의 AI_INFERENCE_REQUEST step 은 성공/실패 상관 없이 DB 영속화.
+                # 실패도 insp_task_txn FAIL 로 기록해야 다음 cycle 진입이 가능.
+                if (
+                    input_data.task_type == TaskType.INSP
+                    and step.action == "AI_INFERENCE_REQUEST"
+                ):
+                    await self._persist_insp_result(input_data, step_result)
                 if not step_result.success:
                     raise RuntimeError(step_result.message or f"Adapter failed at step {step.step_id}")
-                
+
                 executed_steps += 1
                 self.logger.info(f"[Executor] Step {step.step_id} completed")
                 await self._handle_step_completion(input_data, step, step_result)
@@ -532,6 +543,51 @@ class TaskExecutor:
             subtask_type=subtask_type,
             task_type=input_data.task_type,
         )
+
+    async def _persist_insp_result(
+        self,
+        input_data: ExecuteTaskInput,
+        step_result: AdapterResult,
+    ) -> None:
+        """INSP task 의 AI_INFERENCE_REQUEST step 결과를 state_manager 에 위임.
+
+        AIAdapter 는 DB 를 건드리지 않고 추론 결과만 반환한다 (P2.4 분리).
+        본 메서드가 step_result.payload["inference"] 를 꺼내 state_manager 로
+        넘기고, state_manager 가 InspectionResultCommand 를 통해 4-table 갱신.
+        실패 path 도 동일 메서드로 호출되어 insp_task_txn 을 FAIL 로 기록.
+        """
+        item_id = int(input_data.item_id) if input_data.item_id is not None else None
+        if item_id is None:
+            self.logger.warning("[Executor] INSP persist: item_id 없음 — skip")
+            return
+
+        payload = step_result.payload or {}
+        inference = payload.get("inference")
+        if inference is None and not step_result.success:
+            # AIAdapter 가 payload validation 단계에서 실패 — inference 자체가 없음.
+            inference = {
+                "ok": False,
+                "error_reason": step_result.message or "ai_step_failed",
+            }
+        recorder = getattr(self.state_manager, "record_inspection_result", None)
+        if recorder is None:
+            self.logger.warning(
+                "[Executor] state_manager 가 record_inspection_result 미지원 "
+                "item_id=%s — DB 갱신 skip",
+                item_id,
+            )
+            return
+        try:
+            ok = await recorder(item_id=item_id, inference=inference)
+            self.logger.info(
+                "[Executor] INSP persist item_id=%s ok=%s step_success=%s",
+                item_id, ok, step_result.success,
+            )
+        except Exception as exc:  # noqa: BLE001 — DB 영속화 실패가 step 흐름을 막지 않게 격리
+            self.logger.warning(
+                "[Executor] state_manager.record_inspection_result 예외 item_id=%s exc=%s",
+                item_id, exc,
+            )
 
     async def _handle_error(self, input_data: ExecuteTaskInput, error_msg: str, steps: int) -> ExecutionResult:
         """에러 처리 및 상태 업데이트"""

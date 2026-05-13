@@ -500,6 +500,29 @@ class Orchestrator(IOrchestrator):
         if task.batch:
             payload["batch"] = task.batch
 
+        # INSP task 는 AIAdapter 가 image_path/captured_at/label 을 요구한다.
+        # INSP_IMAGE_UPLOADED 발행 시 state_manager.update_inspection_image 로
+        # 저장된 정보를 1회 소비 후 payload 에 병합한다.
+        if task.task_type == TaskType.INSP:
+            consume = getattr(self.state_manager, "consume_inspection_image", None)
+            if consume is not None:
+                image_info = consume(item_info.item_id)
+                if image_info:
+                    for key in ("image_path", "image_url", "captured_at", "label", "stage", "camera_id"):
+                        value = image_info.get(key)
+                        if value is not None and key not in payload:
+                            payload[key] = value
+                    logger.info(
+                        "INSP payload built: item_id=%s image_path=%s",
+                        item_info.item_id,
+                        payload.get("image_path"),
+                    )
+                else:
+                    logger.warning(
+                        "INSP payload missing image info: item_id=%s — AIAdapter will fail",
+                        item_info.item_id,
+                    )
+
         return payload
 
     async def _collect_ship_item_locations(self, ord_id: int) -> list[tuple[int, int, int]]:

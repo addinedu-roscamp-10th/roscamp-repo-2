@@ -89,41 +89,39 @@ class Container:
         self._register_rfid_scanned_responder()
         self._register_tof1_entry_responder()
 
-        # INSP_IMAGE_RECEIVED → AI 추론 직접 호출 + DB 4-table 갱신
-        # (task_executor 의 INSP task 가 orchestrator 부재로 시작 안 되는 점 보완).
+        # INSP_IMAGE_UPLOADED → state_manager 검사 이미지 registry 저장.
+        # orchestrator._build_execute_payload(INSP) 가 본 정보를 consume 하여
+        # AIAdapter 에게 image_path 를 전달. AIAdapter 직접 호출 fallback 은 P2 에서 제거됨.
         self._register_insp_image_responder()
 
     def _register_insp_image_responder(self) -> None:
-        """INSP_IMAGE_RECEIVED → insp_task_txn PROC INSERT + AIAdapter 직접 호출.
+        """INSP_IMAGE_UPLOADED → state_manager.update_inspection_image (registry 저장).
 
         흐름:
-          Jetson UploadInspectionImage RPC → backend disk 저장 + INSP_IMAGE_RECEIVED publish
-          → 본 핸들러 → insp_task_txn PROC INSERT + AIAdapter.execute 호출
-          → AI mock /inspect → DB 4-table 갱신 (insp_task_txn SUCC, ai_inference_txn SUCC,
-             insp_stat, item.is_defective).
+          Jetson UploadInspectionImage RPC → backend disk 저장 + INSP_IMAGE_UPLOADED publish
+          → 본 핸들러 → state_manager.update_inspection_image(item_id, payload)
+          → orchestrator._build_execute_payload(INSP) 가 consume 후 INSP task payload 에 병합
+          → task_executor INSP task step 1 ("AI_INFERENCE_REQUEST") → AdapterRouter → AIAdapter
 
-        본래 task_executor 의 INSP task 가 처리해야 하지만 backend orchestrator 가
-        PROC equip_task_txn 을 task_executor 로 dispatch 하는 코드가 부재하여
-        INSP task 자체가 시작 안 됨. watch_inspection_flow.py SIM mode 의 검증된
-        패턴 그대로 채택.
-
-        AIAdapter 가 내부에서 ai_inference_command (HTTP POST /inspect) +
-        inspection_result_command (DB 4-table 갱신) 호출.
+        2026-05-13 (P2): insp_task_txn INSERT + AIAdapter 직접 호출 fallback 을 제거하고
+        정상 task_executor INSP task dispatch 경로로 일원화. AIAdapter 는 추론 결과만
+        반환하고, DB 4-table 갱신은 task_executor 가 state_manager.record_inspection_result
+        로 위임 (P2.4 완료).
         """
-        def _on_insp_image_received(event) -> None:
+        def _on_insp_image_uploaded(event) -> None:
             payload = event.payload or {}
             try:
                 item_id = int(event.item_id) if event.item_id else int(payload.get("item_id") or 0)
             except (TypeError, ValueError):
                 item_id = 0
             if item_id <= 0:
-                logger.info("[container] INSP_IMAGE_RECEIVED item_id 없음 — skip")
+                logger.info("[container] INSP_IMAGE_UPLOADED item_id 없음 — skip")
                 return
 
             image_path = (payload.get("image_path") or "").strip()
             if not image_path:
                 logger.info(
-                    "[container] INSP_IMAGE_RECEIVED image_path 없음 item_id=%s — skip",
+                    "[container] INSP_IMAGE_UPLOADED image_path 없음 item_id=%s — skip",
                     item_id,
                 )
                 return
@@ -132,88 +130,35 @@ class Container:
                 captured_at = float(payload.get("captured_at") or datetime.now(timezone.utc).timestamp())
             except (TypeError, ValueError):
                 captured_at = datetime.now(timezone.utc).timestamp()
-            label = payload.get("label") or "INSP"
 
-            try:
-                import json as _json
-                from services.command.ai_inference_command import AiInferenceCommand
-                from services.command.inspection_result_command import InspectionResultCommand
-                from services.core.adapters.ai_adapter import AIAdapter
-                from smart_cast_db.database import SessionLocal
-                from smart_cast_db.models import InspTaskTxn
-            except Exception as exc:  # noqa: BLE001
+            update = getattr(self.state_manager, "update_inspection_image", None)
+            if update is None:
                 logger.warning(
-                    "[container] INSP_IMAGE_RECEIVED imports 실패 — skip: %s", exc
+                    "[container] state_manager 가 update_inspection_image 미지원 — "
+                    "item_id=%s image_path=%s skip",
+                    item_id, image_path,
                 )
                 return
 
-            # (1) insp_task_txn PROC INSERT — task_executor 가 INSP task 시작 안 하므로 직접
-            db = SessionLocal()
-            insp_txn_id: int = 0
-            try:
-                row = InspTaskTxn(
-                    item_id=item_id,
-                    res_id="CONV1",
-                    txn_stat="PROC",
-                    start_at=datetime.now(),
-                )
-                db.add(row)
-                db.commit()
-                db.refresh(row)
-                insp_txn_id = int(row.txn_id)
-                logger.info(
-                    "[container] INSP_IMAGE_RECEIVED → insp_task_txn PROC INSERT "
-                    "item_id=%s insp_txn_id=%s path=%s",
-                    item_id, insp_txn_id, image_path,
-                )
-            except Exception as exc:  # noqa: BLE001
-                db.rollback()
-                logger.warning(
-                    "[container] INSP_IMAGE_RECEIVED insp_task_txn INSERT 실패 "
-                    "item_id=%s exc=%s",
-                    item_id, exc,
-                )
-                return
-            finally:
-                db.close()
-
-            # (2) AIAdapter 호출 — 내부에서 AI HTTP POST + DB 4-table 갱신
-            # (insp_task_txn SUCC, ai_inference_txn, insp_stat, item.is_defective).
-            try:
-                adapter = AIAdapter(
-                    ai_command=AiInferenceCommand(),
-                    result_command=InspectionResultCommand(),
-                )
-                ai_payload = _json.dumps(
-                    {
-                        "image_path": image_path,
-                        "captured_at": captured_at,
-                        "label": label,
-                        "insp_txn_id": insp_txn_id,
-                        # target_cls 미주입 — ai_adapter 가 DB lookup
-                        # (item.ord_id → product.cate_cd) 으로 결정. fallback 'CMH'.
-                    }
-                ).encode("utf-8")
-                result = adapter.execute(
-                    item_id=item_id,
-                    _robot_id="AI",
-                    _command="AI_INFERENCE_REQUEST",
-                    payload=ai_payload,
-                )
-                logger.info(
-                    "[container] INSP_IMAGE_RECEIVED → AIAdapter.execute "
-                    "item_id=%s insp_txn_id=%s success=%s message=%s",
-                    item_id, insp_txn_id, result.success, result.message,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "[container] AIAdapter.execute 예외 item_id=%s insp_txn_id=%s: %s",
-                    item_id, insp_txn_id, exc, exc_info=True,
-                )
+            update(
+                item_id,
+                {
+                    "image_path": image_path,
+                    "captured_at": captured_at,
+                    "label": payload.get("label") or payload.get("stage") or "INSP",
+                    "stage": payload.get("stage") or "INSP",
+                    "camera_id": payload.get("camera_id"),
+                },
+            )
+            logger.info(
+                "[container] INSP_IMAGE_UPLOADED → state_manager.update_inspection_image "
+                "item_id=%s path=%s",
+                item_id, image_path,
+            )
 
         self.event_bridge.subscribe(
-            EventType.INSP_IMAGE_RECEIVED,
-            _on_insp_image_received,
+            EventType.INSP_IMAGE_UPLOADED,
+            _on_insp_image_uploaded,
             "container.insp_image_responder",
         )
 
@@ -366,7 +311,7 @@ class Container:
         )
 
     def _register_tof1_entry_responder(self) -> None:
-        """TOF1_ENTRY → handoff_pipeline.apply_tof1 호출 + ITEM_LOOKUP_REQUESTED publish.
+        """TOF1_ENTRY → handoff_pipeline.apply_tof1 (DB 전이만 수행, ToINSP wake-up 없음).
 
         ESP32 TOF1 (카메라 앞) 센서 detect → Jetson EventGateway
         PublishEvent(TOF1_ENTRY) → 본 핸들러.
@@ -375,11 +320,16 @@ class Container:
             - item.cur_stat='WAIT_INSP'
             - equip_task_txn ToINSP PROC INSERT
             - equip_stat ON
-        성공 시 ITEM_LOOKUP_REQUESTED publish → task_executor ToINSP task step 1 waiter 깸.
 
-        V1 ReportConveyorEvent RPC handler (field_event_rpc.py:217-271) 도 동일 작업.
-        Idempotency 보장은 (a) apply_tof1 가 PROC ToINSP 가 이미 있으면 새로 INSERT 안 함
-        (b) item.cur_stat 가 이미 WAIT_INSP 이면 자연 멱등.
+        2026-05-13 (P1): ToINSP task 종결 신호는 더 이상 본 핸들러가 발행하지 않는다.
+        후처리 종료 신호는 PyQt 후처리 완료 버튼 → PP_DONE_REQUESTED 가 담당하고,
+        ToINSP task 의 종결은 카메라 밑 도달 후 UploadInspectionImage RPC 가
+        publish 하는 INSP_IMAGE_UPLOADED 이벤트가 담당한다. 본 핸들러는 ESP32 가
+        여전히 TOF1_ENTRY 를 발행하는 동안의 DB 상태 정합성(idempotent fallback) 만
+        보장한다. V1 ReportConveyorEvent RPC handler (field_event_rpc.py:217-271) 도
+        동일 작업을 수행하므로 양쪽이 중복 실행되어도 apply_tof1 자체가 멱등.
+        TOF1 의미 폐기 후 ESP/Jetson 펌웨어가 TOF1_ENTRY 발행을 멈추면 본 핸들러는
+        제거 대상.
         """
         def _on_tof1_entry(event) -> None:
             payload = event.payload or {}
@@ -394,7 +344,6 @@ class Container:
 
             try:
                 from services.legacy.handoff_pipeline import apply_tof1
-                from services.contracts.models import Event
                 from smart_cast_db.database import SessionLocal
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[container] TOF1_ENTRY imports 실패 — skip: %s", exc)
@@ -423,19 +372,6 @@ class Container:
                     "equip_txn=%s reason=%s",
                     r1.ok, r1.item_id, r1.equip_task_txn_id, r1.reason,
                 )
-                # apply_tof1 OK + item_id 확보 → ITEM_LOOKUP_REQUESTED publish
-                # task_executor ToINSP task step 1 waiter 깸 (task_executor.py:166)
-                if r1.ok and r1.item_id:
-                    self.event_bridge.publish(
-                        Event(
-                            event_type=EventType.ITEM_LOOKUP_REQUESTED,
-                            item_id=int(r1.item_id),
-                            payload={
-                                "item_id": int(r1.item_id),
-                                "source": "container.tof1_entry_responder",
-                            },
-                        )
-                    )
             except Exception as exc:  # noqa: BLE001
                 db.rollback()
                 logger.warning(
@@ -550,9 +486,9 @@ class Container:
               → backend WatchConveyorCommands stream (hardware_rpc.py:151)
               → Jetson CommandSubscriber (command_subscriber.py:164)
               → EspBridge.send_command("start") (펌웨어 IDLE → RUNNING)
-              → motor ON → 주물 이동 → TOF1 detect → STOPPED → Jetson 캡처
-              → UploadInspectionImage → INSP_IMAGE_RECEIVED
-              → task_executor INSP task → AI/DB chain.
+              → motor ON → 주물 이동 → 카메라 밑 정지 (펌웨어 STOPPED) → Jetson 캡처
+              → UploadInspectionImage → INSP_IMAGE_UPLOADED publish
+              → task_executor ToINSP waiter 해제 → INSP task → AI/DB chain.
 
         2회차 motor RUN (검사 완료 후 4초) 은 ConvAdapter.CONV_ALLOW_MOVE
         → INSP_COMPLETED publish → esp_bridge._on_inspection_done 경로 (기존)

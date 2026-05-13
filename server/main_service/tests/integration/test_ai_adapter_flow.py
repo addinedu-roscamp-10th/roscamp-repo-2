@@ -1,10 +1,13 @@
-"""AIAdapter 통합 — AI 서버 호출 + DB 기록 한 사이클 검증.
+"""AIAdapter 통합 — AI 서버 호출 한 사이클 검증.
 
-DB 의존성은 InspectionResultCommand 를 mock 으로 대체하여 격리한다. AI 서버는
-같은 프로세스에서 uvicorn 으로 띄워 실 HTTP 경로를 통과시킨다.
+2026-05-13 (P2.4): AIAdapter 는 더 이상 DB 를 직접 갱신하지 않는다.
+추론 결과는 AdapterResult.payload["inference"] dict 로만 반환되며,
+DB 영속화(insp_task_txn / ai_inference_txn / insp_stat / item.is_defective 4-table)
+는 호출자(task_executor → state_manager.record_inspection_result) 가 담당한다.
 
-INSP_COMPLETED publish 책임은 본 어댑터에서 conv_adapter (ToPAWait/CONV_ALLOW_MOVE)
-로 이동되었으므로 (2026-05-12) AIAdapter 테스트에서는 publish 발생 안 함을 검증한다.
+AI 서버는 같은 프로세스에서 uvicorn 으로 띄워 실 HTTP 경로를 통과시킨다.
+INSP_COMPLETED publish 책임은 본 어댑터가 아닌 conv_adapter
+(ToPAWait/CONV_ALLOW_MOVE) 가 담당하므로 publish 발생 안 함을 검증한다.
 conv_adapter 의 publish 검증은 test_conv_adapter_publish.py 참조.
 """
 
@@ -15,7 +18,6 @@ import socket
 import threading
 import time
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import httpx
 import pytest
@@ -81,36 +83,20 @@ def _save_image(tmp_path: Path, image_bytes: bytes, item_id: int) -> Path:
     return saved.path
 
 
-def test_ai_adapter_full_cycle_records_db_without_insp_completed(
+def test_ai_adapter_success_returns_inference_payload_without_db_or_publish(
     ai_mock_server: int,
     tmp_path: Path,
     jpeg_bytes: bytes,
 ) -> None:
-    from datetime import datetime, timezone
-
-    from services.command.inspection_result_command import InspectionResultRow
+    """P2.4: AIAdapter 는 추론 결과 dict 만 반환하며 DB / EventBridge 를 건드리지 않는다."""
     from services.contracts.enums import EventType
     from services.contracts.models import Event
     from services.core.adapters.ai_adapter import AIAdapter
     from services.core.event_bridge import EventBridgeImpl
 
-    # 1) 실 disk 에 검사 이미지 저장 (main_service sink)
     saved_path = _save_image(tmp_path, jpeg_bytes, item_id=777)
 
-    # 2) DB 단은 mock — record_inspection_result 호출 인자만 검증
-    result_command = MagicMock()
-    result_command.record_inspection_result.return_value = InspectionResultRow(
-        insp_txn_id=999,
-        item_id=777,
-        inference_id=8888,
-        model_id=1,
-        result="OK",
-        is_defective=False,
-        predicted_class="CMH",
-        recorded_at=datetime.now(timezone.utc).replace(tzinfo=None),
-    )
-
-    # 3) EventBridge — AIAdapter 가 publish 하지 않아야 함을 검증하기 위한 spy
+    # EventBridge spy — AIAdapter 가 publish 하지 않아야 함
     event_bridge = EventBridgeImpl()
     captured: list[Event] = []
     event_bridge.subscribe(
@@ -119,8 +105,7 @@ def test_ai_adapter_full_cycle_records_db_without_insp_completed(
         subscriber_name="test_spy",
     )
 
-    # 4) AIAdapter — event_bridge 주입 안 함 (책임이 conv_adapter 로 이동됨)
-    adapter = AIAdapter(result_command=result_command)
+    adapter = AIAdapter()  # result_command 의존성 제거
     payload = json.dumps(
         {
             "image_path": str(saved_path),
@@ -131,47 +116,40 @@ def test_ai_adapter_full_cycle_records_db_without_insp_completed(
 
     result = adapter.execute(item_id=777, _robot_id="AI", _command="AI_INFERENCE_REQUEST", payload=payload)
 
-    # 5) 어댑터 응답 검증
     assert result.success is True
-    assert result.message == "ai_inference_recorded"
-    assert result.payload["inference"]["ok"] is True
-    assert result.payload["inference"]["result"] == "OK"  # round_robin 1번째 호출
-    assert result.payload["inspection_result"]["insp_txn_id"] == 999
-    assert result.payload["inspection_result"]["result"] == "OK"
+    assert result.message == "ai_inference_completed"
+    inference = result.payload["inference"]
+    assert inference["ok"] is True
+    assert isinstance(inference["is_defective"], bool)
+    assert inference["predicted_class"] in {"CMH", "RMH", "EMH"}
+    assert inference["model_id"] == 1
+    assert inference["model_type"] == "YOLO"
+    assert inference["yolo_confidence"] is not None
+    assert inference["anomaly_score"] is not None
+    assert "raw_payload" in inference
+    # 4-table 갱신용 시계열 키도 포함
+    assert "started_at" in inference and "completed_at" in inference
 
-    # 6) DB 기록 호출 인자 검증
-    result_command.record_inspection_result.assert_called_once()
-    call_kwargs = result_command.record_inspection_result.call_args.kwargs
-    assert call_kwargs["item_id"] == 777
-    assert call_kwargs["is_defective"] is False  # OK → not defective
-    assert call_kwargs["predicted_class"] in {"CMH", "RMH", "EMH"}
-    assert call_kwargs["model_id"] == 1
-    assert call_kwargs["model_type"] == "YOLO"
-    assert call_kwargs["yolo_confidence"] is not None
-    assert call_kwargs["anomaly_score"] is not None
-
-    # 7) INSP_COMPLETED 는 AIAdapter 에서 publish 되지 않아야 함
-    # (conv_adapter 가 ToPAWait/CONV_ALLOW_MOVE 시점에 publish 함)
+    # AIAdapter 는 EventBridge 에 publish 하지 않는다 (conv_adapter 가 담당)
     assert captured == []
 
 
-def test_ai_adapter_failure_records_failure_and_no_publish(
+def test_ai_adapter_failure_returns_error_payload_without_db_or_publish(
     ai_mock_server: int,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """P2.4: AI 서버 호출 실패 시 inference.ok=False payload 만 반환, DB 호출 없음."""
     from services.contracts.enums import EventType
     from services.core.adapters.ai_adapter import AIAdapter
     from services.core.event_bridge import EventBridgeImpl
 
-    # AI 서버를 다른 포트로 지정 — 의도적으로 연결 실패 유도
     monkeypatch.setenv("MGMT_AI_PORT", "65501")
     monkeypatch.setenv("MGMT_AI_TIMEOUT_SEC", "0.3")
     monkeypatch.setenv("MGMT_AI_RETRY_COUNT", "0")
 
     saved_path = _save_image(tmp_path, b"\xff\xd8mock\xff\xd9", item_id=314)
 
-    result_command = MagicMock()
     event_bridge = EventBridgeImpl()
     seen: list = []
     event_bridge.subscribe(
@@ -180,19 +158,16 @@ def test_ai_adapter_failure_records_failure_and_no_publish(
         subscriber_name="test_spy",
     )
 
-    adapter = AIAdapter(result_command=result_command)
+    adapter = AIAdapter()
     payload = json.dumps({"image_path": str(saved_path)}).encode("utf-8")
     result = adapter.execute(item_id=314, _robot_id="AI", _command="AI_INFERENCE_REQUEST", payload=payload)
 
     assert result.success is False
     assert "http_error" in (result.message or "")
-    # 실패 path: record_inspection_failure 만 호출, record_inspection_result 는 호출 안 됨
-    result_command.record_inspection_result.assert_not_called()
-    result_command.record_inspection_failure.assert_called_once()
-    fail_kwargs = result_command.record_inspection_failure.call_args.kwargs
-    assert fail_kwargs["item_id"] == 314
-    assert "http_error" in (fail_kwargs.get("reason") or "")
-    # INSP_COMPLETED publish 는 발생하지 않아야 함 (성공 path 든 실패 path 든 AIAdapter 책임 아님)
+    inference = result.payload["inference"]
+    assert inference["ok"] is False
+    assert "http_error" in (inference.get("error_reason") or "")
+    # AIAdapter 는 EventBridge publish 하지 않으며 DB 도 건드리지 않는다
     assert seen == []
 
 
