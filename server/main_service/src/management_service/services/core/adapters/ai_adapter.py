@@ -1,36 +1,27 @@
-"""AI 추론 어댑터 — 검사 이미지 업로드 + DB 결과 영속화.
+"""AI 추론 어댑터 — AI 서버 호출 + 결과 반환 (DB 미관여).
 
 AdapterRouter 가 `action=AI_INFERENCE_REQUEST` 일 때 본 어댑터를 호출한다.
-execute() 한 번에 다음 단계가 진행된다:
+execute() 의 책임은 다음으로 한정된다:
 
     1. payload 검증 (image_path 또는 image_url + item_id)
     2. AiInferenceCommand → AI 서버 multipart POST → 양/불 판정 결과 수신
-    3. InspectionResultCommand → insp_task_txn SUCC + ai_inference_txn / insp_stat INSERT
+    3. 추론 결과를 AdapterResult.payload["inference"] 에 직렬화하여 반환
 
-AI 서버 호출 실패 시: insp_task_txn FAIL 로 마감하고 AdapterResult(success=False) 반환.
+본 어댑터는 EventBridge 도, DB 도 직접 사용하지 않는다. 추론 결과 영속화
+(insp_task_txn / ai_inference_txn / insp_stat / item.is_defective 4-table 갱신) 은
+호출자(task_executor) 가 state_manager.record_inspection_result 로 위임한다.
 
-INSP_COMPLETED publish 시점에 대한 주석 (2026-05-12):
-    이전 버전은 본 execute() 마지막에 INSP_COMPLETED 를 publish 하여 Jetson 측에서
-    즉시 컨베이어를 가동시켰다. 그러나 AI 추론 완료 시점에는 다음 공정 AMR 이 아직
-    컨베이어 출구(ToINSP pose) 에 도착하지 않은 상태일 수 있어 주물이 빈 위치로
-    unloading 되는 문제가 있었다. 이를 해결하기 위해 INSP_COMPLETED publish 는
-    ToPAWait task 의 step 3 (`CONV_ALLOW_MOVE`) 에서 실행되도록 conv_adapter 로
-    이동되었다. ToPAWait step 2 가 AMR 도착 subtask("tostrg") 를 기다리므로
-    AMR 도착 보장 후에만 컨베이어가 RUN 한다.
+INSP_COMPLETED publish 시점은 conv_adapter 의 ToPAWait/CONV_ALLOW_MOVE 단계로
+이전되어 있다 (commit 2593b9e). 본 어댑터는 publish 책임 없음.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
 from pathlib import Path
 
 from services.command.ai_inference_command import AiInferenceCommand, AiInferenceResult
-from services.command.inspection_result_command import (
-    InspectionResultCommand,
-    InspectionResultRow,
-)
 from services.contracts.models import AdapterResult
 
 logger = logging.getLogger(__name__)
@@ -42,10 +33,8 @@ class AIAdapter:
     def __init__(
         self,
         ai_command: AiInferenceCommand | None = None,
-        result_command: InspectionResultCommand | None = None,
     ) -> None:
         self._ai_command = ai_command or AiInferenceCommand()
-        self._result_command = result_command or InspectionResultCommand()
 
     def execute(
         self,
@@ -77,7 +66,7 @@ class AIAdapter:
         captured_at = _coerce_float(payload_dict.get("captured_at"))
         label = payload_dict.get("label")
 
-        # 1) AI 서버 호출 ------------------------------------------------------
+        # AI 서버 호출 — 추론 결과만 반환. DB 갱신은 호출자가 state_manager 에 위임.
         inference = self._ai_command.upload_and_infer(
             image_path=local_path,
             item_id=item_id,
@@ -85,54 +74,15 @@ class AIAdapter:
             label=label,
         )
         if not inference.ok or inference.is_defective is None:
-            return self._handle_inference_failure(item_id, inference)
+            return self._handle_inference_failure(item_id, payload_dict, inference)
 
-        # 2) DB 영속화 ---------------------------------------------------------
-        try:
-            recorded = self._result_command.record_inspection_result(
-                item_id=item_id,
-                is_defective=bool(inference.is_defective),
-                predicted_class=inference.predicted_class,
-                yolo_confidence=inference.yolo_confidence,
-                anomaly_score=inference.anomaly_score,
-                anomaly_threshold=inference.anomaly_threshold,
-                model_id=inference.model_id,
-                model_type=inference.model_type,
-                step_type=inference.step_type,
-                started_at=_parse_iso(inference.started_at),
-                completed_at=_parse_iso(inference.completed_at),
-                raw_inference_payload=inference.raw_payload,
-            )
-        except (LookupError, ValueError) as exc:
-            logger.warning(
-                "AIAdapter.execute: DB 기록 실패 item_id=%d exc=%s — INSP_COMPLETED skip",
-                item_id,
-                exc,
-            )
-            return AdapterResult(
-                success=False,
-                message=f"inspection_persist_failed:{exc}",
-                payload={**payload_dict, "inference": inference.raw_payload},
-            )
-
-        # 3) INSP_COMPLETED publish 는 conv_adapter (ToPAWait/CONV_ALLOW_MOVE) 로 이동 -----
-        # AMR 도착 보장 후에만 컨베이어가 RUN 하도록 publish 시점을 늦춤.
         response_payload = {
             **payload_dict,
-            "inference": inference.raw_payload,
-            "inspection_result": {
-                "insp_txn_id": recorded.insp_txn_id,
-                "inference_id": recorded.inference_id,
-                "model_id": recorded.model_id,
-                "result": recorded.result,
-                "is_defective": recorded.is_defective,
-                "predicted_class": recorded.predicted_class,
-                "recorded_at": recorded.recorded_at.isoformat(),
-            },
+            "inference": _inference_to_dict(inference),
         }
         return AdapterResult(
             success=True,
-            message="ai_inference_recorded",
+            message="ai_inference_completed",
             payload=response_payload,
         )
 
@@ -143,27 +93,47 @@ class AIAdapter:
     def _handle_inference_failure(
         self,
         item_id: int,
+        payload_dict: dict,
         inference: AiInferenceResult,
     ) -> AdapterResult:
         reason = inference.error_reason or "ai_inference_failed"
-        try:
-            self._result_command.record_inspection_failure(item_id=item_id, reason=reason)
-        except Exception as exc:  # noqa: BLE001 — DB 기록 실패가 호출자 흐름을 막지 않도록 격리
-            logger.warning(
-                "AIAdapter._handle_inference_failure: record_inspection_failure 실패 "
-                "item_id=%d exc=%s",
-                item_id,
-                exc,
-            )
+        logger.warning(
+            "AIAdapter._handle_inference_failure: item_id=%d reason=%s — 호출자에게 위임",
+            item_id, reason,
+        )
         return AdapterResult(
             success=False,
             message=reason,
             payload={
+                **payload_dict,
                 "item_id": item_id,
-                "inference": inference.raw_payload,
+                "inference": {
+                    "ok": False,
+                    "error_reason": reason,
+                    "raw_payload": inference.raw_payload,
+                },
                 "error_reason": reason,
             },
         )
+
+
+def _inference_to_dict(inference: AiInferenceResult) -> dict:
+    """state_manager.record_inspection_result 가 사용할 추론 결과 dict 형식."""
+    return {
+        "ok": True,
+        "is_defective": bool(inference.is_defective),
+        "predicted_class": inference.predicted_class,
+        "yolo_confidence": inference.yolo_confidence,
+        "anomaly_score": inference.anomaly_score,
+        "anomaly_threshold": inference.anomaly_threshold,
+        "model_id": inference.model_id,
+        "model_type": inference.model_type,
+        "step_type": inference.step_type,
+        "started_at": inference.started_at,
+        "completed_at": inference.completed_at,
+        "raw_payload": inference.raw_payload,
+    }
+
 
 def _coerce_float(value: object) -> float | None:
     if value is None:
@@ -172,20 +142,3 @@ def _coerce_float(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
-
-
-def _parse_iso(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        # 끝 'Z' 는 datetime.fromisoformat 가 거부하므로 변환
-        normalized = value.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(normalized)
-    except ValueError:
-        try:
-            return datetime.utcfromtimestamp(float(value))
-        except (TypeError, ValueError):
-            return None
-    if dt.tzinfo is not None:
-        return dt.astimezone(timezone.utc).replace(tzinfo=None)
-    return dt
