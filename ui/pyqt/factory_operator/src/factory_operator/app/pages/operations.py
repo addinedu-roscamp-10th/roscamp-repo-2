@@ -746,7 +746,10 @@ class OperationsPage(QWidget):
             QMessageBox.critical(self, "라인 투입 실패", str(exc))
             return
         msg = result.reason or "Started."
-        QMessageBox.information(self, "라인 투입 완료", f"발주 {ord_id}\n{msg}")
+        if result.accepted:
+            QMessageBox.information(self, "라인 투입 완료", f"발주 {ord_id}\n{msg}")
+        else:
+            QMessageBox.warning(self, "라인 투입 거절", f"발주 {ord_id}\n{msg}")
         self.refresh()
 
     @pyqtSlot()
