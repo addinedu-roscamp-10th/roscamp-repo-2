@@ -10,7 +10,9 @@ if not exist .env.local (echo X .env.local 없음. setup.bat 실행 후 비밀�
 call .venv\Scripts\activate.bat
 python -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 'backend .venv 가 Python 3.11 미만입니다. Python 3.11 설치 후 scripts\\setup.bat 를 다시 실행하세요.')"
 if errorlevel 1 exit /b 1
-set PYTHONPATH=src\interface_service;src\main_service;src
+REM 2026-05-14: PYTHONPATH stale 경로 정리 (Linux 미러).
+REM 이전엔 src\main_service 를 포함했으나 실제 디렉토리는 src\management_service.
+set PYTHONPATH=src\interface_service;src\management_service;src
 if "%PORT%"=="" set PORT=8000
 if "%HOST%"=="" set HOST=0.0.0.0
 

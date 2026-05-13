@@ -39,8 +39,17 @@ try:
 
     _PROTO_AVAILABLE = True
 except ImportError as exc:
-    logger.warning(
-        "Management proto stubs unavailable (%s) — 'make proto' in backend/management 필요", exc
+    # 2026-05-14: WARNING → ERROR 승격.
+    # proto stubs 로딩 실패는 Management 미가동(런타임 장애)이 아니라 빌드/배포 구성 오류다.
+    # 이전엔 WARNING 으로만 남고 모든 RPC 가 ManagementUnavailable 로 폴백되며,
+    # /api/production/start 같이 local fallback 이 있는 라우트는 정상 동작처럼 보여
+    # 운영 중에도 발견이 늦어질 수 있었다.
+    logger.error(
+        "Management proto stubs import FAILED (CONFIG ERROR, not a service outage): %s. "
+        "Regenerate via 'python -m grpc_tools.protoc -I rpc/proto --python_out=. --grpc_python_out=. "
+        "rpc/proto/management.proto' from server/main_service/src/management_service "
+        "or verify sys.path includes the management_service stubs directory.",
+        exc,
     )
     management_pb2 = None  # type: ignore
     management_pb2_grpc = None  # type: ignore
