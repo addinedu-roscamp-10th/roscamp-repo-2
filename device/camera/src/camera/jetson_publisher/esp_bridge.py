@@ -732,23 +732,23 @@ class EspBridge:
             import grpc  # type: ignore
 
             # jetson_publisher/generated/ 는 PYTHONPATH 에 이미 있음 (publisher.py 에서 설정)
-            from generated import management_v2_pb2_grpc  # type: ignore
+            from generated import management_pb2_grpc  # type: ignore
 
             channel = grpc.insecure_channel(self._grpc_target)
-            return management_v2_pb2_grpc.ManagementServiceV2Stub(channel)
+            return management_pb2_grpc.ManagementServiceStub(channel)
         except Exception as e:  # noqa: BLE001
             log.warning("gRPC stub 생성 실패: %s", e)
             return None
 
     def _send_handoff_ack(self, stub, item: PendingHandoff) -> None:
         """gRPC ReportHandoffAck 호출. 실패 시 예외 전파 (drain 루프가 재시도)."""
-        from generated import management_v2_pb2  # type: ignore
+        from generated import management_pb2  # type: ignore
 
-        # V2 schema: HandoffAckEvent → ReportHandoffAckRequest (메시지명 변경).
-        req = management_v2_pb2.ReportHandoffAckRequest(
+        # V2 schema: HandoffAckEvent → HandoffAckEvent (메시지명 변경).
+        req = management_pb2.HandoffAckEvent(
             source_device=item.source_device,
             zone=item.zone,
-            occurred_at=management_v2_pb2.Timestamp(
+            occurred_at=management_pb2.Timestamp(
                 iso8601=time.strftime(
                     "%Y-%m-%dT%H:%M:%SZ",
                     time.gmtime(item.occurred_at_millis / 1000.0),
@@ -816,12 +816,12 @@ class EspBridge:
         곧바로 USB 카메라 1 frame 캡처 후 UploadInspectionImage 로 push.
         capture/upload 실패는 ConveyorEvent 자체 결과에 영향 없음 (best-effort).
         """
-        from generated import management_v2_pb2  # type: ignore
+        from generated import management_pb2  # type: ignore
 
-        req = management_v2_pb2.ConveyorEvent(
+        req = management_pb2.ConveyorEvent(
             res_id=item.res_id,
             event_type=item.event_type,
-            occurred_at=management_v2_pb2.Timestamp(
+            occurred_at=management_pb2.Timestamp(
                 iso8601=time.strftime(
                     "%Y-%m-%dT%H:%M:%SZ",
                     time.gmtime(item.occurred_at_millis / 1000.0),
@@ -869,7 +869,7 @@ class EspBridge:
             log.info("[inspection_push] MGMT_CAM_INSP_DISABLED=1 → skip item=%s", item_id)
             return
 
-        from generated import management_v2_pb2  # type: ignore
+        from generated import management_pb2  # type: ignore
         from capture_inspection import capture_jpeg  # type: ignore
 
         camera_id = os.environ.get("MGMT_CAM_INSP_CAMERA_ID", "CAM-INSP-01").strip() or "CAM-INSP-01"
@@ -899,12 +899,12 @@ class EspBridge:
         ts_ms = int(cap.captured_at_unix * 1000)
         idem = f"{idempotency_seed}:img:{item_id}:{camera_id}:{ts_ms}"
 
-        req = management_v2_pb2.InspectionImageUpload(
+        req = management_pb2.InspectionImageUpload(
             item_id=item_id,
             camera_id=camera_id,
             stage=stage,
             jpeg_bytes=cap.jpeg_bytes,
-            captured_at=management_v2_pb2.Timestamp(iso8601=captured_iso),
+            captured_at=management_pb2.Timestamp(iso8601=captured_iso),
             idempotency_key=idem,
         )
 
@@ -973,13 +973,13 @@ class EspBridge:
 
     def _send_rfid_scan(self, stub, item: PendingRfidScan) -> None:
         """gRPC ReportRfidScan 호출. 실패 시 예외 전파 (drain 루프가 재시도)."""
-        from generated import management_v2_pb2  # type: ignore
+        from generated import management_pb2  # type: ignore
 
-        req = management_v2_pb2.ReportRfidScanRequest(
+        req = management_pb2.RfidScanEvent(
             reader_id=item.reader_id,
             zone=item.zone,
             raw_payload=item.raw_payload,
-            scanned_at=management_v2_pb2.Timestamp(
+            scanned_at=management_pb2.Timestamp(
                 iso8601=time.strftime(
                     "%Y-%m-%dT%H:%M:%SZ",
                     time.gmtime(item.occurred_at_millis / 1000.0),
