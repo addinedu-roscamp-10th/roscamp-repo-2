@@ -26,7 +26,7 @@ _AI_INFERENCE_STEP_TYPE = "CLASSIFICATION"
 
 @dataclass(frozen=True)
 class InspectionResultRow:
-    """기록 결과 projection — caller 가 후속 INSP_COMPLETED publish 시 사용."""
+    """기록 결과 projection — caller 가 후속 task lifecycle 진행 시 사용."""
 
     insp_txn_id: int
     item_id: int
@@ -153,8 +153,7 @@ class InspectionResultCommand:
         """AI 서버 호출 실패 시 insp_task_txn 만 FAIL 로 종결.
 
         ai_inference_txn / insp_stat / item.is_defective 는 손대지 않는다 — 추론 결과가
-        없으므로. 다음 cycle 진입을 막지 않기 위해 호출자가 INSP_COMPLETED 를 publish
-        할지 결정한다 (단일 라인이라면 일반적으로 publish 함).
+        없으므로. 다음 cycle 진입은 ToPAWait/CONV_ALLOW_MOVE 가 별도 채널로 트리거.
         """
         if item_id <= 0:
             return

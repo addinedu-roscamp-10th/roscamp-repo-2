@@ -6,7 +6,7 @@ import logging
 from typing import Any
 
 from services.contracts.models import AdapterResult
-from services.contracts.protocols import IAdapter, IEventBridge
+from services.contracts.protocols import IAdapter
 from services.core.adapters.ai_adapter import AIAdapter
 from services.core.adapters.conv_adapter import ConvAdapter
 from services.core.adapters.mat_adapter import MatAdapter
@@ -21,16 +21,12 @@ class AdapterRouter(IAdapter):
     def __init__(
         self,
         ros2_runtime: Ros2Runtime | None = None,
-        event_bridge: IEventBridge | None = None,
     ) -> None:
         self._ros2_runtime = ros2_runtime
         self._mat_adapter = MatAdapter(ros2_runtime=ros2_runtime)
         self._pat_adapter = PatAdapter(ros2_runtime=ros2_runtime)
         self._tat_adapter = TATAdapter(ros2_runtime=ros2_runtime)
-        # 컨베이어 어댑터는 ToPAWait/CONV_ALLOW_MOVE 시점에 INSP_COMPLETED 를 publish
-        # 하여 Jetson 측 ESP32 모터 RUN 을 트리거하므로 event_bridge 주입.
-        # AI 어댑터는 DB 기록만 담당 (publish 책임 없음, 2026-05-12 변경).
-        self._conv_adapter = ConvAdapter(event_bridge=event_bridge)
+        self._conv_adapter = ConvAdapter()
         self._ai_adapter = AIAdapter()
 
     def start(self) -> None:

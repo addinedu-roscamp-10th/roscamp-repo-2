@@ -183,9 +183,9 @@ class EspBridge:
         self._handoff_thread.start()
         self._conveyor_thread.start()
         self._rfid_thread.start()
-        # 2026-05-08: EventGateway INSP_COMPLETED subscribe → ESP32 자동 RUN 명령.
-        # 검사 완료 → 컨베이어 모터 ON → 출구 방향 이동 (펌웨어 timer 4s 후 자동 STOPPED).
-        self._setup_event_gateway_subscribe()
+        # 2026-05-14: EventGateway INSP_COMPLETED 구독 경로 제거. 컨베이어 모터
+        # 명령은 모두 WatchConveyorCommands 채널 (CommandSubscriber) 로 일원화 —
+        # PP_DONE 1 차 "start" 와 ToPAWait/CONV_ALLOW_MOVE 2 차 "RUN" 둘 다 동일 경로.
 
     # ---------- internal ----------
     def _run(self) -> None:
@@ -543,47 +543,6 @@ class EspBridge:
                 )
         except Exception as e:  # noqa: BLE001
             log.warning("sensor state push 실패 url=%s body=%s err=%s", url, body, e)
-
-    # ---------- EventGateway subscribe (INSP_COMPLETED → ESP32 RUN, 2026-05-08) ----------
-    def _setup_event_gateway_subscribe(self) -> None:
-        """EventGateway 가 활성이면 INSP_COMPLETED 구독.
-
-        callback: 검사 완료 신호 로깅 + ``send_command("start")`` 로 ESP32 모터 ON.
-        펌웨어 1.7.0 RUN_DURATION_MS=4000 timer 후 자동 STOPPED → 다음 cycle 자동.
-        EventGateway 미활성이면 silent skip (기존 직접 명령 흐름 유지).
-        """
-        try:
-            from event_gateway_client import get_singleton
-
-            client = get_singleton()
-        except Exception:  # noqa: BLE001
-            return
-        if client is None:
-            log.info(
-                "[event_gateway] singleton 미활성 — INSP_COMPLETED subscribe skip",
-            )
-            return
-
-        def _on_inspection_done(decoded: dict) -> None:
-            payload = decoded.get("payload") or {}
-            item_id = payload.get("item_id")
-            result = payload.get("result")
-            log.info(
-                "[event_gateway] INSP_COMPLETED 수신 item_id=%s result=%s "
-                "→ ESP32 'start' dispatch (출구 방향 컨베이어 ON)",
-                item_id, result,
-            )
-            try:
-                self.send_command("start")
-            except Exception as exc:  # noqa: BLE001
-                log.warning(
-                    "[event_gateway] INSP_COMPLETED → send_command 실패: %s", exc,
-                )
-
-        client.subscribe("INSP_COMPLETED", _on_inspection_done)
-        log.info(
-            "[event_gateway] INSP_COMPLETED subscribe 등록 — Jetson 자동 ESP32 RUN",
-        )
 
     # ---------- EventGateway publish helper (2026-05-08) ----------
     def _publish_via_event_gateway(

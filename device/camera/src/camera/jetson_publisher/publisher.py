@@ -171,9 +171,6 @@ def _install_signal_handlers() -> None:
 
 def main() -> int:
     _install_signal_handlers()
-    # 2026-05-08: EventGateway client (sole channel to backend EventBridge).
-    # ESP bridge 가 시작 시 INSP_COMPLETED subscribe 를 등록하므로 bridge.start() 전에 init.
-    # EVENT_GATEWAY_ENABLED=0 또는 target 미설정이면 silent skip (기존 직접 RPC 흐름 유지).
     try:
         from event_gateway_client import init_singleton as _init_eg
 

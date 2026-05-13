@@ -1,44 +1,22 @@
-"""컨베이어 재가동 어댑터 — ToPAWait task 의 CONV_ALLOW_MOVE step 진입점.
-
-`ToPAWait` task 시퀀스:
-    1. NOOP
-    2. WAIT_SUBTASK_COMPLETED "tostrg" — AMR 이 `ToINSP` pose (컨베이어 출구 상차 대기)
-       에 도착할 때까지 차단
-    3. CONV_ALLOW_MOVE — 본 어댑터가 호출됨. 이 시점에서 `INSP_COMPLETED` 를
-       EventBridge 에 publish 한다. PR #9 의 EventGateway servicer 가 EventBridge
-       구독을 통해 Jetson `WatchEvents` 스트림으로 forward → Jetson `esp_bridge`
-       가 `INSP_COMPLETED` 수신 시 ESP32 `start` 명령 전송 → 컨베이어 4 초 RUN
-       → 주물이 출구에서 대기 중인 AMR 로 이송.
-
-설계 의도 (PR #11 안전성 강화):
-    - INSP_COMPLETED 를 AI 추론 직후 (ai_adapter) 가 publish 하면 AMR 도착 전에
-      컨베이어가 가동되어 주물이 unloading 위치로 떨어지면서도 AMR 이 없어
-      다음 공정으로 이송 불가. 본 어댑터로 publish 시점을 옮겨 AMR 도착이
-      ToPAWait step 2 에서 보장된 다음에만 컨베이어가 가동되도록 한다.
-    - publish 실패는 warning 로깅만. 어댑터 자체는 success 반환하여 task 흐름은
-      유지 (운영 정책: 다음 cycle 진입 차단 vs 진입 허용은 추후 결정).
-"""
-
 from __future__ import annotations
 
 import json
 import logging
 from datetime import datetime, timezone
 
-from services.contracts.enums import EventType
-from services.contracts.models import Event
-from services.contracts.protocols import IEventBridge
+from services.legacy.command_queue import ConveyorCmd, queue as command_queue
 
 logger = logging.getLogger(__name__)
 
 CONV_ACTION = "CONV_ALLOW_MOVE"
+ESP_RUN_COMMAND = "RUN"  # ESP32 펌웨어: ST_STOPPED → ST_POST_RUN 4 s 트리거
 
 
 class ConvAdapter:
-    """컨베이어 재가동 adapter — CONV_ALLOW_MOVE 수신 시 INSP_COMPLETED publish."""
+    """컨베이어 재가동 adapter — CONV_ALLOW_MOVE 수신 시 'RUN' 명령 enqueue."""
 
-    def __init__(self, event_bridge: IEventBridge | None = None) -> None:
-        self._event_bridge = event_bridge
+    def __init__(self) -> None:
+        pass
 
     def execute(
         self,
@@ -67,7 +45,7 @@ class ConvAdapter:
             if duration_sec < 0:
                 return (False, "invalid_duration_sec")
 
-        self._publish_inspection_completed(
+        self._enqueue_run_command(
             item_id=item_id, robot_id=robot_id, duration_sec=duration_sec,
         )
         return (True, "conv_allow_move_accepted")
@@ -76,42 +54,43 @@ class ConvAdapter:
         pass
 
     # ---------- internal ---------------------------------------------------
-    def _publish_inspection_completed(
+    def _enqueue_run_command(
         self,
         *,
         item_id: int,
         robot_id: str,
         duration_sec: float | None,
     ) -> None:
-        if self._event_bridge is None:
-            logger.info(
-                "ConvAdapter: event_bridge 미주입 — INSP_COMPLETED publish skip "
-                "item_id=%s",
-                item_id,
-            )
-            return
+        """ESP32 `RUN` 명령을 command_queue 에 적재.
+
+        실제 전송은 hardware_rpc.WatchConveyorCommands → Jetson CommandSubscriber 가 담당.
+        duration_sec 는 metadata 로 payload 에 포함 — ESP32 펌웨어가 직접 사용하지는 않고
+        (자체 POST_RUN_MS=4000 timer 사용) 로그 / 관측 목적.
+        """
+        payload: dict[str, float | int | str] = {
+            "source": "conv_adapter.CONV_ALLOW_MOVE",
+            "occurred_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if duration_sec is not None:
+            payload["duration_sec"] = duration_sec
         try:
-            self._event_bridge.publish(
-                Event(
-                    event_type=EventType.INSP_COMPLETED,
-                    item_id=item_id if item_id else None,
-                    res_id=robot_id,
-                    payload={
-                        "item_id": item_id,
-                        "res_id": robot_id,
-                        "duration_sec": duration_sec,
-                        "source": "conv_adapter.CONV_ALLOW_MOVE",
-                        "occurred_at": datetime.now(timezone.utc).isoformat(),
-                    },
+            command_queue.enqueue(
+                ConveyorCmd(
+                    robot_id=robot_id,
+                    command=ESP_RUN_COMMAND,
+                    payload=json.dumps(payload, ensure_ascii=True).encode("utf-8"),
+                    item_id=item_id or 0,
+                    issued_at_iso=payload["occurred_at"],  # type: ignore[arg-type]
+                    issued_by="conv_adapter.CONV_ALLOW_MOVE",
                 )
             )
             logger.info(
-                "ConvAdapter: INSP_COMPLETED published item_id=%s robot_id=%s "
+                "ConvAdapter: ConveyorCmd(RUN) enqueued item_id=%s robot_id=%s "
                 "duration_sec=%s",
                 item_id, robot_id, duration_sec,
             )
-        except Exception as exc:  # noqa: BLE001 — publish 실패가 task 흐름을 막지 않도록 격리
+        except Exception as exc:  # noqa: BLE001 — enqueue 실패가 task 흐름을 막지 않도록 격리
             logger.warning(
-                "ConvAdapter: INSP_COMPLETED publish 실패 item_id=%s exc=%s",
+                "ConvAdapter: ConveyorCmd(RUN) enqueue 실패 item_id=%s exc=%s",
                 item_id, exc,
             )

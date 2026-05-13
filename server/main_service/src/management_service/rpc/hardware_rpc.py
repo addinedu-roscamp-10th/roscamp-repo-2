@@ -161,7 +161,8 @@ class HardwareRpcMixin:
             3. EventBridge.publish(INSP_IMAGE_UPLOADED, payload={image_path, ...})
                → task_executor ToINSP task waiter 해제 → INSP task → AIAdapter
                → AI 결과 반환 → StateManager 가 DB 4-table 갱신
-               → INSP_COMPLETED publish (conv_adapter ToPAWait/CONV_ALLOW_MOVE) → 컨베이어 재가동
+               → ToPAWait/CONV_ALLOW_MOVE → command_queue.enqueue(ConveyorCmd("RUN"))
+               → WatchConveyorCommands stream → 컨베이어 재가동
             4. InspectionImageAck 즉시 반환
 
         AIAdapter 직접 호출은 본 핸들러에서 제거됨 (2026-05-13). EventBridge 단일 채널로

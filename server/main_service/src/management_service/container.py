@@ -48,7 +48,6 @@ class Container:
         self.ros2_runtime = Ros2Runtime()
         self.adapter = AdapterRouter(
             ros2_runtime=self.ros2_runtime,
-            event_bridge=self.event_bridge,
         )
         self.task_executor = TaskExecutor(
             adapter=self.adapter,
@@ -85,8 +84,9 @@ class Container:
         # AI 서버가 /inspect 요청 시 받은 image_url 로 GET 한다.
         self.http_image_server = HttpImageServer()
 
-        # PyQt ③ 후처리 완료 → 1회차 컨베이어 motor RUN 발신
-        # (사이클 후반 INSP_COMPLETED → 2회차 4초 RUN 은 ConvAdapter 가 별도 발신)
+        # PyQt ③ 후처리 완료 → 1회차 컨베이어 motor "start" 발신.
+        # 2회차 "RUN" (검사 후 4초 출구 운반) 은 ConvAdapter 가 ToPAWait/CONV_ALLOW_MOVE
+        # 시점에 동일 command_queue 채널 (WatchConveyorCommands) 로 enqueue.
         self._register_pp_done_motor_run()
 
         # PyQt ② RFID 스캔 버튼 → ITEM_LOOKUP_REQUESTED → 본 핸들러 → ITEM_LOOKUP_RESULT
@@ -501,8 +501,8 @@ class Container:
               → task_executor ToINSP waiter 해제 → INSP task → AI/DB chain.
 
         2회차 motor RUN (검사 완료 후 4초) 은 ConvAdapter.CONV_ALLOW_MOVE
-        → INSP_COMPLETED publish → esp_bridge._on_inspection_done 경로 (기존)
-        로 별도 처리 — 본 핸들러와 무관.
+        → command_queue.enqueue(ConveyorCmd("RUN")) → 동일 채널로 별도 처리.
+        본 핸들러와 무관.
 
         task_executor._on_external_wait_event 도 같은 EventType 을 subscribe 하지만
         EventBridge 는 handler 별로 격리 호출하므로 양쪽이 안전하게 공존

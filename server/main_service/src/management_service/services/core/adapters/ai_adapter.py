@@ -1,20 +1,3 @@
-"""AI 추론 어댑터 — AI 서버 호출 + 결과 반환 (DB 미관여).
-
-AdapterRouter 가 `action=AI_INFERENCE_REQUEST` 일 때 본 어댑터를 호출한다.
-execute() 의 책임은 다음으로 한정된다:
-
-    1. payload 검증 (image_path 또는 image_url + item_id)
-    2. AiInferenceCommand → AI 서버 multipart POST → 양/불 판정 결과 수신
-    3. 추론 결과를 AdapterResult.payload["inference"] 에 직렬화하여 반환
-
-본 어댑터는 EventBridge 도, DB 도 직접 사용하지 않는다. 추론 결과 영속화
-(insp_task_txn / ai_inference_txn / insp_stat / item.is_defective 4-table 갱신) 은
-호출자(task_executor) 가 state_manager.record_inspection_result 로 위임한다.
-
-INSP_COMPLETED publish 시점은 conv_adapter 의 ToPAWait/CONV_ALLOW_MOVE 단계로
-이전되어 있다 (commit 2593b9e). 본 어댑터는 publish 책임 없음.
-"""
-
 from __future__ import annotations
 
 import json

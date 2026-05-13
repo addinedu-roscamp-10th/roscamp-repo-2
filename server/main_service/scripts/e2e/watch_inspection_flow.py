@@ -224,9 +224,7 @@ def run_sim_mode(timeout_sec: int, keep_data: bool) -> int:
     from services.command.ai_inference_command import AiInferenceCommand
     from services.command.inspection_image_sink_command import InspectionImageSinkCommand
     from services.command.inspection_result_command import InspectionResultCommand
-    from services.contracts.enums import EventType
     from services.core.adapters.ai_adapter import AIAdapter
-    from services.core.event_bridge import EventBridgeImpl
 
     # 1. 가용 item 확보 — 없으면 임시 item INSERT (FK: ord 한 행 필요)
     temp_item_id: int | None = None
@@ -346,19 +344,13 @@ def run_sim_mode(timeout_sec: int, keep_data: bool) -> int:
         result_cmd.record_inspection_failure(item_id=item_id, reason=reason)
         print(f"  [SIM] InspectionResultCommand.record_inspection_failure reason={reason}")
 
-    # 5. ToPAWait/CONV_ALLOW_MOVE 시뮬레이션 — conv_adapter 가 INSP_COMPLETED publish
+    # 5. ToPAWait/CONV_ALLOW_MOVE 시뮬레이션 — conv_adapter 가 command_queue 로
+    # ConveyorCmd("RUN") enqueue (WatchConveyorCommands → Jetson Serial relay).
     # 실 HW 흐름에서는 AMR 이 ToINSP pose 도착 후 ToPAWait step 3 가 conv_adapter 호출.
-    # SIM 모드에서는 AMR 도착 보장이 이미 끝났다 가정하고 직접 호출하여 publish 검증.
     from services.core.adapters.conv_adapter import ConvAdapter
+    from services.legacy.command_queue import queue as command_queue
 
-    event_bridge = EventBridgeImpl()
-    captured_events: list = []
-    event_bridge.subscribe(
-        EventType.INSP_COMPLETED,
-        lambda evt: captured_events.append(evt),
-        subscriber_name="e2e_sim_spy",
-    )
-    conv = ConvAdapter(event_bridge=event_bridge)
+    conv = ConvAdapter()
     conv_ok, conv_msg = conv.execute(
         item_id=item_id,
         robot_id="CONV1",
@@ -366,14 +358,14 @@ def run_sim_mode(timeout_sec: int, keep_data: bool) -> int:
         payload=json.dumps({"duration_sec": 4.0}).encode("utf-8"),
     )
     print(f"  [SIM] ConvAdapter.execute(CONV_ALLOW_MOVE) → ok={conv_ok} msg={conv_msg}")
-    if captured_events:
-        evt = captured_events[0]
+    cmd = command_queue.wait_next(robot_id_filter=None, timeout=1.0)
+    if cmd is not None:
         print(
-            f"  [SIM] INSP_COMPLETED 수신 — item={evt.item_id} res_id={evt.res_id} "
-            f"source={evt.payload.get('source')}"
+            f"  [SIM] ConveyorCmd 수신 — robot_id={cmd.robot_id} command={cmd.command} "
+            f"item_id={cmd.item_id} issued_by={cmd.issued_by}"
         )
     else:
-        print("  ⚠ INSP_COMPLETED 이벤트 미수신 (conv_adapter publish 실패?)")
+        print("  ⚠ ConveyorCmd 미수신 (conv_adapter enqueue 실패?)")
 
     # 6. DB 4-table 검증
     with SessionLocal() as db:
