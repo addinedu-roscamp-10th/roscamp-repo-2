@@ -520,6 +520,11 @@ service ManagementService {
   // Jetson 은 로컬 EspBridge 로 Serial(115200) 을 통해 ESP32(HW Controller) 에 relay.
   // Management → gRPC(TCP) → Jetson → Serial → ESP32. MQTT 경로는 Phase D 에서 제거됨.
   rpc WatchConveyorCommands(WatchConveyorCommandsRequest) returns (stream ConveyorCommand);
+
+  // V6 Phase F: Jetson(Vision Controller) 가 TOF1 카메라 앞 detect 후 캡처한 검사용 이미지를
+  // Management 가 단일 종착점으로 영구 저장. raw JPEG bytes 단일 unary RPC (~150 KB / cycle 권장).
+  // idempotency_key 로 중복 업로드 차단. AI server forward 등 후속 처리는 backend 가 fan-out.
+  rpc UploadInspectionImage(InspectionImageUpload) returns (InspectionImageAck);
 }
 
 // -----------------------------------------------------------------------------
@@ -657,6 +662,27 @@ message ImageAck {
   uint64 sequence = 1;          // 처리한 마지막 sequence
   bool   accepted = 2;
   string message  = 3;
+}
+
+// -----------------------------------------------------------------------------
+// Inspection Image Upload (V6 Phase F, 2026-05-11)
+// Jetson(Vision Controller) 가 TOF1 카메라 앞 detect 후 단일 frame 캡처 →
+// Management 가 disk 영구 저장. ImagePublisher 의 stream 과 별개로 unary 방식.
+// -----------------------------------------------------------------------------
+
+message InspectionImageUpload {
+  int32     item_id         = 1;   // 검사 대상 item.item_id (없으면 0)
+  string    camera_id       = 2;   // 캡처 device 식별자 ("jetson-cam-01" 등)
+  string    stage           = 3;   // "INSP" / "POST_INSP" 등
+  bytes     jpeg_bytes      = 4;   // raw JPEG (~150KB 권장, gRPC 4MB 한도)
+  Timestamp captured_at     = 5;   // Jetson 측 캡처 시각
+  string    idempotency_key = 6;   // 중복 업로드 차단 (60s TTL)
+}
+
+message InspectionImageAck {
+  bool   accepted    = 1;
+  string stored_path = 2;          // backend 가 저장한 절대 경로
+  string reason      = 3;          // 거부 사유 또는 처리 메모
 }
 
 service ImagePublisherService {

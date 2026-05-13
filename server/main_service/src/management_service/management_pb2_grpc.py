@@ -173,6 +173,11 @@ class ManagementServiceStub(object):
                 request_serializer=management__pb2.WatchConveyorCommandsRequest.SerializeToString,
                 response_deserializer=management__pb2.ConveyorCommand.FromString,
                 _registered_method=True)
+        self.UploadInspectionImage = channel.unary_unary(
+                '/casting.management.v1.ManagementService/UploadInspectionImage',
+                request_serializer=management__pb2.InspectionImageUpload.SerializeToString,
+                response_deserializer=management__pb2.InspectionImageAck.FromString,
+                _registered_method=True)
 
 
 class ManagementServiceServicer(object):
@@ -363,6 +368,15 @@ class ManagementServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def UploadInspectionImage(self, request, context):
+        """V6 Phase F: Jetson(Vision Controller) 가 TOF1 카메라 앞 detect 후 캡처한 검사용 이미지를
+        Management 가 단일 종착점으로 영구 저장. raw JPEG bytes 단일 unary RPC (~150 KB / cycle 권장).
+        idempotency_key 로 중복 업로드 차단. AI server forward 등 후속 처리는 backend 가 fan-out.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_ManagementServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -500,6 +514,11 @@ def add_ManagementServiceServicer_to_server(servicer, server):
                     servicer.WatchConveyorCommands,
                     request_deserializer=management__pb2.WatchConveyorCommandsRequest.FromString,
                     response_serializer=management__pb2.ConveyorCommand.SerializeToString,
+            ),
+            'UploadInspectionImage': grpc.unary_unary_rpc_method_handler(
+                    servicer.UploadInspectionImage,
+                    request_deserializer=management__pb2.InspectionImageUpload.FromString,
+                    response_serializer=management__pb2.InspectionImageAck.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -1235,6 +1254,33 @@ class ManagementService(object):
             '/casting.management.v1.ManagementService/WatchConveyorCommands',
             management__pb2.WatchConveyorCommandsRequest.SerializeToString,
             management__pb2.ConveyorCommand.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def UploadInspectionImage(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/casting.management.v1.ManagementService/UploadInspectionImage',
+            management__pb2.InspectionImageUpload.SerializeToString,
+            management__pb2.InspectionImageAck.FromString,
             options,
             channel_credentials,
             insecure,
