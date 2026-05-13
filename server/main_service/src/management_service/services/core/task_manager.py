@@ -10,9 +10,21 @@ from services.contracts.protocols import ITaskManager , IStateManager
 logger = logging.getLogger(__name__)
 
 
+# ============================================================
+# 작업 우선순위표
+# ------------------------------------------------------------
+# 15점 : 배터리 저하로 인한 ToPP 작업 재할당
+# 10점 : 배터리 저하 AMR 충전소 이동 작업(ToCHG)
+# 10점 : 불량으로 인한 재생산 작업(MM)
+#  5점 : 일반 공정 작업(MM 제외)
+#  3점 : 출고 관련 작업(PICK, ToSHIP)
+#  0점 : 신규 주문 최초 작업(MM)
+# ============================================================
+
 class TaskManager(ITaskManager):
     MAX_COL = 6
     MAX_ROW = 3
+    SHIP_BATCH_SIZE = 3 
     
     def __init__(self, sm:IStateManager):
         self.sm = sm
@@ -20,6 +32,7 @@ class TaskManager(ITaskManager):
         self.slot_table: dict[tuple[int, int], dict] = {}  # 메모리 상의 보관랙
 
         self._init_slot_table()
+        self.ship_plans: dict[int, dict] = {}  #order_id별 출고 진행 상태
         #self.order_assigned_counts = {}#오더별로 할당된 양품 개수를 관리
 
     def _init_slot_table(self):
@@ -38,9 +51,9 @@ class TaskManager(ITaskManager):
 
 
     #오더 투입시 해당 오더가 사용할 적재 공간 예약
-    def reserve_rack_slots(self, order_id: int, start_pos: str, target_qty: int):
+    def reserve_rack_slots(self, order_id: int, start_pos: tuple[int, int], target_qty: int):
         """주문 투입 시 해당 오더가 사용할 슬롯들을 가상 랙에 예약한다."""
-        row, col = map(int, start_pos.split("-"))
+        row, col = start_pos
 
         assigned = 0
         current_abs_idx = (row - 1) * self.MAX_COL + (col - 1)
@@ -166,7 +179,7 @@ class TaskManager(ITaskManager):
             #        ))
             #    return task_results
             
-            elif event == "amr_battery_low_ToPP": #tochg = 10 dm =15 topp =15
+            elif event == "amr_battery_low_ToPP": #tochg = 10 topp =15
                 task_results.append(NextTaskResult(
                         item_id=item_info.item_id, 
                         txn_id=await self.sm.insert_task_txn(CreateTaskInput(item_id=item_info.item_id, task_type=TaskType.ToPP)),
@@ -175,7 +188,7 @@ class TaskManager(ITaskManager):
                     ))
                 return task_results
             
-            elif event == "amr_battery_low_ToCHG": #tochg = 10 dm =15 topp =15   주차자리 정하기
+            elif event == "amr_battery_low_ToCHG": #tochg = 10  topp =15   주차자리 정하기
                 chg_loc = await self.sm.get_empty_charger(item_info.req_res_id) ####사용가능한 주차 자리 1개 반환 및 예약
                 if chg_loc is None:
                     logger.warning(
@@ -256,7 +269,7 @@ class TaskManager(ITaskManager):
     
         return NextTaskResult(item_id=item_info.item_id, txn_id=curr_txn_id, task_type=task_type ) #proority = 0 
     
-    #적재위치계산 
+        #적재위치계산 
     async def _calculate_strg_loc(self, task_type: TaskType, item_info: ItemStatusRecord) -> str | None:
         if item_info.is_defective:
             return "DEFECTIVE_ZONE"
@@ -266,7 +279,7 @@ class TaskManager(ITaskManager):
                 if data["order_id"] == item_info.order_id and data["status"] == "Reserved":
                     data["status"] = "Assigned"
 
-                    strg_loc = f"{row}-{col}"
+                    strg_loc = (row, col)
 
                     await self.sm.update_item_storage_location(
                         item_info.item_id,
@@ -277,3 +290,105 @@ class TaskManager(ITaskManager):
 
         return item_info.strg_loc
     
+
+    #출고 객체 생성
+    async def create_ship_task(self, order_id: int, item_locations: list[tuple[int, int, int]], event: str = None) -> ShipTaskResult | None:
+        """
+        출고 전용 task 생성 함수.
+
+        event:
+        - None 또는 "ship_start"       : 첫 ToSHIP 생성
+        - "toship_src_arrived"         : 현재 batch PICK 생성
+        - "pick_done"                 : 현재 batch 제거 후 다음 ToSHIP 생성
+        """
+
+        # 최초 출고 시작 시에만 batch 생성
+        if order_id not in self.ship_plans:
+            if not item_locations:
+                logger.warning("출고 시작 실패: item_locations 없음 order_id=%s", order_id)
+                return None
+
+            self.ship_plans[order_id] = {  # 주문별 batches(아이템 3개씩 끊은 값) 
+                "batches": [
+                    item_locations[i:i + self.SHIP_BATCH_SIZE]
+                    for i in range(0, len(item_locations), self.SHIP_BATCH_SIZE)
+                ]
+            }
+
+            logger.info(  "출고 계획 생성: order_id=%s batches=%s",  order_id,  self.ship_plans[order_id]["batches"], )
+
+        plan = self.ship_plans.get(order_id)
+
+        if not plan or not plan["batches"]:
+            logger.warning("출고 계획 없음 또는 남은 batch 없음: order_id=%s", order_id)
+            self.ship_plans.pop(order_id, None)
+            return None
+
+        # 출고 시작 → 현재 batch ToSHIP 생성
+        if event is None or event == "ship_start":
+            return await self._create_ship_task(
+                order_id=order_id,
+                task_type=TaskType.ToSHIP,
+            )
+        # ToSHIP 출발지 도착 → 현재 batch PICK 생성
+        elif event == "toship_src_arrived":
+            return await self._create_ship_task(
+                order_id=order_id,
+                task_type=TaskType.PICK,
+            )
+        # PICK 완료 → 현재 batch 제거 후 다음 batch ToSHIP 생성
+        elif event == "pick_done":
+            finished_batch = plan["batches"].pop(0)
+
+            logger.info( "출고 batch 완료: order_id=%s finished_batch=%s", order_id, finished_batch, )
+
+            if not plan["batches"]:
+                logger.info("출고 작업 전체 완료: order_id=%s", order_id)
+                del self.ship_plans[order_id]
+                return None
+
+            return await self._create_ship_task(
+                order_id=order_id,
+                task_type=TaskType.ToSHIP,
+            )
+
+        else:
+            logger.warning("알 수 없는 출고 이벤트: order_id=%s event=%s", order_id, event)
+            return None
+        
+
+    async def _create_ship_task( self, order_id: int, task_type: TaskType, ) -> ShipTaskResult | None:
+        """
+        현재 batch 기준으로 ToSHIP 또는 PICK task 생성.
+
+        - ToSHIP: AMR 이동 작업이므로 batch 반환 안 함
+        - PICK: 로봇팔 작업이므로 batch 반환
+        """
+
+        plan = self.ship_plans.get(order_id)
+        current_batch = plan["batches"][0]
+
+        txn_id = await self.sm.insert_task_txn(
+            CreateTaskInput(
+                item_id=None,
+                task_type=task_type,
+                txn_stat=TxnStat.QUE,
+                res_id=None,
+            )
+        )
+
+        logger.info( "출고 task 생성: order_id=%s task_type=%s batch=%s", order_id, task_type,  current_batch, )
+
+        if task_type == TaskType.PICK:
+            return ShipTaskResult(
+                txn_id=txn_id,
+                task_type=task_type,
+                priority=3,
+                batch=current_batch,
+            )
+
+        return ShipTaskResult(
+            txn_id=txn_id,
+            task_type=task_type,
+            priority=3,
+        )

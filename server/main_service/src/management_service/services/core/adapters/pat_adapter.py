@@ -80,7 +80,7 @@ class PatAdapter:
 
         order = self._build_order(command, params)
         if order is None:
-            return (False, f"{command}_requires_strg_loc_id")
+            return (False, f"{command}_requires_strg_loc")
 
         self.start()
         if not self._started or self._client is None or self._goal_cls is None:
@@ -137,29 +137,32 @@ class PatAdapter:
         if command == self.DEFECT_ACTION:
             return 300
 
-        location = self._strg_location(params.get("strg_loc_id"))
+        location = self._storage_location(params.get("strg_loc"))
         if location is None:
             return None
-        floor, cell = location
+        row, col = location
         if command == self.PLACE_ACTION:
-            return 100 + floor * 10 + cell
+            return 100 + row * 10 + col
         if command == self.RETRIEVE_ACTION:
-            return 200 + floor * 10 + cell
+            return 200 + row * 10 + col
         return None
 
-    @staticmethod
-    def _strg_location(raw: Any | None) -> tuple[int, int] | None:
+    @classmethod
+    def _storage_location(cls, raw: Any | None) -> tuple[int, int] | None:
         if raw is None:
             return None
-        try:
-            loc_id = int(raw)
-        except (TypeError, ValueError):
-            return None
-        if loc_id < 1 or loc_id > PatAdapter._STRG_SLOT_COUNT:
-            return None
-        floor = ((loc_id - 1) // PatAdapter._STRG_COLUMNS) + 1
-        cell = ((loc_id - 1) % PatAdapter._STRG_COLUMNS) + 1
-        return (floor, cell)
+        if isinstance(raw, (tuple, list)) and len(raw) == 2:
+            try:
+                row = int(raw[0])
+                col = int(raw[1])
+            except (TypeError, ValueError):
+                return None
+            if row < 1 or row > (cls._STRG_SLOT_COUNT // cls._STRG_COLUMNS):
+                return None
+            if col < 1 or col > cls._STRG_COLUMNS:
+                return None
+            return (row, col)
+        return None
 
     def close(self) -> None:
         if self._node is None:
