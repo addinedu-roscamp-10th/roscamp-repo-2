@@ -20,24 +20,33 @@ case "${1:-}" in
     ;;
 esac
 
+TERMS_PIDS_FILE="/tmp/smartcast_terms.pids"
+# 이전 실행 PID 파일 초기화
+rm -f "$TERMS_PIDS_FILE"
+
 open_terminal() {
   local title="$1"
   local command="$2"
   local hold_command
-  printf -v hold_command 'cd %q; %s; status=$?; echo; echo "[%s] exited with status ${status}"; read -r -p "Press Enter to close..."' "$ROOT" "$command" "$title"
+  # $$ (bash PID) 를 파일에 기록 → stop-all.sh 에서 창 닫기에 사용
+  printf -v hold_command \
+    'echo $$ >> %q; cd %q; %s; status=$?; echo; echo "[%s] exited (status=${status})"; read -r -p "Press Enter to close..."' \
+    "$TERMS_PIDS_FILE" "$ROOT" "$command" "$title"
 
+  # gnome-terminal 은 클라이언트-서버 구조라 & 없이도 즉시 반환.
+  # 에러는 stderr 에 출력되므로 >/dev/null 2>&1 제거 → 실패 시 exit code 감지 가능.
   if command -v gnome-terminal >/dev/null 2>&1; then
-    gnome-terminal --title="$title" -- bash -lc "$hold_command" >/dev/null 2>&1 &
+    gnome-terminal --title="$title" -- bash -lc "$hold_command" 2>/dev/null
   elif command -v konsole >/dev/null 2>&1; then
-    konsole --new-tab --title "$title" -e bash -lc "$hold_command" >/dev/null 2>&1 &
+    konsole --new-tab --title "$title" -e bash -lc "$hold_command" 2>/dev/null &
   elif command -v xfce4-terminal >/dev/null 2>&1; then
-    xfce4-terminal --title="$title" --command="bash -lc $(printf '%q' "$hold_command")" >/dev/null 2>&1 &
+    xfce4-terminal --title="$title" --command="bash -lc $(printf '%q' "$hold_command")" 2>/dev/null &
   elif command -v mate-terminal >/dev/null 2>&1; then
-    mate-terminal --title="$title" -- bash -lc "$hold_command" >/dev/null 2>&1 &
+    mate-terminal --title="$title" -- bash -lc "$hold_command" 2>/dev/null &
   elif command -v lxterminal >/dev/null 2>&1; then
-    lxterminal --title="$title" -e bash -lc "$hold_command" >/dev/null 2>&1 &
+    lxterminal --title="$title" -e bash -lc "$hold_command" 2>/dev/null &
   elif command -v xterm >/dev/null 2>&1; then
-    xterm -T "$title" -e bash -lc "$hold_command" >/dev/null 2>&1 &
+    xterm -T "$title" -e bash -lc "$hold_command" 2>/dev/null &
   else
     return 1
   fi

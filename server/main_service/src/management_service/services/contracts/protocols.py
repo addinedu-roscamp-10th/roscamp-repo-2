@@ -1,5 +1,5 @@
 
-from typing import Protocol, Dict, Any, List, Optional
+from typing import Protocol, Dict, Any, List, Optional, Callable
 
 from .enums import EventType, TaskType
 from .models import *
@@ -24,10 +24,18 @@ class IOrchestrator(Protocol):
 class ITaskManager(Protocol):
 
     ##orchestrator가 사용하는 인터페이스
-    def reserve_rack_slots(self, order_id: int, start_pos: str): 
+    def reserve_rack_slots(self, order_id: int, start_pos: tuple[int, int], target_qty:int): 
         ...
     
     async def create_next_task(self, item_info: ItemStatusRecord ,eventMsg: Optional[str] = None) -> List[NextTaskResult]: 
+        ...
+
+    async def create_ship_task(
+        self,
+        order_id: int,
+        item_locations: List[tuple[int, int, int]],
+        event: Optional[str] = None,
+    ) -> ShipTaskResult | None:
         ...
 
     def reissue_task_on_error(self, item_info: ItemStatusRecord) -> List[NextTaskResult]: 
@@ -45,6 +53,9 @@ class ITaskExecutor(Protocol):
         ...
 
     async def handle_emergency_return(self, item_id: int, amr_id: str, arm_id: str) -> None:
+        ...
+
+    async def return_amr_to_charger(self, res_id: str, source: str | None = None) -> bool:
         ...
 
 class IAdapter(Protocol):
@@ -69,12 +80,6 @@ class IStateManager(Protocol):
         ...
         
     def add_task(self, task: Dict[str, Any]) -> str:
-        ...
-        
-    def find_available_res(self, res_type: str, task_type: str | None = None) -> str | None:
-        ...
-
-    def get_res_available_for_item(self, res_id: str, item_id: int | None = None) -> bool:
         ...
         
     def update_task_allocation(self, assign_input: AllocateTaskResInput) -> None:
@@ -119,6 +124,9 @@ class IStateManager(Protocol):
 
     async def get_item(self, item_id: int) -> ItemStatusRecord:
         ...
+
+    async def get_items_by_order(self, ord_id: int) -> list[ItemStatusRecord]:
+        ...
         
     ##Task Allocator가 사용하는 인터페이스
     async def get_available_resources(self, req_res_type: str) -> list[str]:
@@ -128,6 +136,17 @@ class IStateManager(Protocol):
         ...
 
     async def update_task_allocation(self, assign_input: AllocateTaskResInput) -> None:
+        ...
+
+    def is_res_available(self, res_id: str) -> bool:
+        ...
+
+    def update_amr_charger_return_state(
+        self,
+        res_id: str,
+        status: str,
+        source: str | None = None,
+    ) -> None:
         ...
 
     ##Task Executor가 사용하는 인터페이스
@@ -165,7 +184,27 @@ class IStateManager(Protocol):
     async def create_empty_item(self, order_id: int) -> int:
         ...
 
-    async def get_empty_charger(self, res_id: str | None = None) -> str | None:
+    async def get_empty_start_slot(self, target_qty: int) -> tuple[int, int] | None:
+        ...
+
+    async def get_order_target_qty(self, ord_id: int) -> int | None:
+        ...
+
+    def reserve_storage_slots(
+        self,
+        start_pos: tuple[int, int],
+        target_qty: int,
+    ) -> int | None:
+        ...
+
+    async def update_item_storage_location(
+        self,
+        item_id: int,
+        strg_loc: tuple[int, int] | str,
+    ) -> None:
+        ...
+
+    async def get_empty_charger(self, res_id: str | None = None) -> tuple[int, int] | None:
         ...
     
 

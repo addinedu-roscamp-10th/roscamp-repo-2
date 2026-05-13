@@ -67,7 +67,10 @@
         <node pkg="tat_bringup" exec="battery_publisher">
         </node>
 
-        <include file="$(find-pkg-share aruco_node)/launch/aruco_marker_pose_node.launch.xml"/>
+        <include file="$(find-pkg-share aruco_node)/launch/aruco_marker_pose_node.launch.xml">
+            <arg name="namespace" value="$(var namespace)"/>
+            <arg name="frame_prefix" value="$(var frame_prefix_resolved)"/>
+        </include>
     </group>
 
 </launch>

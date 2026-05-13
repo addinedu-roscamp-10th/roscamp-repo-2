@@ -1,260 +1,77 @@
-"""factory_map 위젯 — FactoryMapScene (5구역 그리기 + AMR 마커 보간 애니메이션).
+"""factory_map 위젯 — FactoryMapScene (이미지 배경 + AMR 마커 보간 애니메이션).
 
-5구역: Postprocessing, Outbound, Storage, Charging, Casting.
-update_equipment(amrs) → AMR 마커 위치/색상 갱신 + _tick_animation 가 100ms 마다 보간.
+real_maplayout.png 를 배경으로 깔고, _SimController 가 AMR/주물 시뮬레이션을 오버레이.
+update_equipment(amrs) → 실제 API AMR 마커 갱신 + _tick_animation(100ms) 이 보간 이동.
 enable_sim=True 면 _SimController 시작 (메인 맵에서만 활성).
-
-2026-04-27: factory_map.py (1069 LOC) 분할 산출.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from PyQt5.QtCore import QPointF, Qt, QTimer
-from PyQt5.QtGui import QBrush, QColor, QFont, QLinearGradient, QPainterPath, QPen
+from PyQt5.QtGui import QBrush, QColor, QFont, QPen, QPixmap
 from PyQt5.QtWidgets import (
-    QGraphicsEllipseItem,
     QGraphicsRectItem,
     QGraphicsScene,
     QGraphicsSimpleTextItem,
 )
 
 from ._constants import (
-    BG_COLOR,
-    CHARGING_BG,
-    CONVEYOR_COLOR,
-    MOLD_COLOR,
-    OUTBOUND_GRAD_BOT,
-    OUTBOUND_GRAD_TOP,
-    RED_BLOCK,
     SCENE_H,
     SCENE_W,
     STATUS_COLORS,
     _status_key,
 )
-from ._drawing import _add_box, _add_cobot, _add_label, _add_worker, _add_zone
 from .sim import _SimController
+
+_ASSETS = Path(__file__).parent.parent.parent / "assets"
 
 
 class FactoryMapScene(QGraphicsScene):
-    """공장 레이아웃 씬 — 이미지 기반 5구역 배치."""
+    """공장 레이아웃 씬 — 이미지 배경 + AMR 마커 보간 애니메이션."""
 
-    # 2026-04-27 성능 패치: 30ms(33fps) → 100ms(10fps). AMR 마커 보간 애니메이션은
-    # 사람 눈에 60fps 가 필요 없고, 두 개의 mini map + 메인 맵이 동시에 돌면
-    # CPU 4 ~ 8% 상시 점유 → GUI 전체 레이턴시 증가. 10fps 로 충분히 부드러움.
     ANIMATION_INTERVAL_MS = 100
     ANIMATION_STEP = 0.12
 
     def __init__(self, enable_sim: bool = True) -> None:
         super().__init__()
-        self.setBackgroundBrush(QBrush(QColor(BG_COLOR)))
         self.setSceneRect(0, 0, SCENE_W, SCENE_H)
         self._amr_state: dict[str, dict[str, Any]] = {}
 
-        self._draw_all()
+        self._draw_background()
 
         self._anim_timer = QTimer()
         self._anim_timer.setInterval(self.ANIMATION_INTERVAL_MS)
         self._anim_timer.timeout.connect(self._tick_animation)
         self._anim_timer.start()
 
-        # 시뮬레이션은 메인 맵에서만 — mini map 은 enable_sim=False 로 비활성화.
-        # _SimController 는 200ms 주기로 FSM tick + 다수의 그래픽 아이템 업데이트 →
-        # mini map 두 개 (대시보드 + map page background) 가 동시에 돌면 부하 누적.
         self._sim: _SimController | None = None
         if enable_sim:
             self._sim = _SimController(self)
             self._sim.start()
 
-    # ------------------------------------------------------------------
-    # 전체 그리기
-    # ------------------------------------------------------------------
-    def _draw_all(self) -> None:
-        # 전체 외곽선
-        outer = QGraphicsRectItem(5, 5, SCENE_W - 10, SCENE_H - 10)
-        outer.setPen(QPen(QColor("#333333"), 2))
-        outer.setBrush(QBrush(Qt.NoBrush))
-        outer.setZValue(0)
-        self.addItem(outer)
-
-        self._draw_postprocessing_zone()
-        self._draw_outbound_zone()
-        self._draw_storage_zone()
-        self._draw_charging_zone()
-        self._draw_casting_zone()
+    def _draw_background(self) -> None:
+        img_path = _ASSETS / "real_maplayout.png"
+        pixmap = QPixmap(str(img_path))
+        if pixmap.isNull():
+            self.setBackgroundBrush(QBrush(QColor("#e8e8e8")))
+            return
+        item = self.addPixmap(pixmap)
+        item.setZValue(0)
 
     # ------------------------------------------------------------------
-    # 1) Postprocessing zone (좌상단)
-    # ------------------------------------------------------------------
-    def _draw_postprocessing_zone(self) -> None:
-        zx, zy, zw, zh = 20, 25, 680, 210
-        _add_zone(self, zx, zy, zw, zh, "Postprocessing zone")
-
-        # Worker 구역 (회색 박스)
-        wx, wy, ww, wh = 40, 65, 160, 150
-        worker_box = QGraphicsRectItem(wx, wy, ww, wh)
-        worker_box.setBrush(QBrush(QColor("#c8c8c8")))
-        worker_box.setPen(QPen(QColor("#999999"), 1))
-        worker_box.setZValue(5)
-        self.addItem(worker_box)
-
-        _add_worker(self, 90, 75, "Unloading\nWorker")
-        _add_worker(self, 160, 75, "Postprocessing\nWorker")
-
-        # 컨베이어 (초록 직사각형)
-        conv = QGraphicsRectItem(220, 95, 280, 45)
-        conv.setBrush(QBrush(QColor(CONVEYOR_COLOR)))
-        conv.setPen(QPen(QColor("#1a6b1a"), 2))
-        conv.setZValue(10)
-        self.addItem(conv)
-
-        # Conveyor Waiting Zone 라벨
-        _add_label(self, 520, 85, "Conveyor\nWaiting\nZone")
-
-    # ------------------------------------------------------------------
-    # 2) Outbound zone (우상단)
-    # ------------------------------------------------------------------
-    def _draw_outbound_zone(self) -> None:
-        zx, zy, zw, zh = 1050, 25, 230, 190
-        _add_zone(self, zx, zy, zw, zh, "Outbound zone")
-
-        # 은색 그라데이션 사각형
-        grad_rect = QGraphicsRectItem(1070, 55, 190, 140)
-        gradient = QLinearGradient(1070, 55, 1260, 195)
-        gradient.setColorAt(0, QColor(OUTBOUND_GRAD_TOP))
-        gradient.setColorAt(1, QColor(OUTBOUND_GRAD_BOT))
-        grad_rect.setBrush(QBrush(gradient))
-        grad_rect.setPen(QPen(QColor("#888888"), 1))
-        grad_rect.setZValue(10)
-        self.addItem(grad_rect)
-
-    # ------------------------------------------------------------------
-    # 3) Storage zone (좌하단)
-    # ------------------------------------------------------------------
-    def _draw_storage_zone(self) -> None:
-        zx, zy, zw, zh = 20, 280, 420, 345
-        _add_zone(self, zx, zy, zw, zh, "Storage zone")
-
-        # Defect Box
-        _add_box(self, 45, 320, 80, 50, "Defect\nBox", 8)
-
-        # 빨간 사각형 (불량품)
-        red1 = QGraphicsRectItem(145, 370, 55, 40)
-        red1.setBrush(QBrush(QColor(RED_BLOCK)))
-        red1.setPen(QPen(QColor("#cc0000"), 1))
-        red1.setZValue(10)
-        self.addItem(red1)
-
-        # Outbound Waiting Zone
-        _add_label(self, 255, 310, "Outbound\nWaiting\nZone")
-
-        # Putaway Waiting Zone
-        _add_label(self, 275, 400, "Putaway\nWaiting\nZone")
-
-        # Cobot B
-        _add_cobot(self, 170, 450, 35, "B")
-
-        # Good product storage rack (호 모양 — 간략화: 큰 반원)
-        path = QPainterPath()
-        path.moveTo(45, 560)
-        path.cubicTo(45, 480, 145, 480, 145, 560)
-        path_item = self.addPath(path, QPen(QColor("#333333"), 2), QBrush(QColor("#ffffff")))
-        path_item.setZValue(10)
-
-        # Good product storage rack 라벨
-        font = QFont("Sans", 7)
-        rack_txt = QGraphicsSimpleTextItem("Good product\nstorage rack")
-        rack_txt.setFont(font)
-        rack_txt.setBrush(QBrush(QColor("#000000")))
-        rack_txt.setPos(50, 565)
-        rack_txt.setZValue(11)
-        self.addItem(rack_txt)
-
-    # ------------------------------------------------------------------
-    # 4) Charging zone (중앙 하단)
-    # ------------------------------------------------------------------
-    def _draw_charging_zone(self) -> None:
-        zx, zy, zw, zh = 480, 440, 380, 175
-        _add_zone(self, zx, zy, zw, zh, "Charging zone")
-
-        # 충전 스테이션 배경 (회색)
-        station = QGraphicsRectItem(500, 470, 340, 125)
-        station.setBrush(QBrush(CHARGING_BG))
-        station.setPen(QPen(QColor("#999999"), 1))
-        station.setZValue(5)
-        self.addItem(station)
-
-        # AMR 3대는 _SimAMR(AMR-001/002/003)이 시뮬레이션에서 관리
-
-    # ------------------------------------------------------------------
-    # 5) Casting zone (우측, 세로)
-    # ------------------------------------------------------------------
-    def _draw_casting_zone(self) -> None:
-        zx, zy, zw, zh = 900, 250, 380, 375
-        _add_zone(self, zx, zy, zw, zh, "Casting zone")
-
-        # Casting Waiting Zone (노란 라벨)
-        _add_label(self, 940, 280, "Casting\nWaiting\nZone")
-
-        # Melting Furnace (파란 테두리 박스)
-        _add_box(self, 1190, 275, 75, 50, "Melting\nFurnace", 8, bg="#dce8f5", border="#6688aa")
-
-        # Mold (하늘색 세로 직사각형)
-        mold = QGraphicsRectItem(910, 430, 35, 100)
-        mold.setBrush(QBrush(QColor(MOLD_COLOR)))
-        mold.setPen(QPen(QColor("#7799bb"), 1))
-        mold.setZValue(10)
-        self.addItem(mold)
-        mold_txt = QGraphicsSimpleTextItem("Mold")
-        mold_txt.setFont(QFont("Sans", 7))
-        mold_txt.setBrush(QBrush(QColor("#000000")))
-        mold_txt.setPos(912, 470)
-        mold_txt.setZValue(11)
-        mold_txt.setRotation(90)
-        self.addItem(mold_txt)
-
-        # Cobot A
-        _add_cobot(self, 1080, 430, 30, "A")
-
-        # 빨간 사각형 (주조물)
-        red2 = QGraphicsRectItem(1140, 410, 45, 50)
-        red2.setBrush(QBrush(QColor(RED_BLOCK)))
-        red2.setPen(QPen(QColor("#cc0000"), 1))
-        red2.setZValue(10)
-        self.addItem(red2)
-
-        # 작은 원 2개 (소형 장비)
-        for cy in [395, 445]:
-            sm = QGraphicsEllipseItem(1000 - 8, cy - 8, 16, 16)
-            sm.setBrush(QBrush(QColor("#ffffff")))
-            sm.setPen(QPen(QColor("#333333"), 1))
-            sm.setZValue(10)
-            self.addItem(sm)
-
-        # Patterns (작은 박스 3개 + 라벨)
-        for py in [500, 530, 560]:
-            _add_box(self, 1130, py, 50, 22, "", 7)
-        patterns_txt = QGraphicsSimpleTextItem("Patterns")
-        patterns_txt.setFont(QFont("Sans", 8))
-        patterns_txt.setBrush(QBrush(QColor("#000000")))
-        patterns_txt.setPos(1195, 535)
-        patterns_txt.setZValue(11)
-        self.addItem(patterns_txt)
-
-    # ------------------------------------------------------------------
-    # 장비 갱신 (외부 호출)
+    # 장비 갱신 (외부 호출 — 실제 API 데이터)
     # ------------------------------------------------------------------
     def update_equipment(self, equipment: list[dict[str, Any]]) -> None:
-        # AMR actors are owned by _SimController. Drawing equipment AMRs here
-        # creates a second fleet on top of the simulation map.
+        # _SimController 가 AMR 을 소유하므로 API 마커와 충돌하지 않도록 클리어만.
         self._clear_equipment_amr_markers()
 
     def _update_amr_markers(self, amrs: list[dict[str, Any]]) -> None:
         seen: set[str] = set()
-        # Charging zone 좌표 기준
-        charge_x_start, charge_y = 560, 520
-        charge_spacing = 110
+        charge_x_start, charge_y = 497, 471
+        charge_spacing = 98
 
         for idx, amr in enumerate(amrs):
             amr_id = str(amr.get("id", ""))
@@ -291,7 +108,8 @@ class FactoryMapScene(QGraphicsScene):
                 label.setPos(-lr.width() / 2, -lr.height() / 2)
 
                 trail = self.addLine(
-                    target_x, target_y, target_x, target_y, QPen(QColor(color), 2, Qt.DashLine)
+                    target_x, target_y, target_x, target_y,
+                    QPen(QColor(color), 2, Qt.DashLine),
                 )
                 trail.setZValue(40)
 

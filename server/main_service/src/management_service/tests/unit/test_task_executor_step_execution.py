@@ -131,7 +131,7 @@ def test_execute_step_injects_charger_pose_for_charge_return_steps_without_pose_
 
     async def scenario() -> None:
         adapter = _RecordingAdapter()
-        state_manager = _RecordingStateManager(charger_slot="1-2")
+        state_manager = _RecordingStateManager(charger_slot=(1, 2))
         executor = TaskExecutor(adapter, state_manager, None)
         step = CommandStep(step_id=1, action="dock_robot", params={})
 
@@ -169,7 +169,7 @@ def test_execute_step_fails_when_charger_pose_mapping_is_missing() -> None:
     """충전 위치는 받았지만 도킹 목적지로 바꾸지 못하면 실패 처리한다."""
 
     async def scenario() -> None:
-        executor = TaskExecutor(_RecordingAdapter(), _RecordingStateManager(charger_slot="9-9"), None)
+        executor = TaskExecutor(_RecordingAdapter(), _RecordingStateManager(charger_slot=(9, 9)), None)
         step = CommandStep(step_id=1, action="dock_robot", params={})
 
         result = await executor._execute_step(_execute_input(TaskType.ToCHG), step)
@@ -216,7 +216,7 @@ def test_execute_task_runs_tochg_sequence_with_injected_charge_pose(
     async def scenario() -> None:
         monkeypatch.setattr(asyncio, "sleep", fake_sleep)
         adapter = _RecordingAdapter()
-        state_manager = _RecordingStateManager(charger_slot="1-2")
+        state_manager = _RecordingStateManager(charger_slot=(1, 2))
         executor = TaskExecutor(adapter, state_manager, None)
 
         result = await executor.execute_task(_execute_input(TaskType.ToCHG))
@@ -239,10 +239,10 @@ def test_execute_task_runs_tochg_sequence_with_injected_charge_pose(
     asyncio.run(scenario())
 
 
-def test_execute_task_runs_topp_sequence_and_injects_charge_pose_on_last_step(
+def test_execute_task_runs_topp_sequence_without_inline_charge_return(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """ToPP 전체 실행은 중간 대기 단계를 지나 마지막 충전 복귀 목적지를 주입해 실행한다."""
+    """ToPP 전체 실행은 업무 이동까지만 수행하고 충전 복귀는 포함하지 않는다."""
 
     async def fake_sleep(_: float) -> None:
         return None
@@ -256,7 +256,7 @@ def test_execute_task_runs_topp_sequence_and_injects_charge_pose_on_last_step(
     async def scenario() -> None:
         monkeypatch.setattr(asyncio, "sleep", fake_sleep)
         adapter = _RecordingAdapter()
-        state_manager = _RecordingStateManager(charger_slot="1-3")
+        state_manager = _RecordingStateManager(charger_slot=(1, 3))
         executor = TaskExecutor(adapter, state_manager, _event_bridge())
         monkeypatch.setattr(executor, "_wait_for_task_completed", fake_wait_task_completed)
         monkeypatch.setattr(executor, "_wait_for_subtask_completed", fake_wait_subtask_completed)
@@ -264,8 +264,8 @@ def test_execute_task_runs_topp_sequence_and_injects_charge_pose_on_last_step(
         result = await executor.execute_task(_execute_input(TaskType.ToPP))
 
         assert result.final_status == TxnStat.SUCC
-        assert result.steps_executed == 5
-        assert state_manager.charger_requests == ["TAT2"]
+        assert result.steps_executed == 3
+        assert state_manager.charger_requests == []
         assert adapter.calls == [
             {
                 "res_id": "TAT2",
@@ -276,11 +276,6 @@ def test_execute_task_runs_topp_sequence_and_injects_charge_pose_on_last_step(
                 "res_id": "TAT2",
                 "action": "dock_robot",
                 "params": {"pose_name": "ToPP"},
-            },
-            {
-                "res_id": "TAT2",
-                "action": "dock_robot",
-                "params": {"pose_name": "ToCHG3"},
             },
         ]
         assert state_manager.status_updates == [
