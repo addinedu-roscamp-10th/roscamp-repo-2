@@ -11,6 +11,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   fetchOrderDetails,
   fetchOrders,
+  startShipping,
   updateOrderStatus,
 } from "@/lib/api";
 import type { Order, OrderDetail, OrderStatus } from "@/lib/types";
@@ -68,6 +69,23 @@ export default function OrdersPage() {
       setSelectedOrder(updated);
     } catch (err) {
       alert(err instanceof Error ? err.message : "상태 변경 실패");
+    } finally {
+      setActionLoading(false);
+    }
+  }, []);
+
+  // 출하 시작 — TAT 가 적재장에서 출하장으로 운반을 시작한다.
+  // orchestrator.start_shipping 호출 → 운반 완료 시 orchestrator 가 SHIP→COMP 자체 전이.
+  const handleStartShipping = useCallback(async (orderId: string) => {
+    try {
+      setActionLoading(true);
+      const result = await startShipping(orderId);
+      const summary = result.itemIds.length
+        ? `출하 시작: ${result.itemIds.length}개 item TAT 운반 task 가 스케줄링되었습니다.`
+        : (result.message || "출하 가능한 item 이 없습니다. PyQt 적재 상태를 확인하세요.");
+      alert(summary);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "출하 시작 실패");
     } finally {
       setActionLoading(false);
     }
@@ -219,6 +237,7 @@ export default function OrdersPage() {
                 order={selectedOrder}
                 details={selectedDetails}
                 onStatusChange={handleStatusChange}
+                onStartShipping={handleStartShipping}
                 actionLoading={actionLoading}
               />
             )

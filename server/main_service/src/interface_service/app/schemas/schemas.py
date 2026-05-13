@@ -324,6 +324,12 @@ class ProductionStartRequest(BaseModel):
     ord_id: int
 
 
+class ShippingStartRequest(BaseModel):
+    """출하 트리거 — 적재완료 상태 (ord_stat=SHIP) 인 발주에 대해서만 의미가 있다."""
+
+    ord_id: int
+
+
 # =====================
 # Customer 폼 (이메일 기반, user_id 자동 upsert)
 # =====================

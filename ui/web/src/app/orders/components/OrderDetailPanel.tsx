@@ -2,12 +2,12 @@
 
 import {
   Calculator,
-  CheckCircle,
   Factory,
   FileText,
   Layers,
   Loader2,
   MapPin,
+  PackageCheck,
   Phone,
   ThumbsDown,
   ThumbsUp,
@@ -22,6 +22,10 @@ interface OrderDetailPanelProps {
   order: Order;
   details: OrderDetail[];
   onStatusChange: (orderId: string, status: OrderStatus) => void;
+  /** 출하 시작 핸들러 — shipping_ready 상태에서 TAT 출하 task 를 trigger.
+   *  page.tsx 에서 startShipping API 를 호출하는 useCallback 으로 전달된다.
+   */
+  onStartShipping?: (orderId: string) => void | Promise<void>;
   actionLoading: boolean;
 }
 
@@ -31,6 +35,7 @@ export function OrderDetailPanel({
   order,
   details,
   onStatusChange,
+  onStartShipping,
   actionLoading,
 }: OrderDetailPanelProps) {
   const statusInfo = orderStatusMap[order.status];
@@ -356,27 +361,24 @@ export function OrderDetailPanel({
                 </button>
               )}
               {order.status === "production_completed" && (
-                <button
-                  type="button"
-                  disabled={actionLoading}
-                  onClick={() => onStatusChange(order.id, "shipping_ready")}
-                  className="flex-1 flex items-center justify-center gap-2 py-3 px-4 bg-purple-600 text-white rounded-lg font-semibold text-base hover:bg-purple-700 transition-colors shadow-sm disabled:opacity-50"
-                  title="생산이 완료된 주문을 출고 단계로 전환합니다. 출고 시각이 자동 기록됩니다."
+                <div
+                  className="flex-1 flex items-center justify-center gap-2 py-3 px-4 bg-purple-50 border border-purple-200 text-purple-800 rounded-lg font-medium text-sm"
+                  title="적재 완료(SHIP) 전환은 PyQt 적재 화면에서 수행하고, 본 화면은 그 다음 단계의 출하 시작 버튼을 노출합니다."
                 >
-                  {actionLoading ? <Loader2 size={16} className="animate-spin" /> : <Truck size={16} />}
-                  출고 처리
-                </button>
+                  <PackageCheck size={16} className="text-purple-600" />
+                  생산 완료 — 출고 시작은 PyQt 화면에서 적재 완료 상태에서 진행합니다
+                </div>
               )}
               {order.status === "shipping_ready" && (
                 <button
                   type="button"
-                  disabled={actionLoading}
-                  onClick={() => onStatusChange(order.id, "completed")}
+                  disabled={actionLoading || !onStartShipping}
+                  onClick={() => onStartShipping?.(order.id)}
                   className="flex-1 flex items-center justify-center gap-2 py-3 px-4 bg-emerald-600 text-white rounded-lg font-semibold text-base hover:bg-emerald-700 transition-colors shadow-sm disabled:opacity-50"
-                  title="출고가 완료되어 주문을 최종 완료 처리합니다."
+                  title="TAT 가 적재장에서 주물을 가지고 출하장으로 이동합니다 (orchestrator.start_shipping)."
                 >
-                  {actionLoading ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle size={16} />}
-                  출고 완료
+                  {actionLoading ? <Loader2 size={16} className="animate-spin" /> : <Truck size={16} />}
+                  출하 시작 (TAT 운반)
                 </button>
               )}
             </div>

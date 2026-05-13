@@ -43,6 +43,11 @@ class ManagementServiceStub(object):
                 request_serializer=management__pb2.StartProductionRequest.SerializeToString,
                 response_deserializer=management__pb2.StartProductionResponse.FromString,
                 _registered_method=True)
+        self.StartShipping = channel.unary_unary(
+                '/casting.management.v1.ManagementService/StartShipping',
+                request_serializer=management__pb2.StartShippingRequest.SerializeToString,
+                response_deserializer=management__pb2.StartShippingResponse.FromString,
+                _registered_method=True)
         self.ListItems = channel.unary_unary(
                 '/casting.management.v1.ManagementService/ListItems',
                 request_serializer=management__pb2.ListItemsRequest.SerializeToString,
@@ -194,6 +199,13 @@ class ManagementServiceServicer(object):
 
     def StartProduction(self, request, context):
         """Task Manager (work_order + items)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def StartShipping(self, request, context):
+        """2026-05-13: 출하 트리거 (orchestrator.start_shipping → TAT 출하 task)
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -397,6 +409,11 @@ def add_ManagementServiceServicer_to_server(servicer, server):
                     request_deserializer=management__pb2.StartProductionRequest.FromString,
                     response_serializer=management__pb2.StartProductionResponse.SerializeToString,
             ),
+            'StartShipping': grpc.unary_unary_rpc_method_handler(
+                    servicer.StartShipping,
+                    request_deserializer=management__pb2.StartShippingRequest.FromString,
+                    response_serializer=management__pb2.StartShippingResponse.SerializeToString,
+            ),
             'ListItems': grpc.unary_unary_rpc_method_handler(
                     servicer.ListItems,
                     request_deserializer=management__pb2.ListItemsRequest.FromString,
@@ -569,6 +586,33 @@ class ManagementService(object):
             '/casting.management.v1.ManagementService/StartProduction',
             management__pb2.StartProductionRequest.SerializeToString,
             management__pb2.StartProductionResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def StartShipping(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/casting.management.v1.ManagementService/StartShipping',
+            management__pb2.StartShippingRequest.SerializeToString,
+            management__pb2.StartShippingResponse.FromString,
             options,
             channel_credentials,
             insecure,
