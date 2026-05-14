@@ -34,6 +34,12 @@ class _RecordingStateManager:
         self.subtask_publications: list[dict[str, object]] = []
         self.charger_requests: list[str | None] = []
         self.charger_return_states: list[dict[str, object]] = []
+        # state_manager가 DB/seed에서 채우는 charger pose 매핑을 테스트가 가정하는 값으로 주입
+        self.charger_pose_map: dict[tuple[int, int], str] = {
+            (1, 1): "ToCHG1",
+            (1, 2): "ToCHG2",
+            (1, 3): "ToCHG3",
+        }
 
     async def update_task_status(self, req) -> bool:
         self.status_updates.append(
@@ -107,7 +113,7 @@ def _event_bridge() -> EventBridgeImpl:
 
 
 def test_return_amr_to_charger_marks_toidle_until_arrival() -> None:
-    """후처리 충전소 복귀는 출발 시 toidle, 도착 후 idle로 상태를 갱신한다."""
+    """후처리 충전소 복귀는 출발 시 TO_IDLE, 도착 후 IDLE로 상태를 갱신한다."""
 
     async def scenario() -> None:
         adapter = _RecordingAdapter()
@@ -119,8 +125,8 @@ def test_return_amr_to_charger_marks_toidle_until_arrival() -> None:
         assert result is True
         assert state_manager.charger_requests == ["TAT2"]
         assert state_manager.charger_return_states == [
-            {"res_id": "TAT2", "status": "toidle", "source": "task_88"},
-            {"res_id": "TAT2", "status": "idle", "source": "task_88"},
+            {"res_id": "TAT2", "status": "TO_IDLE", "source": "task_88"},
+            {"res_id": "TAT2", "status": "IDLE", "source": "task_88"},
         ]
         assert adapter.calls == [
             {

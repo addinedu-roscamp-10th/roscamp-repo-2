@@ -111,11 +111,11 @@ class StateManager:
                 logger.warning("[StateManager] DB persistence unavailable: %s", exc)
         elif self._repo is not None:
             self._db_ready = True
-        # _seed_res_pool 은 DB 초기화 이후에 호출 — 사용 가능 시 DB master 를 우선 사용.
+        # _seed_res_pool은 DB 초기화 이후에 호출 — 사용 가능 시 DB master를 우선 사용.
         self._seed_res_pool()
         logger.info("[StateManager] stub mode enabled")
 
-    # 자원/충전소: 시나리오 JSON 에서 로드 (mock 시작 상태)
+    # 자원/충전소: 시나리오 JSON에서 로드 (mock 시작 상태)
     # transfer_points / battery_thresholds: DB master 우선, 없으면 JSON 폴백
     def _seed_res_pool(self) -> None:
         from services.seed import load_scenario
@@ -142,14 +142,25 @@ class StateManager:
             for s in seed["charger_slots"]
         }
 
-        # tat_nav_pose_master / trans_task_bat_threshold: DB 가능하면 DB 우선
+        # tat_nav_pose_master / trans_task_bat_threshold / charger pose map:
+        # DB 가능하면 DB 우선, 없으면 JSON 폴백.
         db_poses = self._safe_repo_call("load_tat_nav_poses") or {}
         db_thresholds = self._safe_repo_call("load_trans_task_bat_thresholds") or {}
+        db_charger_pose_map = self._safe_repo_call("load_charger_pose_map") or {}
         self.transfer_points: dict[str, tuple[float, float]] = (
             dict(db_poses) if db_poses else dict(seed["transfer_points"])
         )
         self.battery_thresholds: dict = (
             dict(db_thresholds) if db_thresholds else dict(seed["battery_thresholds"])
+        )
+        self.charger_pose_map: dict[tuple[int, int], str] = (
+            dict(db_charger_pose_map)
+            if db_charger_pose_map
+            else {
+                (int(s["row"]), int(s["col"])): s["pose_nm"]
+                for s in seed["charger_slots"]
+                if s.get("pose_nm")
+            }
         )
 
     def _safe_repo_call(self, method_name: str, *args, **kwargs):
@@ -482,6 +493,13 @@ class StateManager:
         if res_meta is None:
             return False
         return res_meta.get("status") in {"IDLE", "TO_IDLE"} and res_meta.get("item_id") is None
+
+    def get_res_type(self, res_id: str) -> str | None:
+        """master(res 테이블) 기반의 res_type 조회. 어댑터 라우팅 등에서 사용."""
+        meta = self._res_list.get((res_id or "").upper()) or self._res_list.get(res_id)
+        if meta is None:
+            return None
+        return meta.get("res_type")
 
     def get_task_id_for_resource(self, res_id: str) -> str | None:
         """해당 자원에 현재 할당되어 진행 중인 task_id 를 반환. 없으면 None."""

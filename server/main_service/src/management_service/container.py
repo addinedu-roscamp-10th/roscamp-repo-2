@@ -48,6 +48,7 @@ class Container:
         self.ros2_runtime = Ros2Runtime()
         self.adapter = AdapterRouter(
             ros2_runtime=self.ros2_runtime,
+            state_manager=self.state_manager,
         )
         self.task_executor = TaskExecutor(
             adapter=self.adapter,

@@ -16,11 +16,6 @@ from services.contracts.protocols import IAdapter, IEventBridge, IStateManager
 
 
 class TaskExecutor:
-    _CHARGER_POSE_MAP = {
-        (1, 1): "ToCHG1",
-        (1, 2): "ToCHG2",
-        (1, 3): "ToCHG3",
-    }
     _HARDWARE_RESOURCE_IDS = frozenset({ResourceType.MAT.value, ResourceType.PAT.value})
     _HARDWARE_RESOURCE_PREFIXES = (ResourceType.TAT.value,)
     _EXTERNAL_WAIT_EVENTS = {
@@ -501,10 +496,12 @@ class TaskExecutor:
             )
 
     def _resolve_charger_pose(self, charger_slot: tuple[int, int] | None) -> str | None:
-        """chg_loc을 AMR의 dock id로 매핑."""
+        """chg_loc을 AMR의 dock pose 이름으로 매핑. master(chg_location_stat ×
+        tat_nav_pose_master) 기반으로 state_manager가 제공."""
         if charger_slot is None:
             return None
-        return self._CHARGER_POSE_MAP.get(charger_slot)
+        pose_map = getattr(self.state_manager, "charger_pose_map", None) or {}
+        return pose_map.get(charger_slot)
 
     def _should_bypass_task(self, task_type: TaskType) -> bool:
         return self._bypass_non_robot_hardware and task_type in BYPASSABLE_TASK_TYPES

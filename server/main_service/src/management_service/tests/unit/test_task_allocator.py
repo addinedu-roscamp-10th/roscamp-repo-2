@@ -8,7 +8,7 @@ from management_service.services.core.task_allocator import TaskAllocator
 class _DummyStateManager:
     """task_allocator._select_resource 단위 테스트용 stub.
 
-    state_manager 가 DB/seed 에서 주입하는 master 데이터(transfer_points,
+    state_manager가 DB/seed에서 주입하는 master 데이터(transfer_points,
     battery_thresholds)를 테스트가 가정하는 값으로 직접 세팅한다.
     """
 

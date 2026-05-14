@@ -8,9 +8,9 @@
         {"res_id": "MAT",   "res_type": "MAT",  "x": 0.0, "y": 0.0, "battery_pct": 100, "status": "IDLE"}
     ],
     "charger_slots": [
-        {"row": 1, "col": 1, "res_id": "TAT1", "status": "occupied"},
-        {"row": 1, "col": 2, "res_id": "TAT2", "status": "occupied"},
-        {"row": 1, "col": 3, "res_id": "TAT3", "status": "occupied"}
+        {"row": 1, "col": 1, "res_id": "TAT1", "status": "occupied", "pose_nm": "ToCHG1"},
+        {"row": 1, "col": 2, "res_id": "TAT2", "status": "occupied", "pose_nm": "ToCHG2"},
+        {"row": 1, "col": 3, "res_id": "TAT3", "status": "occupied", "pose_nm": "ToCHG3"}
     ],
     "transfer_points": {
         "ToINSP": [-0.67, -0.10],

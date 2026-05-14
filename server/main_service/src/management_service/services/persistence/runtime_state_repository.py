@@ -94,7 +94,7 @@ _TRANS_CUR_STAT_VALUES = {
 
 
 def _equip_stat_value(status: Any) -> str:
-    # state_manager 가 DDL cur_stat 값을 직접 넘겨주면 그대로 사용
+    # state_manager가 DDL cur_stat 값을 직접 넘겨주면 그대로 사용
     if isinstance(status, str) and status in _EQUIP_CUR_STAT_VALUES:
         return status
     # 그렇지 않으면 TxnStat 기반 폴백 매핑
@@ -109,7 +109,7 @@ def _equip_stat_value(status: Any) -> str:
 
 
 def _trans_stat_value(status: Any) -> str:
-    # state_manager 가 DDL cur_stat 값을 직접 넘겨주면 그대로 사용
+    # state_manager가 DDL cur_stat 값을 직접 넘겨주면 그대로 사용
     if isinstance(status, str) and status in _TRANS_CUR_STAT_VALUES:
         return status
     # 그렇지 않으면 TxnStat 기반 폴백 매핑
@@ -220,7 +220,7 @@ class RuntimeStateRepository:
         )
 
     def load_tat_nav_poses(self) -> dict[str, tuple[float, float]]:
-        """tat_nav_pose_master 의 활성 pose (pose_nm → (x, y)) 로드."""
+        """tat_nav_pose_master의 활성 pose (pose_nm → (x, y)) 로드."""
         if self._tat_nav_pose_master_model is None:
             return {}
         with self._session_factory() as db:
@@ -231,10 +231,33 @@ class RuntimeStateRepository:
             )
             return {row.pose_nm: (float(row.pose_x), float(row.pose_y)) for row in rows}
 
-    def load_trans_task_bat_thresholds(self) -> dict[TaskType, int]:
-        """trans_task_bat_threshold 에서 task_type 별 최소값을 로드.
+    def load_charger_pose_map(self) -> dict[tuple[int, int], str]:
+        """chg_location_stat × tat_nav_pose_master JOIN으로
+        (loc_row, loc_col) → pose_nm (ToCHG*) 매핑을 만든다.
+        """
+        if self._tat_nav_pose_master_model is None or self._chg_location_stat_model is None:
+            return {}
+        with self._session_factory() as db:
+            rows = (
+                db.query(
+                    self._chg_location_stat_model.loc_row,
+                    self._chg_location_stat_model.loc_col,
+                    self._tat_nav_pose_master_model.pose_nm,
+                )
+                .join(
+                    self._chg_location_stat_model,
+                    self._tat_nav_pose_master_model.loc_id == self._chg_location_stat_model.loc_id,
+                )
+                .filter(self._tat_nav_pose_master_model.is_active.is_(True))
+                .filter(self._tat_nav_pose_master_model.pose_nm.like("ToCHG%"))
+                .all()
+            )
+            return {(int(r.loc_row), int(r.loc_col)): r.pose_nm for r in rows}
 
-        DDL 상 (res_id, task_type) 복합키이지만 동일 task_type 에 대해 res_id 마다 값이
+    def load_trans_task_bat_thresholds(self) -> dict[TaskType, int]:
+        """trans_task_bat_threshold에서 task_type별 최소값을 로드.
+
+        DDL상 (res_id, task_type) 복합키이지만 동일 task_type에 대해 res_id마다 값이
         다를 수 있으므로 가장 보수적인(가장 큰) 임계치를 채택한다.
         """
         if self._trans_task_bat_threshold_model is None:

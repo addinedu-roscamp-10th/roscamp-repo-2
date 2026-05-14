@@ -176,7 +176,7 @@ def test_tochg_keeps_amr_unavailable_until_charged() -> None:
         )
 
         state_manager = StateManager(event_bridge=event_bridge, enable_persistence=False)
-        # 시나리오 seed 의 다른 TAT 상태와 무관하게 TAT1 의 가용성만 검증
+        # 시나리오 seed의 다른 TAT 상태와 무관하게 TAT1의 가용성만 검증
         state_manager._res_list["TAT1"]["status"] = "IDLE"
         txn_id = await state_manager.insert_task_txn(
             CreateTaskInput(item_id=1001, task_type=TaskType.ToCHG)
