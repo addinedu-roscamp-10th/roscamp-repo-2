@@ -73,9 +73,9 @@ class InspTaskTxn(Base):
 
     txn_id = Column(Integer, primary_key=True, autoincrement=True)
     item_id = Column(Integer, ForeignKey(f"{SCHEMA}.item.item_id"))
-    res_id = Column(String(10), ForeignKey(f"{SCHEMA}.equip.res_id"))
     txn_stat = Column(String(10), nullable=False)
     result = Column(Boolean)
+    final_inference_id = Column(Integer)
     req_at = Column(DateTime, server_default=func.now())
     start_at = Column(DateTime)
     end_at = Column(DateTime)
@@ -91,6 +91,10 @@ class AiInferenceTxn(Base):
             name="chk_ai_inference_step_type",
         ),
         CheckConstraint("txn_stat IN ('QUE', 'PROC', 'SUCC', 'FAIL')", name="chk_ai_inference_txn_stat"),
+        CheckConstraint(
+            "predicted_class IS NULL OR predicted_class IN ('CMH', 'RMH', 'EMH')",
+            name="chk_ai_inference_predicted_class",
+        ),
         {"schema": SCHEMA},
     )
 
@@ -99,6 +103,12 @@ class AiInferenceTxn(Base):
     model_id = Column(Integer, ForeignKey(f"{SCHEMA}.ai_model.model_id"), nullable=False)
     step_type = Column(String(30), nullable=False)
     txn_stat = Column(String(10), nullable=False)
+    predicted_class = Column(String(5))
+    confidence = Column(Numeric)
+    anomaly_score = Column(Numeric)
+    anomaly_threshold = Column(Numeric)
+    is_anomaly = Column(Boolean)
+    result_json = Column(JSONB)
     req_at = Column(DateTime, server_default=func.now())
     start_at = Column(DateTime)
     end_at = Column(DateTime)
@@ -107,7 +117,6 @@ class AiInferenceTxn(Base):
 class InspStat(Base):
     __tablename__ = "insp_stat"
     __table_args__ = (
-        CheckConstraint("predicted_class IS NULL OR predicted_class IN ('CMH', 'RMH', 'EMH')", name="chk_insp_predicted_class"),
         CheckConstraint("final_result IS NULL OR final_result IN ('GP', 'DP')", name="chk_insp_final_result"),
         {"schema": SCHEMA},
     )
@@ -116,12 +125,7 @@ class InspStat(Base):
     item_id = Column(Integer, ForeignKey(f"{SCHEMA}.item.item_id"))
     yolo_inference_id = Column(Integer, ForeignKey(f"{SCHEMA}.ai_inference_txn.inference_id"))
     patchcore_inference_id = Column(Integer, ForeignKey(f"{SCHEMA}.ai_inference_txn.inference_id"))
-    predicted_class = Column(String(5))
-    yolo_confidence = Column(Numeric)
-    anomaly_score = Column(Numeric)
-    anomaly_threshold = Column(Numeric)
     final_result = Column(String(2))
-    result_json = Column(JSONB)
     updated_at = Column(DateTime, server_default=func.now())
 
     item_stat_id = synonym("item_id")

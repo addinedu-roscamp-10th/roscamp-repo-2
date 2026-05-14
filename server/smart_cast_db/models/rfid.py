@@ -5,12 +5,16 @@ from __future__ import annotations
 from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import JSONB
 
-from ._base import Base, BigInteger, Column, DateTime, Index, SCHEMA, String, synonym
+from ._base import Base, BigInteger, CheckConstraint, Column, DateTime, Index, SCHEMA, String, synonym
 
 
 class LogActionOperatorRfidScan(Base):
     __tablename__ = "log_action_operator_rfid_scan"
     __table_args__ = (
+        CheckConstraint(
+            "parse_status IN ('ok', 'bad_format', 'duplicate')",
+            name="chk_rfid_scan_parse_status",
+        ),
         Index(
             "uq_rfid_scan_idempotency_key",
             "idempotency_key",

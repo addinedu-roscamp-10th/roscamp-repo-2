@@ -26,6 +26,11 @@ class Item(Base):
     __tablename__ = "item"
     __table_args__ = (
         Index("idx_item_ord", "ord_id"),
+        CheckConstraint(
+            "cur_stat IN ('CREATED', 'CAST', 'WAIT_PP', 'WAIT_INSP', 'INSP', "
+            "'WAIT_PA', 'STORED', 'DISCARDED', 'PICK', 'READY_TO_SHIP')",
+            name="chk_item_cur_stat",
+        ),
         {"schema": SCHEMA},
     )
 
@@ -33,7 +38,7 @@ class Item(Base):
     ord_id = Column(Integer, ForeignKey(f"{SCHEMA}.ord.ord_id"), nullable=False)
     equip_task_type = Column(String(10))
     trans_task_type = Column(String(10))
-    cur_stat = Column(String(10))
+    cur_stat = Column(String(20), nullable=False, server_default="CREATED")
     cur_res = Column(String(10), ForeignKey(f"{SCHEMA}.res.res_id"))
     is_defective = Column(Boolean)
     updated_at = Column(DateTime, server_default=func.now())
