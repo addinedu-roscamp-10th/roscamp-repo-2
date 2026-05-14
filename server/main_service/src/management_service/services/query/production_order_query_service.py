@@ -21,6 +21,7 @@ class ProductionOrderQueryRow:
     requested_delivery: str
     confirmed_delivery: str
     created_at: str
+    prod_id: int | None = None  # ord_dtl.prod_id (다품목 발주는 첫 행)
 
 
 class ProductionOrderQueryService:
@@ -45,6 +46,11 @@ class ProductionOrderQueryService:
                 detail = ord_row.detail
                 user = ord_row.user
                 due_date = detail.due_date.isoformat() if detail and detail.due_date else ""
+                prod_id_raw = getattr(detail, "prod_id", None) if detail else None
+                try:
+                    prod_id_val = int(prod_id_raw) if prod_id_raw is not None else None
+                except (TypeError, ValueError):
+                    prod_id_val = None
                 rows.append(
                     ProductionOrderQueryRow(
                         ord_id=ord_row.ord_id,
@@ -56,6 +62,7 @@ class ProductionOrderQueryService:
                         requested_delivery=due_date,
                         confirmed_delivery=due_date,
                         created_at=ord_row.created_at.isoformat() if ord_row.created_at else "",
+                        prod_id=prod_id_val,
                     )
                 )
             return rows
