@@ -7,18 +7,39 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 MANAGEMENT_ARGS=()
+DO_RESET=0
 
-case "${1:-}" in
-  "")
-    ;;
-  ros)
-    MANAGEMENT_ARGS=("ros")
-    ;;
-  *)
-    echo "✗ 잘못된 인자: ${1:-} (허용값: ros)"
+for arg in "$@"; do
+  case "$arg" in
+    "")
+      ;;
+    ros)
+      MANAGEMENT_ARGS=("ros")
+      ;;
+    reset)
+      DO_RESET=1
+      ;;
+    *)
+      echo "✗ 잘못된 인자: $arg (허용값: ros, reset)"
+      exit 1
+      ;;
+  esac
+done
+
+if [ "$DO_RESET" = "1" ]; then
+  RESET_PY="$ROOT/server/main_service/.venv/bin/python"
+  RESET_SCRIPT="$ROOT/server/main_service/scripts/reset_mfg_orders.py"
+  if [ ! -x "$RESET_PY" ]; then
+    echo "✗ reset: $RESET_PY 없음. server/main_service 의 venv 를 먼저 준비하세요."
     exit 1
-    ;;
-esac
+  fi
+  if [ ! -f "$RESET_SCRIPT" ]; then
+    echo "✗ reset: $RESET_SCRIPT 없음."
+    exit 1
+  fi
+  echo "→ MFG 주문 APPR 복귀 정리 시작 (2초 후 진행, 취소: Ctrl+C)"
+  "$RESET_PY" "$RESET_SCRIPT" --delay 2
+fi
 
 TERMS_PIDS_FILE="/tmp/smartcast_terms.pids"
 # 이전 실행 PID 파일 초기화
