@@ -6,7 +6,23 @@ from management_service.services.core.task_allocator import TaskAllocator
 
 
 class _DummyStateManager:
-    pass
+    """task_allocator._select_resource 단위 테스트용 stub.
+
+    state_manager 가 DB/seed 에서 주입하는 master 데이터(transfer_points,
+    battery_thresholds)를 테스트가 가정하는 값으로 직접 세팅한다.
+    """
+
+    transfer_points = {
+        "ToCAST": (-0.256, 0.20),
+        "ToINSP": (-0.67, -0.10),
+        "ToPICK": (-0.223, -0.465),
+    }
+    battery_thresholds = {
+        TaskType.ToPP: 30,
+        TaskType.ToSTRG: 20,
+        TaskType.ToSHIP: 25,
+        TaskType.ToCHG: 15,
+    }
 
 
 def _allocator() -> TaskAllocator:

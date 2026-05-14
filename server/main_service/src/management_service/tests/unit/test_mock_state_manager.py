@@ -157,13 +157,14 @@ def test_task_manager_reservation_syncs_reserved_slots_to_state_manager() -> Non
 
     task_manager.reserve_rack_slots(order_id=4, start_pos=(1, 1), target_qty=2)
 
-    assert task_manager.slot_table[(1, 1)]["status"] == "Reserved"
-    assert task_manager.slot_table[(1, 2)]["status"] == "Reserved"
+    assert task_manager.slot_table[(1, 1)]["status"] == "reserved"
+    assert task_manager.slot_table[(1, 2)]["status"] == "reserved"
     assert state_manager.calls == [((1, 1), 2)]
 
 
-def test_tochg_proc_marks_amr_as_toidle_and_releases_it_for_allocation() -> None:
-    """ToCHG가 PROC로 들어가면 AMR은 toidle 상태로 풀려 재할당 가능해야 한다."""
+def test_tochg_keeps_amr_unavailable_until_charged() -> None:
+    """ToCHG는 무조건 배터리 부족 AMR이 충전소로 가는 작업이므로,
+    충전 완료 전까지 가용 자원 후보에 포함되지 않는다."""
 
     async def scenario() -> None:
         event_bridge = EventBridgeImpl()
@@ -175,6 +176,8 @@ def test_tochg_proc_marks_amr_as_toidle_and_releases_it_for_allocation() -> None
         )
 
         state_manager = StateManager(event_bridge=event_bridge, enable_persistence=False)
+        # 시나리오 seed 의 다른 TAT 상태와 무관하게 TAT1 의 가용성만 검증
+        state_manager._res_list["TAT1"]["status"] = "IDLE"
         txn_id = await state_manager.insert_task_txn(
             CreateTaskInput(item_id=1001, task_type=TaskType.ToCHG)
         )
@@ -186,58 +189,23 @@ def test_tochg_proc_marks_amr_as_toidle_and_releases_it_for_allocation() -> None
             UpdateTaskStatusInput(task_id=str(txn_id), new_stat=TxnStat.PROC)
         )
 
-        assert state_manager._res_list["TAT1"]["status"] == "toidle"
-        assert state_manager._res_list["TAT1"]["item_id"] is None
-        assert await state_manager.get_available_resources("TAT") == ["TAT1"]
-        assert published == [("TAT1", "toidle")]
-
-    asyncio.run(scenario())
-
-def test_battery_low_tochg_proc_keeps_amr_unavailable_until_charged() -> None:
-    """BAT_LOW 기원의 ToCHG는 충전 완료 전까지 가용 자원 후보에 포함되지 않는다."""
-
-    async def scenario() -> None:
-        event_bridge = EventBridgeImpl()
-        published: list[tuple[str | None, str | None]] = []
-        event_bridge.subscribe(
-            EventType.RESOURCE_AVAILABLE,
-            lambda event: published.append((event.res_id, event.payload.get("status"))),
-            "test.battery_low_tochg.resource_available",
-        )
-
-        state_manager = StateManager(event_bridge=event_bridge, enable_persistence=False)
-        state_manager._res_list["TAT1"]["condition"] = "BATTERY_LOW"
-        txn_id = await state_manager.insert_task_txn(
-            CreateTaskInput(
-                item_id=1001,
-                task_type=TaskType.ToCHG,
-            )
-        )
-        await state_manager.update_task_allocation(
-            AllocateTaskResInput(task_id=str(txn_id), item_id=1001, res_id="TAT1")
-        )
-
-        await state_manager.update_task_status(
-            UpdateTaskStatusInput(task_id=str(txn_id), new_stat=TxnStat.PROC)
-        )
-
-        assert state_manager._res_list["TAT1"]["status"] == "charging"
+        assert state_manager._res_list["TAT1"]["status"] == "CHG"
         assert state_manager._res_list["TAT1"]["task_type"] == TaskType.ToCHG.value
-        assert await state_manager.get_available_resources("TAT") == []
+        assert "TAT1" not in await state_manager.get_available_resources("TAT")
         assert published == []
 
         await state_manager.update_task_status(
             UpdateTaskStatusInput(task_id=str(txn_id), new_stat=TxnStat.SUCC)
         )
 
-        assert state_manager._res_list["TAT1"]["status"] == "charging"
-        assert await state_manager.get_available_resources("TAT") == []
+        assert state_manager._res_list["TAT1"]["status"] == "CHG"
+        assert "TAT1" not in await state_manager.get_available_resources("TAT")
         assert published == []
 
         await state_manager.publish_amr_charged(res_id="TAT1", task_id=str(txn_id))
 
-        assert state_manager._res_list["TAT1"]["status"] == "idle"
-        assert await state_manager.get_available_resources("TAT") == ["TAT1"]
+        assert state_manager._res_list["TAT1"]["status"] == "IDLE"
+        assert "TAT1" in await state_manager.get_available_resources("TAT")
 
     asyncio.run(scenario())
 
@@ -270,6 +238,6 @@ def test_tochg_completion_does_not_overwrite_newer_resource_assignment() -> None
 
         assert state_manager._res_list["TAT1"]["task_id"] == str(new_txn_id)
         assert state_manager._res_list["TAT1"]["item_id"] == 1002
-        assert state_manager._res_list["TAT1"]["status"] == "allocated"
+        assert state_manager._res_list["TAT1"]["status"] == "ALLOC"
 
     asyncio.run(scenario())

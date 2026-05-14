@@ -57,7 +57,6 @@ _FLOW_TO_LEGACY_STAGE = {
     "PICK": "TR_LD",
     "READY_TO_SHIP": "SH",
     "DISCARDED": "SH",
-    "HOLD": "QUE",
 }
 
 # stage 별 SLA (초). 0 또는 음수면 무한 (감시 안 함)

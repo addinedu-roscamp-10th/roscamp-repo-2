@@ -29,7 +29,6 @@ _FLOW_TO_LEGACY_STAGE = {
     "PICK": "TR_LD",
     "READY_TO_SHIP": "SH",
     "DISCARDED": "SH",
-    "HOLD": "QUE",
 }
 
 _WO_STATUS_TO_ENUM = {"QUE": 1, "PROC": 2, "SUCC": 3, "FAIL": 4}
