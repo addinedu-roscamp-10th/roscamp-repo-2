@@ -128,6 +128,11 @@ class ManagementServiceStub(object):
                 request_serializer=management__pb2.WatchAlertsRequest.SerializeToString,
                 response_deserializer=management__pb2.AlertEvent.FromString,
                 _registered_method=True)
+        self.ListAlerts = channel.unary_unary(
+                '/casting.management.v1.ManagementService/ListAlerts',
+                request_serializer=management__pb2.ListAlertsRequest.SerializeToString,
+                response_deserializer=management__pb2.ListAlertsResponse.FromString,
+                _registered_method=True)
         self.GetRobotStatus = channel.unary_unary(
                 '/casting.management.v1.ManagementService/GetRobotStatus',
                 request_serializer=management__pb2.GetRobotStatusRequest.SerializeToString,
@@ -158,6 +163,11 @@ class ManagementServiceStub(object):
                 request_serializer=management__pb2.Empty.SerializeToString,
                 response_deserializer=management__pb2.Empty.FromString,
                 _registered_method=True)
+        self.ListOperators = channel.unary_unary(
+                '/casting.management.v1.ManagementService/ListOperators',
+                request_serializer=management__pb2.ListOperatorsRequest.SerializeToString,
+                response_deserializer=management__pb2.ListOperatorsResponse.FromString,
+                _registered_method=True)
         self.WatchCameraFrames = channel.unary_stream(
                 '/casting.management.v1.ManagementService/WatchCameraFrames',
                 request_serializer=management__pb2.WatchFramesRequest.SerializeToString,
@@ -167,6 +177,11 @@ class ManagementServiceStub(object):
                 '/casting.management.v1.ManagementService/WatchConveyorCommands',
                 request_serializer=management__pb2.WatchConveyorCommandsRequest.SerializeToString,
                 response_deserializer=management__pb2.ConveyorCommand.FromString,
+                _registered_method=True)
+        self.UploadInspectionImage = channel.unary_unary(
+                '/casting.management.v1.ManagementService/UploadInspectionImage',
+                request_serializer=management__pb2.InspectionImageUpload.SerializeToString,
+                response_deserializer=management__pb2.InspectionImageAck.FromString,
                 _registered_method=True)
 
 
@@ -290,6 +305,12 @@ class ManagementServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListAlerts(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def GetRobotStatus(self, request, context):
         """Robot Status
         """
@@ -336,6 +357,13 @@ class ManagementServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListOperators(self, request, context):
+        """User / Operator
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def WatchCameraFrames(self, request, context):
         """Stage B — 카메라 프레임 server streaming (image_sink condvar 기반 push)
         """
@@ -347,6 +375,15 @@ class ManagementServiceServicer(object):
         """V6 canonical Phase D: Jetson(Vision Controller) 가 Management 에서 ESP32 컨베이어 명령을 수신
         Jetson 은 로컬 EspBridge 로 Serial(115200) 을 통해 ESP32(HW Controller) 에 relay.
         Management → gRPC(TCP) → Jetson → Serial → ESP32. MQTT 경로는 Phase D 에서 제거됨.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def UploadInspectionImage(self, request, context):
+        """V6 Phase F: Jetson(Vision Controller) 가 TOF1 카메라 앞 detect 후 캡처한 검사용 이미지를
+        Management 가 단일 종착점으로 영구 저장. raw JPEG bytes 단일 unary RPC (~150 KB / cycle 권장).
+        idempotency_key 로 중복 업로드 차단. AI server forward 등 후속 처리는 backend 가 fan-out.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -445,6 +482,11 @@ def add_ManagementServiceServicer_to_server(servicer, server):
                     request_deserializer=management__pb2.WatchAlertsRequest.FromString,
                     response_serializer=management__pb2.AlertEvent.SerializeToString,
             ),
+            'ListAlerts': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListAlerts,
+                    request_deserializer=management__pb2.ListAlertsRequest.FromString,
+                    response_serializer=management__pb2.ListAlertsResponse.SerializeToString,
+            ),
             'GetRobotStatus': grpc.unary_unary_rpc_method_handler(
                     servicer.GetRobotStatus,
                     request_deserializer=management__pb2.GetRobotStatusRequest.FromString,
@@ -475,6 +517,11 @@ def add_ManagementServiceServicer_to_server(servicer, server):
                     request_deserializer=management__pb2.Empty.FromString,
                     response_serializer=management__pb2.Empty.SerializeToString,
             ),
+            'ListOperators': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListOperators,
+                    request_deserializer=management__pb2.ListOperatorsRequest.FromString,
+                    response_serializer=management__pb2.ListOperatorsResponse.SerializeToString,
+            ),
             'WatchCameraFrames': grpc.unary_stream_rpc_method_handler(
                     servicer.WatchCameraFrames,
                     request_deserializer=management__pb2.WatchFramesRequest.FromString,
@@ -484,6 +531,11 @@ def add_ManagementServiceServicer_to_server(servicer, server):
                     servicer.WatchConveyorCommands,
                     request_deserializer=management__pb2.WatchConveyorCommandsRequest.FromString,
                     response_serializer=management__pb2.ConveyorCommand.SerializeToString,
+            ),
+            'UploadInspectionImage': grpc.unary_unary_rpc_method_handler(
+                    servicer.UploadInspectionImage,
+                    request_deserializer=management__pb2.InspectionImageUpload.FromString,
+                    response_serializer=management__pb2.InspectionImageAck.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -987,6 +1039,33 @@ class ManagementService(object):
             _registered_method=True)
 
     @staticmethod
+    def ListAlerts(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/casting.management.v1.ManagementService/ListAlerts',
+            management__pb2.ListAlertsRequest.SerializeToString,
+            management__pb2.ListAlertsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
     def GetRobotStatus(request,
             target,
             options=(),
@@ -1149,6 +1228,33 @@ class ManagementService(object):
             _registered_method=True)
 
     @staticmethod
+    def ListOperators(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/casting.management.v1.ManagementService/ListOperators',
+            management__pb2.ListOperatorsRequest.SerializeToString,
+            management__pb2.ListOperatorsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
     def WatchCameraFrames(request,
             target,
             options=(),
@@ -1192,6 +1298,33 @@ class ManagementService(object):
             '/casting.management.v1.ManagementService/WatchConveyorCommands',
             management__pb2.WatchConveyorCommandsRequest.SerializeToString,
             management__pb2.ConveyorCommand.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def UploadInspectionImage(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/casting.management.v1.ManagementService/UploadInspectionImage',
+            management__pb2.InspectionImageUpload.SerializeToString,
+            management__pb2.InspectionImageAck.FromString,
             options,
             channel_credentials,
             insecure,
