@@ -258,7 +258,7 @@ class DashboardPage(QWidget):
         map_title.setObjectName("sectionTitle")
         map_layout.addWidget(map_title)
 
-        self._map = FactoryMapView()
+        self._map = FactoryMapView(enable_sim=False)
         map_layout.addWidget(self._map, stretch=1)
         map_row.addWidget(map_container, stretch=1)
 
@@ -335,13 +335,16 @@ class DashboardPage(QWidget):
         """Management Service(gRPC) 에서 KPI + 진행 목록 갱신."""
         production_summary = self._refresh_kpi()
         self._refresh_zone_panel()
-        self._refresh_amr_panel()
+        robots = self._refresh_amr_panel()
         self._refresh_alerts()
         self._refresh_production_list(production_summary)
 
-        # 공장 맵 (기존 REST 유지)
-        equipment = self._api.get_equipment_raw() or []
-        self._map.update_equipment(equipment)
+        # 공장 맵: gRPC 실데이터 (TAT AMCL 위치 + PAT/MAT 상태)
+        try:
+            equipment = self._mgmt.list_equipment()
+        except Exception:
+            equipment = []
+        self._map.update_robots(robots, equipment)
 
     def _refresh_kpi(self) -> list[dict[str, Any]]:
         """KPI 갱신 + 진행 목록 표시용 ord_id 별 요약 반환.
@@ -457,7 +460,8 @@ class DashboardPage(QWidget):
         for zone_nm, row in self._zone_rows.items():
             row.update_count(count_map.get(zone_nm, 0))
 
-    def _refresh_amr_panel(self) -> None:
+    def _refresh_amr_panel(self) -> list[dict]:
+        """AMR 상태 패널 갱신. gRPC 로봇 목록을 반환 (맵 갱신에 재사용)."""
         _TAT_IDS = ["TAT1", "TAT2", "TAT3"]
 
         try:
@@ -465,6 +469,7 @@ class DashboardPage(QWidget):
             amrs = {r["id"]: r for r in robots if r.get("type") == "amr"}
         except grpc.RpcError as e:
             logger.warning("get_robot_status 실패: %s", e)
+            robots = []
             amrs = {}
 
         # 기존 위젯 제거
@@ -483,6 +488,8 @@ class DashboardPage(QWidget):
                 row.set_offline()
             self._amr_rows[tat_id] = row
             self._amr_list_layout.addWidget(row)
+
+        return robots
 
     def _refresh_alerts(self) -> None:
         try:

@@ -97,13 +97,18 @@ class AmrStateMonitorNode:
 
 class AmrStateMonitorService:
 
+    _AMR_IDS: tuple[str, ...] = ("TAT1", "TAT2", "TAT3")
+
     def __init__(self, state_manager: IStateManager) -> None:
         self._state_manager = state_manager
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._node: AmrStateMonitorNode | None = None
         self._lock = threading.Lock()
-        self._cache: dict[str, AmrStatus] = {}
+        # Pre-seed so get_all() always returns TAT1/2/3, even before ROS2 data arrives.
+        self._cache: dict[str, AmrStatus] = {
+            rid: AmrStatus(id=rid) for rid in self._AMR_IDS
+        }
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():

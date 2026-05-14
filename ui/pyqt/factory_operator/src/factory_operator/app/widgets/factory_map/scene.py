@@ -13,16 +13,21 @@ from typing import Any
 from PyQt5.QtCore import QPointF, Qt, QTimer
 from PyQt5.QtGui import QBrush, QColor, QFont, QPen, QPixmap
 from PyQt5.QtWidgets import (
+    QGraphicsEllipseItem,
     QGraphicsRectItem,
     QGraphicsScene,
     QGraphicsSimpleTextItem,
 )
 
 from ._constants import (
+    MAT_FIXED_POS,
+    PAT_FIXED_POS,
     SCENE_H,
     SCENE_W,
     STATUS_COLORS,
+    _POS,
     _status_key,
+    amcl_to_scene,
 )
 from .sim import _SimController
 
@@ -39,6 +44,7 @@ class FactoryMapScene(QGraphicsScene):
         super().__init__()
         self.setSceneRect(0, 0, SCENE_W, SCENE_H)
         self._amr_state: dict[str, dict[str, Any]] = {}
+        self._equip_marker_state: dict[str, dict[str, Any]] = {}
 
         self._draw_background()
 
@@ -164,3 +170,158 @@ class FactoryMapScene(QGraphicsScene):
             state["current"] = QPointF(new_x, new_y)
             state["marker"].setPos(new_x, new_y)
             state["trail"].setLine(new_x - dx, new_y - dy, new_x, new_y)
+
+    # ------------------------------------------------------------------
+    # 실데이터 갱신 (gRPC get_robot_status + list_equipment)
+    # ------------------------------------------------------------------
+
+    def update_robots(
+        self,
+        robots: list[dict[str, Any]],
+        equipment: list[dict[str, Any]],
+    ) -> None:
+        """gRPC 실데이터로 TAT(AMR)/PAT/MAT 마커 갱신."""
+        self._update_tat_markers(robots)
+        self._update_fixed_equip_markers(equipment)
+
+    @staticmethod
+    def _parse_location(loc: str) -> tuple[float, float] | None:
+        """'x=1.23, y=4.56' 문자열 → (x, y). 실패 시 None."""
+        try:
+            parts = {}
+            for seg in loc.split(","):
+                k, v = seg.split("=")
+                parts[k.strip()] = float(v.strip())
+            return parts["x"], parts["y"]
+        except Exception:
+            return None
+
+    def _update_tat_markers(self, robots: list[dict[str, Any]]) -> None:
+        """TAT1/2/3 AMCL 좌표 → scene 마커 보간 이동."""
+        seen: set[str] = set()
+
+        for robot in robots:
+            rid = str(robot.get("id", ""))
+            if not rid:
+                continue
+            seen.add(rid)
+
+            loc = robot.get("location", "")
+            coords = self._parse_location(loc) if loc and "=" in loc else None
+            if coords:
+                target_x, target_y = amcl_to_scene(*coords)
+            else:
+                # No AMCL yet — show at known charging-zone home position.
+                _HOME = {"TAT1": _POS["amr1_home"], "TAT2": _POS["amr2_home"], "TAT3": _POS["amr3_home"]}
+                home = _HOME.get(rid)
+                if home:
+                    target_x, target_y = float(home[0]), float(home[1])
+                else:
+                    target_x = target_y = None
+
+            raw_status = robot.get("status", "")
+            status_key = _status_key(raw_status)
+            color_info = STATUS_COLORS.get(status_key, STATUS_COLORS["idle"])
+            color = color_info["dot"]
+            battery = float(robot.get("battery") or 0)
+
+            st = self._amr_state.get(rid)
+            if st is None:
+                if target_x is None:
+                    continue
+                marker = QGraphicsRectItem(-28, -16, 56, 32)
+                marker.setBrush(QBrush(QColor("#ffffff")))
+                marker.setPen(QPen(QColor(color_info["border"]), 2))
+                marker.setZValue(50)
+                marker.setPos(target_x, target_y)
+                self.addItem(marker)
+
+                label = QGraphicsSimpleTextItem(rid, marker)
+                label.setFont(QFont("Sans", 8, QFont.Bold))
+                label.setBrush(QBrush(QColor("#000000")))
+                lr = label.boundingRect()
+                label.setPos(-lr.width() / 2, -lr.height() / 2)
+
+                trail = self.addLine(
+                    target_x, target_y, target_x, target_y,
+                    QPen(QColor(color), 2, Qt.DashLine),
+                )
+                trail.setZValue(40)
+
+                self._amr_state[rid] = {
+                    "marker": marker,
+                    "label": label,
+                    "trail": trail,
+                    "current": QPointF(target_x, target_y),
+                    "target": QPointF(target_x, target_y),
+                    "color": color,
+                    "data": robot,
+                }
+            else:
+                if target_x is not None:
+                    st["target"] = QPointF(target_x, target_y)
+                st["color"] = color
+                st["data"] = robot
+                st["marker"].setBrush(QBrush(QColor(color)))
+                tp = st["trail"].pen()
+                tp.setColor(QColor(color))
+                st["trail"].setPen(tp)
+
+            if rid in self._amr_state:
+                tip = f"{rid}\nbattery: {battery:.0f}%\nstatus: {raw_status}"
+                self._amr_state[rid]["marker"].setToolTip(tip)
+
+        for rid in list(self._amr_state.keys()):
+            if rid not in seen:
+                st = self._amr_state.pop(rid)
+                self.removeItem(st["marker"])
+                self.removeItem(st["trail"])
+
+    def _update_fixed_equip_markers(self, equipment: list[dict[str, Any]]) -> None:
+        """PAT/MAT 고정 위치 상태 도트 갱신."""
+        fixed_pos = {"PAT": PAT_FIXED_POS, "MAT": MAT_FIXED_POS}
+        equip_map = {str(e.get("res_id", "")): e for e in equipment}
+
+        for res_id, (fx, fy) in fixed_pos.items():
+            equip = equip_map.get(res_id, {})
+            cur_stat = str(equip.get("cur_stat") or "IDLE")
+            status_key = _status_key(cur_stat)
+            color_info = STATUS_COLORS.get(status_key, STATUS_COLORS["idle"])
+            color = color_info["dot"]
+            border = color_info["border"]
+
+            st = self._equip_marker_state.get(res_id)
+            if st is None:
+                r = 14.0
+                ellipse = QGraphicsEllipseItem(-r, -r, r * 2, r * 2)
+                ellipse.setBrush(QBrush(QColor(color)))
+                ellipse.setPen(QPen(QColor(border), 2))
+                ellipse.setZValue(50)
+                ellipse.setPos(fx, fy)
+                self.addItem(ellipse)
+
+                name_lbl = QGraphicsSimpleTextItem(res_id, ellipse)
+                name_lbl.setFont(QFont("Sans", 7, QFont.Bold))
+                name_lbl.setBrush(QBrush(QColor("#111111")))
+                nlr = name_lbl.boundingRect()
+                name_lbl.setPos(-nlr.width() / 2, -nlr.height() / 2)
+
+                stat_lbl = QGraphicsSimpleTextItem(cur_stat)
+                stat_lbl.setFont(QFont("Sans", 6))
+                stat_lbl.setBrush(QBrush(QColor("#333333")))
+                slr = stat_lbl.boundingRect()
+                stat_lbl.setPos(fx - slr.width() / 2, fy + r + 2)
+                stat_lbl.setZValue(51)
+                self.addItem(stat_lbl)
+
+                self._equip_marker_state[res_id] = {
+                    "ellipse": ellipse,
+                    "stat_lbl": stat_lbl,
+                    "cur_stat": cur_stat,
+                }
+            else:
+                if st["cur_stat"] != cur_stat:
+                    st["ellipse"].setBrush(QBrush(QColor(color)))
+                    st["ellipse"].setPen(QPen(QColor(border), 2))
+                    st["stat_lbl"].setText(cur_stat)
+                    st["cur_stat"] = cur_stat

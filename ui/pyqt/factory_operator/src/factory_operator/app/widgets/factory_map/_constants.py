@@ -121,3 +121,33 @@ def _move_toward(
         return tx, ty, True
     ratio = speed / dist
     return cx + dx * ratio, cy + dy * ratio, False
+
+
+# ---------------------------------------------------------------------------
+# AMCL → scene 좌표 변환
+# ---------------------------------------------------------------------------
+# Final_map.yaml 기반: origin=[-0.830, -1.314], resolution=0.025, pgm=46×84
+# 좌표계: x 오른쪽(+), y 아래쪽(+) — poses.yaml 와 일치
+# CHG zone(x=0.06, y=0.095) → 오른쪽 하단 확인 기준으로 도출.
+_AMCL_ORIGIN_X: float = -0.830
+_AMCL_ORIGIN_Y: float = -1.314
+_AMCL_SCALE_X: float = SCENE_W / (46 * 0.025)   # ≈ 1000 px/m
+_AMCL_SCALE_Y: float = SCENE_H / (84 * 0.025)   # ≈ 297.6 px/m
+
+
+def amcl_to_scene(x_m: float, y_m: float) -> tuple[float, float]:
+    """AMCL 좌표(m) → scene 픽셀 좌표.
+
+    교정이 필요하면 _AMCL_ORIGIN_* / _AMCL_SCALE_* 상수를 조정.
+    """
+    sx = _AMCL_SCALE_X * (x_m - _AMCL_ORIGIN_X)
+    sy = _AMCL_SCALE_Y * (y_m - _AMCL_ORIGIN_Y)
+    return sx, sy
+
+
+# ---------------------------------------------------------------------------
+# PAT / MAT 고정 위치 (픽셀, 이미지 기준)
+# ---------------------------------------------------------------------------
+# 실제 이미지에서 확인 후 갱신. MAT=주조 arm, PAT=피킹/출하 arm.
+PAT_FIXED_POS: tuple[float, float] = (291.0, 393.0)# (700.0, 220.0)
+MAT_FIXED_POS: tuple[float, float] = (948.0, 419.0) # (90.0, 460.0)
