@@ -451,7 +451,7 @@ docking_server:
     ToCAST:
       type: "aruco_dock"
       frame: "map"
-      pose: [-0.24, 0.2, 1.57]
+      pose: [-0.3, 0.2, 1.57]
       id: "ToCAST"
 
     ToCAST_WAIT:
@@ -481,7 +481,7 @@ docking_server:
     ToSTRG:
       type: "STRG_dock"
       frame: "map"
-      pose: [-0.136, -0.61, 0.0]
+      pose: [-0.13, -0.61, 0.0]
       id: "ToSTRG"
 
     ToPICK:
@@ -493,7 +493,7 @@ docking_server:
     ToPP:
       type: "aruco_dock"
       frame: "map"
-      pose: [-0.48, -1.05, 3.14]
+      pose: [-0.48, -1.15, 3.14]
       id: "ToPP"
 
     ToPP_WAIT:
@@ -514,7 +514,7 @@ docking_server:
       use_collision_detection: true  # local costmap 기반 충돌 검사 사용 여부
       costmap_topic: "local_costmap/costmap_raw"  # 충돌 검사에 사용할 costmap topic
       footprint_topic: "local_costmap/published_footprint"  # 충돌 검사에 사용할 footprint topic
-      transform_tolerance: 0.8  # TF 조회 허용 오차
+      transform_tolerance: 1.0  # TF 조회 허용 오차
       projection_time: 0.2  # 충돌 검사용 trajectory 예측 시간
       simulation_time_step: 0.1  # trajectory 시뮬레이션 시간 간격
       dock_collision_threshold: 0.7  # 도크 근처 충돌 검사 예외 거리 기준
