@@ -170,6 +170,9 @@ message ProductionOrder {
   string requested_delivery   = 7;
   string confirmed_delivery   = 8;
   string created_at           = 9;
+  // 2026-05-14: ord_dtl join 으로 채워지는 제품 ID. 다품목 발주는 첫 행의 prod_id.
+  // PyQt 가 _PROD_NM_BY_ID 사전으로 prod_nm 매핑 (KS 규격 맨홀뚜껑 9종).
+  optional int32 prod_id      = 10;
 }
 
 message ListProductionOrdersRequest {
