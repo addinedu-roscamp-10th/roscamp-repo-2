@@ -217,7 +217,11 @@ class TaskExecutor:
 
             # Task 시작 시 진행 상태 전이: QUE -> PROC
             await self.state_manager.update_task_status(
-                UpdateTaskStatusInput(task_id=input_data.task_id, new_stat=TxnStat.PROC)
+                UpdateTaskStatusInput(
+                    task_id=input_data.task_id,
+                    task_type=input_data.task_type,
+                    new_stat=TxnStat.PROC,
+                )
             )
             if self._should_bypass_task(input_data.task_type):
                 self.logger.info(
@@ -226,10 +230,15 @@ class TaskExecutor:
                     input_data.task_type.value,
                 )
                 await self.state_manager.update_task_status(
-                    UpdateTaskStatusInput(task_id=input_data.task_id, new_stat=TxnStat.SUCC)
+                    UpdateTaskStatusInput(
+                        task_id=input_data.task_id,
+                        task_type=input_data.task_type,
+                        new_stat=TxnStat.SUCC,
+                    )
                 )
                 return ExecutionResult(
                     task_id=input_data.task_id,
+                    task_type=input_data.task_type,
                     final_status=TxnStat.SUCC,
                     steps_executed=0,
                 )
@@ -264,11 +273,16 @@ class TaskExecutor:
 
                 # Task가 성공한 경우 전이: PROC -> SUCC
                 await self.state_manager.update_task_status(
-                    UpdateTaskStatusInput(task_id=input_data.task_id, new_stat=TxnStat.SUCC)
+                    UpdateTaskStatusInput(
+                        task_id=input_data.task_id,
+                        task_type=input_data.task_type,
+                        new_stat=TxnStat.SUCC,
+                    )
                 )
                 # asyncio.create_task()로 만들어진 코루틴 객체이기 때문에, return은 현재 사용되지 않음
                 return ExecutionResult(
                     task_id=input_data.task_id,
+                    task_type=input_data.task_type,
                     final_status=TxnStat.SUCC,
                     steps_executed=executed_steps
                 )
@@ -288,6 +302,7 @@ class TaskExecutor:
                 await self.state_manager.update_task_status(
                     UpdateTaskStatusInput(
                         task_id=input_data.task_id,
+                        task_type=input_data.task_type,
                         new_stat=TxnStat.FAIL,
                         error_code="aborted",
                     )
@@ -758,10 +773,16 @@ class TaskExecutor:
         """에러 처리 및 상태 업데이트"""
         self.logger.error(f"[Executor] Task {input_data.task_id} failed: {error_msg}")
         await self.state_manager.update_task_status(
-            UpdateTaskStatusInput(task_id=input_data.task_id, new_stat=TxnStat.FAIL, error_code=error_msg)
+            UpdateTaskStatusInput(
+                task_id=input_data.task_id,
+                task_type=input_data.task_type,
+                new_stat=TxnStat.FAIL,
+                error_code=error_msg,
+            )
         )
         return ExecutionResult(
             task_id=input_data.task_id,
+            task_type=input_data.task_type,
             final_status=TxnStat.FAIL,
             steps_executed=steps,
             error_code=error_msg

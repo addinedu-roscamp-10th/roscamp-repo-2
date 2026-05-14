@@ -467,7 +467,7 @@ class RuntimeStateRepository:
                     "loc_id": int(row.loc_id),
                     "row": int(row.loc_row),
                     "col": int(row.loc_col),
-                    "status": str(row.status).capitalize(),
+                    "status": str(row.status).lower(),
                     "item_id": getattr(row, "item_id", None),
                     "order_id": None,
                 }

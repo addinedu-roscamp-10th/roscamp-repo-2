@@ -28,6 +28,23 @@ from ..contracts.models import (
 logger = logging.getLogger(__name__)
 
 
+def _make_task_key(task_id: Any, task_type: TaskType | str | None) -> str:
+    # trans_task_txn / pp_task_txn / equip_task_txn / insp_task_txn 가 PK 시퀀스를 독립으로
+    # 가져 같은 정수 id 가 여러 테이블에 동시에 존재할 수 있으므로 task_type 을 prefix 로
+    # 붙여 메모리 키 충돌을 막는다. task_type 미상이면 backward 형태로 fallback.
+    raw = str(task_id)
+    if raw.startswith("task_"):
+        raw = raw[5:]
+    for prefix in (t.value + ":" for t in TaskType):
+        if raw.startswith(prefix):
+            return raw
+    if isinstance(task_type, TaskType):
+        return f"{task_type.value}:{raw}"
+    if isinstance(task_type, str) and task_type:
+        return f"{task_type}:{raw}"
+    return f"task_{raw}"
+
+
 def _parse_iso(value: Any) -> datetime | None:
     """ISO 8601 문자열 또는 UNIX timestamp 를 naive UTC datetime 으로 변환."""
     if value in (None, ""):
@@ -429,7 +446,7 @@ class StateManager:
     async def insert_task_txn(self, task_input: CreateTaskInput) -> int:
         txn_id = self._next_equip_task_txn_id
         self._next_equip_task_txn_id += 1
-        task_id = f"task_{txn_id}"
+        task_id = _make_task_key(txn_id, task_input.task_type)
         item_meta = self._items.setdefault(task_input.item_id, {"item_id": task_input.item_id})
         task_meta = {
             "txn_id": txn_id,
@@ -443,7 +460,7 @@ class StateManager:
         if db_txn_id is not None:
             txn_id = int(db_txn_id)
             self._next_equip_task_txn_id = max(self._next_equip_task_txn_id, txn_id + 1)
-            task_id = f"task_{txn_id}"
+            task_id = _make_task_key(txn_id, task_input.task_type)
             task_meta["txn_id"] = txn_id
         self._tasks[task_id] = task_meta
         return txn_id
@@ -539,17 +556,19 @@ class StateManager:
         )
 
     async def update_task_allocation(self, assign_input: AllocateTaskResInput) -> None:
-        task_key = (
-            assign_input.task_id
-            if assign_input.task_id.startswith("task_")
-            else f"task_{assign_input.task_id}"
-        )
+        task_key = _make_task_key(assign_input.task_id, assign_input.task_type)
         task_meta = self._tasks.get(task_key)
+        if task_meta is None and assign_input.task_type is None:
+            # task_type 모르고 호출된 경우에만 backward 형태로 한 번 더 시도
+            task_meta = self._tasks.get(f"task_{assign_input.task_id}")
         if task_meta is not None:
             task_meta["item_id"] = assign_input.item_id
             task_meta["res_id"] = assign_input.res_id
             task_meta["status"] = TxnStat.QUE.value
             task_meta["task_id"] = task_key
+            if assign_input.task_type is not None:
+                task_meta["task_type"] = assign_input.task_type.value
+            self._tasks[task_key] = task_meta
 
         self._res_list.setdefault(assign_input.res_id, {})
         self._res_list[assign_input.res_id].update(
@@ -572,8 +591,10 @@ class StateManager:
         )
 
     async def update_task_status(self, req: UpdateTaskStatusInput) -> bool:
-        task_key = req.task_id if req.task_id.startswith("task_") else f"task_{req.task_id}"
+        task_key = _make_task_key(req.task_id, req.task_type)
         task_meta = self._tasks.get(task_key)
+        if task_meta is None and req.task_type is None:
+            task_meta = self._tasks.get(f"task_{req.task_id}")
         previous_status = task_meta.get("status") if task_meta is not None else None
         suppress_task_completed = False
         suppress_resource_available = False
@@ -589,6 +610,15 @@ class StateManager:
                 suppress_task_completed = self._handle_success_task_status(
                     task_meta,
                     previous_status,
+                )
+            if req.new_stat in {TxnStat.SUCC, TxnStat.FAIL}:
+                logger.info(
+                    "[StateManager] update_task_status DEBUG: task=%s status=%s task_type=%s assigned_res_id=%s res_meta=%s",
+                    req.task_id,
+                    req.new_stat.value,
+                    task_meta.get("task_type"),
+                    assigned_res_id,
+                    self._res_list.get(assigned_res_id) if assigned_res_id else None,
                 )
             if req.new_stat in {TxnStat.SUCC, TxnStat.FAIL} and assigned_res_id is not None:
                 should_continue, suppress_resource_available = self._handle_terminal_resource_status(
@@ -630,8 +660,8 @@ class StateManager:
 
     async def record_adapter_result(self, req: AdapterStepResultInput) -> bool:
         """Adapter 결과를 메모리에 기록하고, 가능하면 DB 로그로 mirror한다."""
-        task_key = req.task_id if req.task_id.startswith("task_") else f"task_{req.task_id}"
-        task_meta = self._tasks.get(task_key, {})
+        task_key = _make_task_key(req.task_id, req.task_type)
+        task_meta = self._tasks.get(task_key) or self._tasks.get(f"task_{req.task_id}", {})
         record = req.model_dump()
         record["txn_id"] = task_meta.get("txn_id")
         record["ord_id"] = task_meta.get("ord_id")
@@ -763,6 +793,14 @@ class StateManager:
         self._safe_repo_call("sync_resource_snapshot", res_meta)
 
         req_res_type = res_meta.get("res_type")
+        logger.info(
+            "[StateManager] terminal_resource DEBUG: task=%s res=%s req_res_type=%s suppress_ra=%s event_bridge_set=%s",
+            req.task_id,
+            assigned_res_id,
+            req_res_type,
+            suppress_resource_available,
+            self._event_bridge is not None,
+        )
         if (
             self._event_bridge is not None
             and isinstance(req_res_type, str)

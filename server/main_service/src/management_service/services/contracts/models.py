@@ -159,6 +159,7 @@ class ExecuteTaskInput(BaseModel):
 class ExecutionResult(BaseModel):
     """실행 완료 후 반환되는 결과값 ([동사][명사]Result 규칙)"""
     task_id: str
+    task_type: Optional[TaskType] = None
     final_status: TxnStat
     steps_executed: int = Field(ge=0)
     error_code: Optional[str] = None
@@ -186,6 +187,7 @@ class AdapterStepResultInput(BaseModel):
 class UpdateTaskStatusInput(BaseModel):
     """State Manager 로 보낼 Task 진행 상태 업데이트 요청 ([동사][명사]Input 규칙)"""
     task_id: str
+    task_type: Optional[TaskType] = None
     new_stat: TxnStat
     error_code: Optional[str] = None
 
@@ -200,6 +202,7 @@ class AllocateTaskInput(BaseModel):
 
 class AllocateTaskResInput(BaseModel):
     task_id: str
+    task_type: Optional[TaskType] = None
     item_id: int
     res_id: str
 

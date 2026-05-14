@@ -33,6 +33,7 @@ class TaskAllocator:
     async def _update_task_allocation(self, task: AllocateTaskInput, res_id: str) -> None:
         assign_input = AllocateTaskResInput(
             task_id=task.task_id,
+            task_type=task.task_type,
             item_id=task.item_id,
             res_id=res_id,
         )
