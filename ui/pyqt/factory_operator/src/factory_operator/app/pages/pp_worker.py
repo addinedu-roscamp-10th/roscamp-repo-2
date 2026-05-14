@@ -221,25 +221,26 @@ class PpWorkerPage(QWidget):
         root.addWidget(ctrl_box)
 
         # ---- item 정보 ----
-        item_box = QGroupBox("선택 item 정보")
+        item_box = QGroupBox("선택 제품 정보")
         item_box.setObjectName("ppItemBox")
         item_grid = QGridLayout(item_box)
         item_grid.setSpacing(6)
         self._item_labels: dict[str, QLabel] = {}
-        for row, key, label in [
-            (0, "item_id", "item_id"),
-            (0, "ord_id", "ord_id"),
-            (1, "cur_stat", "현재 공정 (cur_stat)"),
-            (1, "equip_task_type", "equip_task_type"),
-            (2, "cur_res", "점유 자원 (cur_res)"),
-            (2, "is_defective", "불량 여부"),
+        # (row, key, label, col_left) — col_left=True 이면 grid 왼쪽 0열, False 이면 2열.
+        for row, key, label, col_left in [
+            (0, "item_id", "제품 ID", True),
+            (0, "ord_id", "주문 ID", False),
+            (1, "cur_stat", "현재 단계", True),
+            (1, "equip_task_type", "설비 작업 유형", False),
+            (2, "cur_res", "점유 자원", True),
+            (2, "is_defective", "불량 여부", False),
         ]:
             cell_label = QLabel(f"{label}:")
             cell_label.setObjectName("itemFieldLabel")
             cell_value = QLabel("-")
             cell_value.setProperty("tone", "primary")
             self._item_labels[key] = cell_value
-            col = 0 if label.startswith(("item_id", "현재", "점유")) else 2
+            col = 0 if col_left else 2
             item_grid.addWidget(cell_label, row, col)
             item_grid.addWidget(cell_value, row, col + 1)
 
@@ -251,7 +252,7 @@ class PpWorkerPage(QWidget):
         opts_v = QVBoxLayout(opts_box)
         self._opts_table = QTableWidget(0, 5)
         self._opts_table.setHorizontalHeaderLabels(
-            ["pp_id", "pp_nm", "extra_cost", "txn_stat", "txn_id"]
+            ["후처리 코드", "후처리명", "추가 비용", "진행 상태", "작업 ID"]
         )
         self._opts_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._opts_table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -570,8 +571,8 @@ class PpWorkerPage(QWidget):
         self._render_options(pp_options)
         self._current_item_id = item.get("item_id")
         self._set_status(
-            f"② RFID 조회 OK — item_id={item.get('item_id')} "
-            f"cur_stat={item.get('cur_stat')} 옵션={len(pp_options)}건 "
+            f"② RFID 조회 OK — 제품 #{item.get('item_id')} "
+            f"· 현재 단계: {item.get('cur_stat')} · 옵션 {len(pp_options)}건 "
             "(상태 변경은 ③ 후처리 완료 시점)"
         )
 

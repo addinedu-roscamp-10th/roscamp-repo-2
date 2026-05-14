@@ -349,14 +349,14 @@ class PatternControlPage(QWidget):
         self._unreg_list.clear()
         unreg_ord_ids = {o["ord_id"] for o in unreg_orders}
         for order in unreg_orders:
-            item = QListWidgetItem(f"ord_{order['ord_id']}  (user={order.get('user_id', '-')})")
+            item = QListWidgetItem(f"주문 #{order['ord_id']}  (담당: {order.get('user_id', '-')})")
             item.setData(Qt.UserRole, order["ord_id"])
             self._unreg_list.addItem(item)
         self._unreg_list.blockSignals(False)
 
         # 이전에 선택된 주문이 여전히 목록에 있으면 선택 상태 유지
         if self._selected_unreg_ord_id is not None and self._selected_unreg_ord_id in unreg_ord_ids:
-            self._order_no_lbl.setText(f"ord_{self._selected_unreg_ord_id}")
+            self._order_no_lbl.setText(f"주문 #{self._selected_unreg_ord_id}")
             self._register_btn.setEnabled(True)
         else:
             self._selected_unreg_ord_id = None
@@ -377,7 +377,7 @@ class PatternControlPage(QWidget):
         self._reg_list.clear()
         for order in reg_orders:
             ptn = self._PATTERN_LABEL.get(self._patterns[order["ord_id"]], "?")
-            item = QListWidgetItem(f"ord_{order['ord_id']}  패턴:{ptn}")
+            item = QListWidgetItem(f"주문 #{order['ord_id']}  패턴:{ptn}")
             item.setData(Qt.UserRole, order["ord_id"])
             self._reg_list.addItem(item)
 
@@ -415,7 +415,7 @@ class PatternControlPage(QWidget):
             return
         ord_id = item.data(Qt.UserRole)
         self._selected_unreg_ord_id = ord_id
-        self._order_no_lbl.setText(f"ord_{ord_id}")
+        self._order_no_lbl.setText(f"주문 #{ord_id}")
         self._register_btn.setEnabled(True)
 
     @pyqtSlot()
@@ -503,7 +503,7 @@ class PatternControlPage(QWidget):
         for row, r in enumerate(results):
             oid = r["order_id"]
             ptn = self._PATTERN_LABEL.get(self._patterns.get(oid, 0), "?")
-            label_item = QTableWidgetItem(f"  ord_{oid}  패턴:{ptn}")
+            label_item = QTableWidgetItem(f"  주문 #{oid}  패턴:{ptn}")
             color = delay_color.get(r["delay_risk"], "")
             if color:
                 label_item.setForeground(QColor(color))
@@ -549,7 +549,7 @@ class PatternControlPage(QWidget):
             self,
             "생산 시작 확인",
             f"주문 {len(ord_ids)}건을 우선순위 순서대로 생산 시작하겠습니까?\n"
-            + "\n".join(f"  {i+1}. ord_{oid}" for i, oid in enumerate(ord_ids)),
+            + "\n".join(f"  {i+1}. 주문 #{oid}" for i, oid in enumerate(ord_ids)),
             QMessageBox.Yes | QMessageBox.No,
         )
         if confirm != QMessageBox.Yes:
@@ -564,7 +564,7 @@ class PatternControlPage(QWidget):
                 try:
                     client.start_production_one(oid)
                 except Exception as exc:  # noqa: BLE001
-                    errors.append(f"ord_{oid}: {exc}")
+                    errors.append(f"주문 #{oid}: {exc}")
         finally:
             client.close()
 
