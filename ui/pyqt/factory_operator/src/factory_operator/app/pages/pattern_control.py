@@ -190,11 +190,13 @@ class PatternControlPage(QWidget):
         root.addWidget(title)
 
         # ── 1. 통계 카드 행 ──────────────────────────────────────────────────
+        # 2026-05-14: 대시보드 KpiCard 통일 (제목 위, 값 아래 + 단위).
+        from app.pages.dashboard import KpiCard
         stats_row = QHBoxLayout()
         stats_row.setSpacing(12)
-        self._stat_unreg = _StatBox("패턴 미등록")
-        self._stat_appr = _StatBox("생산 승인")
-        self._stat_today = _StatBox("금일 생산 진행 주문", highlight=True)
+        self._stat_unreg = KpiCard("패턴 미등록", unit="건")
+        self._stat_appr = KpiCard("생산 승인", unit="건")
+        self._stat_today = KpiCard("금일 생산 진행 주문", unit="건")
         for box in (self._stat_unreg, self._stat_appr, self._stat_today):
             stats_row.addWidget(box)
         root.addLayout(stats_row)
@@ -340,9 +342,9 @@ class PatternControlPage(QWidget):
 
         # ── 통계 카드 업데이트 ─────────────────────────────────────────
         unreg_orders = [o for o in appr_orders if o["ord_id"] not in self._patterns]
-        self._stat_unreg.set_value(len(unreg_orders))
-        self._stat_appr.set_value(len(appr_orders))
-        self._stat_today.set_value(len(mfg_orders))
+        self._stat_unreg.update_value(len(unreg_orders))
+        self._stat_appr.update_value(len(appr_orders))
+        self._stat_today.update_value(len(mfg_orders))
 
         # ── 미등록 주문 목록 ───────────────────────────────────────────
         self._unreg_list.blockSignals(True)

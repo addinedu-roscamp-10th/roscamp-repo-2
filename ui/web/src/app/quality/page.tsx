@@ -15,13 +15,19 @@ import {
   fetchInspectionStandards,
   fetchInspections,
   fetchQualityStats,
-  fetchSorterLogs,
 } from "@/lib/api";
-import type { InspectionRecord, InspectionStandard, SorterLog } from "@/lib/types";
+// 2026-05-14: backend HTTP 가 비어 있을 때 PyQt 와 동일하게 mock fallback (TOP3 / 검사 기준).
+import {
+  mockDefectTypeStats,
+  mockInspections,
+  mockInspectionStandards,
+} from "@/lib/mock-data";
+import type { InspectionRecord, InspectionStandard } from "@/lib/types";
 import { FailedInspectionsTable } from "./components/FailedInspectionsTable";
 import { InspectionStandardsPanel } from "./components/InspectionStandardsPanel";
 import { QualityStatsCards } from "./components/QualityStatsCards";
-import { SorterStatus } from "./components/SorterStatus";
+// 2026-05-14: SorterStatus 자리에 PyQt 와 동일한 최근 검사 이력 표 노출.
+import { RecentInspectionsTable } from "./components/RecentInspectionsTable";
 import { VisionCameraFeed } from "./components/VisionCameraFeed";
 
 // Recharts 동적 임포트 (SSR 비활성화)
@@ -43,7 +49,8 @@ const ProductionVsDefectsChart = dynamic(
 export default function QualityPage(): React.JSX.Element {
   const [inspections, setInspections] = useState<InspectionRecord[]>([]);
   const [standards, setStandards] = useState<InspectionStandard[]>([]);
-  const [sorterLogs, setSorterLogs] = useState<SorterLog[]>([]);
+  // 2026-05-14: 최근 검사 이력 행 클릭 → 비전 피드에 표시. null 이면 최신 검사를 사용.
+  const [selectedInspection, setSelectedInspection] = useState<InspectionRecord | null>(null);
   const [qualityStats, setQualityStats] = useState<{
     total: number;
     passed: number;
@@ -59,16 +66,16 @@ export default function QualityPage(): React.JSX.Element {
       try {
         setLoading(true);
         setError(null);
-        const [inspData, statsData, stdData, sorterData] = await Promise.all([
+        const [inspData, statsData, stdData] = await Promise.all([
           fetchInspections(),
           fetchQualityStats(),
           fetchInspectionStandards(),
-          fetchSorterLogs(),
         ]);
-        setInspections(inspData);
+        // 최근 검사 이력 — backend 빈 응답이면 PyQt INSPECTIONS 와 동일한 mock 으로 fallback.
+        setInspections(inspData.length > 0 ? inspData : mockInspections);
         setQualityStats(statsData);
-        setStandards(stdData);
-        setSorterLogs(sorterData);
+        // 검사 기준 — backend 빈 응답이면 PyQt 와 동일한 mock 으로 fallback.
+        setStandards(stdData.length > 0 ? stdData : mockInspectionStandards);
       } catch (err) {
         setError(err instanceof Error ? err.message : "데이터를 불러오는 중 오류가 발생했습니다.");
       } finally {
@@ -78,11 +85,10 @@ export default function QualityPage(): React.JSX.Element {
     loadData();
   }, []);
 
-  // 검사 통계 계산
+  // 검사 통계 계산 — backend 응답이 비어 있으면 (total=0) mock inspections 합산으로 fallback.
   const stats = useMemo(() => {
-    if (qualityStats) {
-      const passRate =
-        qualityStats.total > 0 ? (qualityStats.passed / qualityStats.total) * 100 : 0;
+    if (qualityStats && qualityStats.total > 0) {
+      const passRate = (qualityStats.passed / qualityStats.total) * 100;
       return {
         total: qualityStats.total,
         passCount: qualityStats.passed,
@@ -97,21 +103,27 @@ export default function QualityPage(): React.JSX.Element {
     return { total, passCount, failCount, passRate };
   }, [qualityStats, inspections]);
 
-  // 불량 유형 TOP 3
+  // 불량 유형 TOP 3 — backend defectTypes 가 비어 있으면 PyQt 와 동일한 mock 으로 fallback.
   const top3Defects = useMemo(() => {
-    if (qualityStats?.defectTypes) {
-      return Object.entries(qualityStats.defectTypes)
-        .map(([type, count]) => ({
-          type,
-          count,
-          percentage: stats.failCount > 0 ? (count / stats.failCount) * 100 : 0,
-          color: "",
-        }))
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 3);
-    }
-    return [];
-  }, [qualityStats, stats.failCount]);
+    const apiTypes = qualityStats?.defectTypes;
+    const entries: Array<[string, number]> =
+      apiTypes && Object.keys(apiTypes).length > 0
+        ? Object.entries(apiTypes)
+        : mockDefectTypeStats.map((d) => [d.type, d.count]);
+    const colorMap = Object.fromEntries(
+      mockDefectTypeStats.map((d) => [d.type, d.color])
+    );
+    const totalFail = entries.reduce((sum, [, c]) => sum + c, 0);
+    return entries
+      .map(([type, count]) => ({
+        type,
+        count,
+        percentage: totalFail > 0 ? Number(((count / totalFail) * 100).toFixed(1)) : 0,
+        color: colorMap[type] ?? "#888888",
+      }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 3);
+  }, [qualityStats]);
 
   // 불량 검사 로그만 추출
   const failedInspections = useMemo(
@@ -119,8 +131,6 @@ export default function QualityPage(): React.JSX.Element {
     [inspections]
   );
 
-  // 최신 sorter 로그
-  const latestSorter = sorterLogs.length > 0 ? sorterLogs[0] : null;
   // 가장 최근 검사 결과
   const latestInspection = inspections.length > 0 ? inspections[0] : null;
 
@@ -196,8 +206,12 @@ export default function QualityPage(): React.JSX.Element {
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                <VisionCameraFeed latestInspection={latestInspection} />
-                <SorterStatus latestSorter={latestSorter} />
+                <VisionCameraFeed latestInspection={selectedInspection ?? latestInspection} />
+                <RecentInspectionsTable
+                  inspections={inspections}
+                  selectedId={selectedInspection?.id ?? latestInspection?.id ?? null}
+                  onSelect={setSelectedInspection}
+                />
               </div>
             </div>
 
