@@ -49,6 +49,7 @@ from typing import Any
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
     QAction,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHeaderView,
@@ -57,6 +58,7 @@ from PyQt5.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
@@ -133,13 +135,23 @@ class PpWorkerPage(QWidget):
     # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
-        root = QVBoxLayout(self)
+        # 2026-05-14: 페이지 외곽 스크롤 (Dashboard 패턴 통일).
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        outer.addWidget(scroll)
+        content = QWidget()
+        scroll.setWidget(content)
+        root = QVBoxLayout(content)
         root.setContentsMargins(16, 16, 16, 16)
         root.setSpacing(12)
 
         # ---- 작업자 로그인 (작업 3) ----
+        # 2026-05-14: 다른 페이지(생산 계획/현황) 와 일관된 약한 박스 — domain.py 강조 스타일 비활성.
         login_box = QGroupBox("작업자 로그인")
-        login_box.setObjectName("ppLoginBox")
         login_grid = QGridLayout(login_box)
         login_grid.addWidget(QLabel("이메일:"), 0, 0)
         self._email_edit = QLineEdit()
@@ -169,7 +181,6 @@ class PpWorkerPage(QWidget):
 
         # ---- 상단 컨트롤 ----
         ctrl_box = QGroupBox("후처리 작업자 컨트롤")
-        ctrl_box.setObjectName("ppCtrlBox")
         grid = QGridLayout(ctrl_box)
         grid.setSpacing(8)
 
@@ -222,7 +233,6 @@ class PpWorkerPage(QWidget):
 
         # ---- item 정보 ----
         item_box = QGroupBox("선택 제품 정보")
-        item_box.setObjectName("ppItemBox")
         item_grid = QGridLayout(item_box)
         item_grid.setSpacing(6)
         self._item_labels: dict[str, QLabel] = {}
@@ -248,7 +258,6 @@ class PpWorkerPage(QWidget):
 
         # ---- 후처리 옵션 표 ----
         opts_box = QGroupBox("필요 후처리 옵션 (정의 + 진행 현황)")
-        opts_box.setObjectName("ppOptsBox")
         opts_v = QVBoxLayout(opts_box)
         self._opts_table = QTableWidget(0, 5)
         self._opts_table.setHorizontalHeaderLabels(

@@ -15,12 +15,14 @@ from typing import Any
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -35,7 +37,8 @@ from app.widgets.charts import (
     ProductionVsDefectsChart,
 )
 from app.widgets.defect_panels import InspectionStandardsPanel, TopDefectsPanel
-from app.widgets.sorter_dial import SorterCard
+# 2026-05-14: SorterCard 제거 — VisionFeedCard (web VisionCameraFeed 와 동등) 로 교체.
+from app.widgets.vision_feed import VisionFeedCard
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +56,17 @@ class QualityPage(QWidget):
         return None
 
     def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
+        # 2026-05-14: 페이지 외곽 스크롤 (Dashboard 패턴 통일).
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        outer.addWidget(scroll)
+        content = QWidget()
+        scroll.setWidget(content)
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(14)
 
@@ -80,8 +93,8 @@ class QualityPage(QWidget):
         top_row = QHBoxLayout()
         top_row.setSpacing(14)
 
-        self._sorter_card = SorterCard()
-        top_row.addWidget(self._sorter_card, stretch=2)
+        self._vision_feed = VisionFeedCard()
+        top_row.addWidget(self._vision_feed, stretch=2)
 
         self._top_defects = TopDefectsPanel()
         top_row.addWidget(self._top_defects, stretch=2)
@@ -121,7 +134,13 @@ class QualityPage(QWidget):
         self._table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._table.verticalHeader().setVisible(False)
         self._table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self._table.setMaximumHeight(220)
+        # 2026-05-14: 최근 검사 이력 풀 노출 — 페이지 외곽 스크롤이 처리.
+        self._table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # 행 클릭 → 비전 피드 동기화 + 선택 색상 자동 적용.
+        self._table.setSelectionBehavior(QTableWidget.SelectRows)
+        self._table.setSelectionMode(QTableWidget.SingleSelection)
+        self._table.cellClicked.connect(self._on_inspection_row_clicked)
+        self._inspections_cache: list[dict] = []
         layout.addWidget(self._table)
 
         # ===== 검사 진행 중 (PROC) — 결과 입력 (Gap 5, 2026-04-27) =====
@@ -155,16 +174,11 @@ class QualityPage(QWidget):
             self._kpis["rate"].update_value(f"{rate:.1f}")
             self._colorize_rate(rate)
 
-        # 분류 다이얼
-        sorter = self._api.get_sorter_state()
-        if sorter:
-            self._sorter_card.set_state(
-                angle=sorter.get("angle"),
-                direction=sorter.get("direction"),
-                success=sorter.get("success"),
-                count_good=sorter.get("count_good"),
-                count_bad=sorter.get("count_bad"),
-            )
+        # 2026-05-14: 분류 다이얼 → 비전 카메라 피드. 최신 검사 1건을 web 과 동일하게 표시.
+        # web 의 latestInspection 과 동일한 source (INSPECTIONS[0]).
+        latest_inspections = self._api.get_quality_inspections() or []
+        latest = latest_inspections[0] if latest_inspections else None
+        self._vision_feed.update_data(latest)
 
         # TOP3 + 기준 + 차트
         defects = self._api.get_defect_type_dist()
@@ -175,10 +189,11 @@ class QualityPage(QWidget):
         self._pie_chart.update_data(defects)
         self._vs_chart.update_data(self._api.get_production_vs_defects())
 
-        # 검사 이력 (이미지 플레이스홀더 컬럼 포함)
-        inspections = self._api.get_quality_inspections() or []
+        # 검사 이력 (이미지 플레이스홀더 컬럼 포함) — 최근 10건만.
+        inspections = (self._api.get_quality_inspections() or [])[:10]
+        self._inspections_cache = inspections  # 행 클릭 시 vision_feed 갱신용.
         self._table.setRowCount(len(inspections))
-        for row, item in enumerate(inspections[:200]):
+        for row, item in enumerate(inspections):
             # 이미지 플레이스홀더 (결과에 따라 이모지 아이콘)
             result = str(item.get("result", ""))
             icon = "📷" if result == "OK" else ("⚠" if result == "NG" else "·")
@@ -200,8 +215,20 @@ class QualityPage(QWidget):
             self._table.setItem(row, 5, QTableWidgetItem(str(item.get("inspector", ""))))
             self._table.setItem(row, 6, QTableWidgetItem(str(item.get("note", ""))))
 
+        # 모든 row 가 한 번에 보이도록 테이블 높이 동적 조정 (내부 스크롤 사용 안 함).
+        self._table.resizeRowsToContents()
+        total_h = self._table.horizontalHeader().height() + 4
+        for r in range(self._table.rowCount()):
+            total_h += self._table.rowHeight(r)
+        self._table.setFixedHeight(max(80, total_h))
+
         # ===== 검사 진행 중 (insp_task_txn.txn_stat=PROC) — Gap 5 =====
         self._refresh_proc_table()
+
+    def _on_inspection_row_clicked(self, row: int, _col: int) -> None:
+        """최근 검사 이력 행 클릭 → 비전 피드에 해당 검사 표시."""
+        if 0 <= row < len(self._inspections_cache):
+            self._vision_feed.update_data(self._inspections_cache[row])
 
     def _refresh_proc_table(self) -> None:
         """진행 중 검사 row 만 골라 GP/DP 버튼 행으로 표시."""

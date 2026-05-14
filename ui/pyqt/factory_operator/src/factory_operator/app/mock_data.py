@@ -251,17 +251,62 @@ QUALITY_STATS: dict[str, Any] = {
 }
 
 
+# 2026-05-14: web mockInspections 30건과 데이터 단일 진실 원천 동기화.
+# 매핑: productId→product (KS 규격 카탈로그), result(pass→OK / fail→NG),
+#       defectType→defect_type, inspectorId→inspector, defectDetail→note.
+_PRODUCT_NAMES_FOR_INSP: dict[str, str] = {
+    "PRD-001": "맨홀 뚜껑 KS D-600",
+    "PRD-002": "맨홀 뚜껑 KS D-800",
+    "PRD-003": "맨홀 뚜껑 KS D-450",
+}
+
+# (id, productId, result, defectType, defectDetail, inspectedAt, confidence, castingId)
+_INSP_RAW: list[tuple[str, str, str, str, str, str, float, str]] = [
+    ("INS-001", "PRD-001", "pass", "",           "",                                "2026-03-30T09:31:00", 98.5, "CST-0298-01"),
+    ("INS-002", "PRD-001", "pass", "",           "",                                "2026-03-30T09:32:00", 97.2, "CST-0298-02"),
+    ("INS-003", "PRD-001", "fail", "표면 균열",  "뚜껑 외곽부 0.3mm 크랙",          "2026-03-30T09:33:00", 95.8, "CST-0298-03"),
+    ("INS-004", "PRD-001", "pass", "",           "",                                "2026-03-30T09:34:00", 99.1, "CST-0298-04"),
+    ("INS-005", "PRD-001", "pass", "",           "",                                "2026-03-30T09:35:00", 96.7, "CST-0298-05"),
+    ("INS-006", "PRD-001", "fail", "기포 불량",  "내부 기포 2개 감지 (직경 1.5mm)", "2026-03-30T09:36:00", 94.3, "CST-0298-06"),
+    ("INS-007", "PRD-001", "pass", "",           "",                                "2026-03-30T09:37:00", 98.0, "CST-0298-07"),
+    ("INS-008", "PRD-001", "pass", "",           "",                                "2026-03-30T09:38:00", 97.5, "CST-0298-08"),
+    ("INS-009", "PRD-001", "pass", "",           "",                                "2026-03-30T10:01:00", 98.8, "CST-0301-01"),
+    ("INS-010", "PRD-001", "fail", "수축 결함",  "중앙부 수축 3mm 초과",            "2026-03-30T10:02:30", 92.1, "CST-0301-02"),
+    ("INS-011", "PRD-001", "pass", "",           "",                                "2026-03-30T10:04:00", 97.9, "CST-0301-03"),
+    ("INS-012", "PRD-001", "pass", "",           "",                                "2026-03-30T10:05:30", 99.3, "CST-0301-04"),
+    ("INS-013", "PRD-001", "fail", "표면 균열",  "테두리 미세 균열 0.2mm",          "2026-03-30T10:07:00", 96.4, "CST-0301-05"),
+    ("INS-014", "PRD-001", "pass", "",           "",                                "2026-03-30T10:08:30", 98.2, "CST-0301-06"),
+    ("INS-015", "PRD-001", "pass", "",           "",                                "2026-03-30T10:10:00", 97.0, "CST-0301-07"),
+    ("INS-016", "PRD-001", "fail", "주탕 불량",  "미충전 부위 발생",                "2026-03-30T10:11:30", 93.7, "CST-0301-08"),
+    ("INS-017", "PRD-001", "pass", "",           "",                                "2026-03-30T10:13:00", 98.6, "CST-0301-09"),
+    ("INS-018", "PRD-001", "pass", "",           "",                                "2026-03-30T10:14:30", 99.0, "CST-0301-10"),
+    ("INS-019", "PRD-001", "fail", "치수 불량",  "외경 601.5mm (허용 +-0.5mm)",     "2026-03-29T14:20:00", 91.5, "CST-0295-01"),
+    ("INS-020", "PRD-001", "pass", "",           "",                                "2026-03-29T14:21:30", 98.3, "CST-0295-02"),
+    ("INS-021", "PRD-001", "fail", "기포 불량",  "표면 기포 다수 (5개 이상)",       "2026-03-29T14:23:00", 89.8, "CST-0295-03"),
+    ("INS-022", "PRD-001", "pass", "",           "",                                "2026-03-29T14:24:30", 97.6, "CST-0295-04"),
+    ("INS-023", "PRD-001", "fail", "냉각 균열",  "급속 냉각 열응력 균열",            "2026-03-29T14:26:00", 93.2, "CST-0295-05"),
+    ("INS-024", "PRD-001", "pass", "",           "",                                "2026-03-29T14:27:30", 99.4, "CST-0295-06"),
+    ("INS-025", "PRD-001", "fail", "주형 결함",  "주형 파손에 의한 형상 이상",       "2026-03-29T14:29:00", 90.1, "CST-0295-07"),
+    ("INS-026", "PRD-001", "pass", "",           "",                                "2026-03-29T14:30:30", 96.9, "CST-0295-08"),
+    ("INS-027", "PRD-001", "fail", "표면 균열",  "하부면 균열 0.5mm",                "2026-03-29T14:32:00", 88.7, "CST-0295-09"),
+    ("INS-028", "PRD-001", "pass", "",           "",                                "2026-03-29T14:33:30", 98.1, "CST-0295-10"),
+    ("INS-029", "PRD-001", "fail", "수축 결함",  "냉각 수축률 기준 초과",            "2026-03-29T15:10:00", 91.9, "CST-0296-01"),
+    ("INS-030", "PRD-001", "fail", "기포 불량",  "내부 기포 밀집 구간",              "2026-03-29T15:11:30", 87.3, "CST-0296-02"),
+]
+
 INSPECTIONS: list[dict[str, Any]] = [
     {
-        "id": i,
-        "inspected_at": _ago(minutes=i * 5),
-        "product": f"맨홀뚜껑 M{500 + i}",
-        "result": "OK" if i % 8 != 0 else "NG",
-        "defect_type": "" if i % 8 != 0 else ("균열" if i % 16 == 0 else "기공"),
-        "inspector": "AI (CAM-001)",
-        "note": "자동 검사" if i % 8 != 0 else "재검사 필요",
+        "id": ins_id,
+        "inspected_at": at,
+        "product": _PRODUCT_NAMES_FOR_INSP.get(prod_id, prod_id),
+        "result": "OK" if res == "pass" else "NG",
+        "defect_type": dtype,
+        "inspector": "CAM-001",
+        "note": detail,
+        "confidence": conf,
+        "casting_id": cid,
     }
-    for i in range(1, 21)
+    for (ins_id, prod_id, res, dtype, detail, at, conf, cid) in _INSP_RAW
 ]
 
 
@@ -439,23 +484,57 @@ HOURLY_PRODUCTION: list[dict[str, Any]] = [
 ]
 
 
-DEFECT_RATE_TREND: list[dict[str, Any]] = [
-    {"label": "월", "rate": 2.4},
-    {"label": "화", "rate": 2.1},
-    {"label": "수", "rate": 3.3},
-    {"label": "목", "rate": 1.8},
-    {"label": "금", "rate": 2.0},
-    {"label": "토", "rate": 2.9},
-    {"label": "일", "rate": 3.6},
+# 2026-05-14: web (ui/web/src/lib/mock-data.ts) 의 mockProductionMetrics / mockDefectTypeStats /
+# mockInspectionStandards 와 데이터 단일 진실 원천 동기화.
+# (date, production, defects, defectRate) — web 30일 값과 1:1 일치.
+_PROD_METRICS_30D: list[tuple[str, int, int, float]] = [
+    ("03/01", 45, 2, 4.4),
+    ("03/02", 0,  0, 0.0),
+    ("03/03", 52, 3, 5.8),
+    ("03/04", 58, 2, 3.4),
+    ("03/05", 61, 4, 6.6),
+    ("03/06", 55, 1, 1.8),
+    ("03/07", 49, 2, 4.1),
+    ("03/08", 43, 3, 7.0),
+    ("03/09", 0,  0, 0.0),
+    ("03/10", 57, 2, 3.5),
+    ("03/11", 63, 5, 7.9),
+    ("03/12", 60, 3, 5.0),
+    ("03/13", 65, 2, 3.1),
+    ("03/14", 58, 1, 1.7),
+    ("03/15", 50, 2, 4.0),
+    ("03/16", 0,  0, 0.0),
+    ("03/17", 54, 3, 5.6),
+    ("03/18", 62, 2, 3.2),
+    ("03/19", 59, 4, 6.8),
+    ("03/20", 66, 2, 3.0),
+    ("03/21", 64, 1, 1.6),
+    ("03/22", 48, 2, 4.2),
+    ("03/23", 0,  0, 0.0),
+    ("03/24", 42, 2, 4.8),
+    ("03/25", 55, 3, 5.5),
+    ("03/26", 48, 1, 2.1),
+    ("03/27", 61, 2, 3.3),
+    ("03/28", 38, 3, 7.9),
+    ("03/29", 52, 2, 3.8),
+    ("03/30", 47, 2, 4.3),
 ]
 
 
+DEFECT_RATE_TREND: list[dict[str, Any]] = [
+    {"label": d, "rate": r} for (d, _p, _b, r) in _PROD_METRICS_30D
+]
+
+
+# web mockDefectTypeStats 와 동일한 7종.
 DEFECT_TYPE_DIST: list[dict[str, Any]] = [
-    {"type": "기공", "count": 12},
-    {"type": "균열", "count": 8},
-    {"type": "미성형", "count": 5},
-    {"type": "치수 이탈", "count": 3},
-    {"type": "표면 결함", "count": 2},
+    {"type": "표면 균열", "count": 12},
+    {"type": "기포 불량", "count": 9},
+    {"type": "수축 결함", "count": 7},
+    {"type": "치수 불량", "count": 6},
+    {"type": "냉각 균열", "count": 4},
+    {"type": "주탕 불량", "count": 2},
+    {"type": "주형 결함", "count": 2},
 ]
 
 
@@ -477,48 +556,33 @@ SORTER_STATE: dict[str, Any] = {
 }
 
 
+# web mockInspectionStandards 와 동일 (3종, KS 규격 맨홀뚜껑).
 INSPECTION_STANDARDS: list[dict[str, Any]] = [
     {
-        "product": "맨홀뚜껑 M500",
-        "target": "Φ500 × H40 mm",
-        "tolerance": "±0.8 mm",
-        "threshold": "95%",
+        "product": "맨홀 뚜껑 KS D-600",
+        "target": "외경 600mm / 두께 50mm",
+        "tolerance": "±0.5mm",
+        "threshold": "95.0%",
     },
     {
-        "product": "그레이팅 GR-A",
-        "target": "500 × 300 × 25 mm",
-        "tolerance": "±1.0 mm",
-        "threshold": "92%",
+        "product": "맨홀 뚜껑 KS D-800",
+        "target": "외경 800mm / 두께 60mm",
+        "tolerance": "±0.8mm",
+        "threshold": "95.0%",
     },
     {
-        "product": "맨홀뚜껑 M800",
-        "target": "Φ800 × H55 mm",
-        "tolerance": "±1.2 mm",
-        "threshold": "94%",
+        "product": "맨홀 뚜껑 KS D-450",
+        "target": "외경 450mm / 두께 40mm",
+        "tolerance": "±0.4mm",
+        "threshold": "93.0%",
     },
 ]
 
 
+# web mockProductionMetrics 의 (production, defectRate) 를 동일 30일 라벨로 표시.
 PRODUCTION_VS_DEFECTS: list[dict[str, Any]] = [
-    {"label": f"{h:02d}시", "production": g + b, "defect_rate": round(b * 100 / max(g + b, 1), 1)}
-    for h, (g, b) in zip(
-        range(8, 20),
-        [
-            (32, 1),
-            (41, 2),
-            (38, 1),
-            (45, 3),
-            (52, 2),
-            (48, 1),
-            (39, 2),
-            (44, 1),
-            (50, 3),
-            (46, 2),
-            (42, 1),
-            (35, 1),
-        ],
-        strict=False,
-    )
+    {"label": d, "production": p, "defect_rate": r}
+    for (d, p, _b, r) in _PROD_METRICS_30D
 ]
 
 
