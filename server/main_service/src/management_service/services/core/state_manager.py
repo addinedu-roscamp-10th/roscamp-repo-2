@@ -548,7 +548,6 @@ class StateManager:
         if task_meta is not None:
             task_meta["item_id"] = assign_input.item_id
             task_meta["res_id"] = assign_input.res_id
-            task_meta["assignment_status"] = "ALLOC"
             task_meta["status"] = TxnStat.QUE.value
             task_meta["task_id"] = task_key
 
