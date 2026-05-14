@@ -80,7 +80,24 @@ def _res_kind(res_id: Any) -> str | None:
     return "equip"
 
 
+_EQUIP_CUR_STAT_VALUES = {
+    "IDLE", "ALLOC", "FAIL",
+    "MV_SRC", "GRASP", "MV_DEST", "RELEASE", "TO_IDLE",
+    "ON", "OFF",
+}
+
+_TRANS_CUR_STAT_VALUES = {
+    "IDLE", "ALLOC", "CHG", "TO_IDLE",
+    "MV_SRC", "WAIT_LD", "MV_DEST", "WAIT_DLD",
+    "SUCC", "FAIL",
+}
+
+
 def _equip_stat_value(status: Any) -> str:
+    # state_manager 가 DDL cur_stat 값을 직접 넘겨주면 그대로 사용
+    if isinstance(status, str) and status in _EQUIP_CUR_STAT_VALUES:
+        return status
+    # 그렇지 않으면 TxnStat 기반 폴백 매핑
     value = _txn_stat_value(status)
     if value == TxnStat.FAIL.value:
         return "FAIL"
@@ -92,6 +109,10 @@ def _equip_stat_value(status: Any) -> str:
 
 
 def _trans_stat_value(status: Any) -> str:
+    # state_manager 가 DDL cur_stat 값을 직접 넘겨주면 그대로 사용
+    if isinstance(status, str) and status in _TRANS_CUR_STAT_VALUES:
+        return status
+    # 그렇지 않으면 TxnStat 기반 폴백 매핑
     value = _txn_stat_value(status)
     if value == TxnStat.QUE.value:
         return "ALLOC"
@@ -118,6 +139,7 @@ class RuntimeStateRepository:
         equip_task_txn_model,
         insp_task_txn_model=None,
         trans_task_txn_model=None,
+        pp_task_txn_model=None,
         equip_stat_model=None,
         trans_stat_model=None,
         chg_location_stat_model=None,
@@ -125,6 +147,8 @@ class RuntimeStateRepository:
         log_event_model=None,
         log_err_equip_model=None,
         log_err_trans_model=None,
+        tat_nav_pose_master_model=None,
+        trans_task_bat_threshold_model=None,
     ) -> None:
         self._session_factory = session_factory
         self._ord_model = ord_model
@@ -136,6 +160,7 @@ class RuntimeStateRepository:
         self._equip_task_txn_model = equip_task_txn_model
         self._insp_task_txn_model = insp_task_txn_model
         self._trans_task_txn_model = trans_task_txn_model
+        self._pp_task_txn_model = pp_task_txn_model
         self._equip_stat_model = equip_stat_model
         self._trans_stat_model = trans_stat_model
         self._chg_location_stat_model = chg_location_stat_model
@@ -143,6 +168,8 @@ class RuntimeStateRepository:
         self._log_event_model = log_event_model
         self._log_err_equip_model = log_err_equip_model
         self._log_err_trans_model = log_err_trans_model
+        self._tat_nav_pose_master_model = tat_nav_pose_master_model
+        self._trans_task_bat_threshold_model = trans_task_bat_threshold_model
 
     @classmethod
     def from_default_db(cls) -> "RuntimeStateRepository":
@@ -161,8 +188,11 @@ class RuntimeStateRepository:
             OrdLog,
             OrdStat,
             Pattern,
+            PpTaskTxn,
             StrgLocationStat,
+            TatNavPoseMaster,
             TransStat,
+            TransTaskBatThreshold,
             TransTaskTxn,
         )
 
@@ -177,6 +207,7 @@ class RuntimeStateRepository:
             equip_task_txn_model=EquipTaskTxn,
             insp_task_txn_model=InspTaskTxn,
             trans_task_txn_model=TransTaskTxn,
+            pp_task_txn_model=PpTaskTxn,
             equip_stat_model=EquipStat,
             trans_stat_model=TransStat,
             chg_location_stat_model=ChgLocationStat,
@@ -184,7 +215,43 @@ class RuntimeStateRepository:
             log_event_model=LogEvent,
             log_err_equip_model=LogErrEquip,
             log_err_trans_model=LogErrTrans,
+            tat_nav_pose_master_model=TatNavPoseMaster,
+            trans_task_bat_threshold_model=TransTaskBatThreshold,
         )
+
+    def load_tat_nav_poses(self) -> dict[str, tuple[float, float]]:
+        """tat_nav_pose_master 의 활성 pose (pose_nm → (x, y)) 로드."""
+        if self._tat_nav_pose_master_model is None:
+            return {}
+        with self._session_factory() as db:
+            rows = (
+                db.query(self._tat_nav_pose_master_model)
+                .filter(self._tat_nav_pose_master_model.is_active.is_(True))
+                .all()
+            )
+            return {row.pose_nm: (float(row.pose_x), float(row.pose_y)) for row in rows}
+
+    def load_trans_task_bat_thresholds(self) -> dict[TaskType, int]:
+        """trans_task_bat_threshold 에서 task_type 별 최소값을 로드.
+
+        DDL 상 (res_id, task_type) 복합키이지만 동일 task_type 에 대해 res_id 마다 값이
+        다를 수 있으므로 가장 보수적인(가장 큰) 임계치를 채택한다.
+        """
+        if self._trans_task_bat_threshold_model is None:
+            return {}
+        thresholds: dict[TaskType, int] = {}
+        with self._session_factory() as db:
+            rows = db.query(self._trans_task_bat_threshold_model).all()
+            for row in rows:
+                try:
+                    task_type = TaskType(row.task_type)
+                except ValueError:
+                    continue
+                value = int(row.bat_low_threshold or 0)
+                current = thresholds.get(task_type)
+                if current is None or value > current:
+                    thresholds[task_type] = value
+        return thresholds
 
     def start_production(self, ord_id: int) -> StartProductionOrderAckModel:
         with self._session_factory() as db:
@@ -302,9 +369,24 @@ class RuntimeStateRepository:
                 if self._insp_task_txn_model is None:
                     return None
                 txn = self._insp_task_txn_model(
-                    res_id=task_meta.get("res_id"),
                     txn_stat=_txn_stat_value(task_meta.get("status")),
                     item_id=task_meta.get("item_id"),
+                )
+                db.add(txn)
+                db.commit()
+                db.refresh(txn)
+                return int(txn.txn_id)
+
+            if task_type == TaskType.PP.value:
+                if self._pp_task_txn_model is None:
+                    return None
+                ord_id = task_meta.get("ord_id")
+                if ord_id is None:
+                    return None
+                txn = self._pp_task_txn_model(
+                    ord_id=ord_id,
+                    item_id=task_meta.get("item_id"),
+                    txn_stat=_txn_stat_value(task_meta.get("status")),
                 )
                 db.add(txn)
                 db.commit()
@@ -579,7 +661,15 @@ class RuntimeStateRepository:
                 if txn is None:
                     return
                 txn.txn_stat = status
-                txn.res_id = task_meta.get("res_id")
+                if status == TxnStat.PROC.value and txn.start_at is None:
+                    txn.start_at = now
+                if status in {TxnStat.SUCC.value, TxnStat.FAIL.value}:
+                    txn.end_at = now
+            elif task_type == TaskType.PP.value and self._pp_task_txn_model is not None:
+                txn = db.get(self._pp_task_txn_model, txn_id)
+                if txn is None:
+                    return
+                txn.txn_stat = status
                 if status == TxnStat.PROC.value and txn.start_at is None:
                     txn.start_at = now
                 if status in {TxnStat.SUCC.value, TxnStat.FAIL.value}:

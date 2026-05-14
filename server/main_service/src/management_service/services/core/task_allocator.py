@@ -3,7 +3,12 @@ import logging
 import math
 from typing import TYPE_CHECKING, Sequence
 
-from services.contracts.enums import TaskType
+from services.contracts.enums import (
+    ResourceType,
+    TaskType,
+    TRANS_SRC_POSE,
+    get_required_resource_type,
+)
 from services.contracts.models import (
     AllocateTaskInput,
     AllocateTaskResult,
@@ -16,76 +21,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# 각 상차 시작 pose 좌표 (tat_nav_pose_master 기준)
-TRANSFER_POINT_COORDS: dict[str, tuple[float, float]] = {
-    "ToCAST": (-0.256, 0.20),
-    "ToINSP": (-0.67, -0.10),
-    "ToPICK": (-0.223, -0.465),
-}
-
-TASK_BATTERY_THRESHOLDS = {
-    TaskType.ToPP: 30, # src-dest 기준으로 dist가 가장 멈
-    TaskType.ToSTRG: 20, # dist가 가장 가까움
-    TaskType.ToSHIP: 25, # 중간 dist
-}
-
-SRC_POSE = {
-    TaskType.ToPP: "ToCAST",
-    TaskType.ToSTRG: "ToINSP",
-    TaskType.ToSHIP: "ToPICK",
-}
-
-
-MAT_TASKS = {
-    TaskType.MM,
-    TaskType.POUR,
-    TaskType.DM,
-}
-
-PAT_TASKS = {
-    TaskType.PA_GP,
-    TaskType.PA_DP,
-    TaskType.PICK,
-    TaskType.SHIP,
-}
-
-ON_CONVEYOR_TASKS = {
-    TaskType.PP,
-    TaskType.INSP,
-    TaskType.ToINSP,
-    TaskType.ToPAWait,
-}
-
-TRANSPORT_TASKS = {
-    TaskType.ToPP,
-    TaskType.ToSTRG,
-    TaskType.ToSHIP,
-    TaskType.ToCHG,
-}
-
-def _get_required_resource_type(
-    task_type: TaskType | None,
-    zone_nm: str | None = None,
-) -> str:
-    if task_type in TRANSPORT_TASKS:
-        return "TAT"
-
-    if task_type in ON_CONVEYOR_TASKS:
-        return "CONV"
-
-    if task_type in PAT_TASKS:
-        return "PAT"
-
-    if task_type in MAT_TASKS:
-        return "MAT"
-
-    return None
-
 
 class TaskAllocator:
     """각 task를 어떤 res가 수행할지 결정하고 반환."""
 
-    DEFAULT_BATTERY_THRESHOLD = 30  # task에 설정된 임계치 없을 때
+    DEFAULT_BATTERY_THRESHOLD = 1  # task에 설정된 임계치 없을 때
 
     def __init__(self, state_manager: IStateManager):
         self.state_manager = state_manager
@@ -103,15 +43,16 @@ class TaskAllocator:
         self,
         task_type: TaskType | None,
     ) -> str | None:
-        return SRC_POSE.get(task_type)
+        return TRANS_SRC_POSE.get(task_type)
 
-    # 각 TAT와 src 간의 dist 계산
+    # 각 TAT와 src 간의 dist 계산. transfer_points는 state_manager가 DB/seed에서 주입.
     def _get_distance_to_source_pose(
         self,
         amr_location: AmrRuntimeState,
         src_pose_name: str,
     ) -> float:
-        target_x, target_y = TRANSFER_POINT_COORDS[src_pose_name]
+        coords = getattr(self.state_manager, "transfer_points", None) or {}
+        target_x, target_y = coords[src_pose_name]
         return math.dist((amr_location.x, amr_location.y), (target_x, target_y))
 
     # res 선택 함수
@@ -124,7 +65,8 @@ class TaskAllocator:
     ) -> str | None:
         # AMR일 때 bat 및 dist를 점수 기반으로 계산해서 할당
         if amr_stats:
-            req_bat = TASK_BATTERY_THRESHOLDS.get(task_type, self.DEFAULT_BATTERY_THRESHOLD)
+            thresholds = getattr(self.state_manager, "battery_thresholds", None) or {}
+            req_bat = thresholds.get(task_type, self.DEFAULT_BATTERY_THRESHOLD)
             
             # bat 임계치를 만족하는 후보 필터링
             candidates: list[AmrRuntimeState] = [
@@ -200,7 +142,8 @@ class TaskAllocator:
         task: AllocateTaskInput,
     ) -> AllocateTaskResult:
         # 입력에 타입이 없으면 allocator가 req_res_type을 계산
-        req_res_type = task.req_res_type or _get_required_resource_type(task.task_type, task.zone_nm)
+        required = get_required_resource_type(task.task_type, task.zone_nm)
+        req_res_type = task.req_res_type or (required.value if required else None)
 
         # req_res_id가 들어오면 반드시 그 res가 할당되도록
         if task.req_res_id:
@@ -222,7 +165,7 @@ class TaskAllocator:
             )
 
         amr_stats: list[AmrRuntimeState] = []
-        if req_res_type == "TAT":
+        if req_res_type == ResourceType.TAT.value:
             amr_stats = await self.state_manager.get_amr_stats()
 
         # 최적 리소스 선택

@@ -40,14 +40,14 @@ class TaskManager(ITaskManager):
         for row in range(1, self.MAX_ROW + 1):
             for col in range(1, self.MAX_COL + 1):
                 self.slot_table[(row, col)] = {
-                    "status": "Empty",
+                    "status": "empty",
                     "order_id": None,
                 }
-       
-        # 임시 점유 테스트용 1-1~1-3 
-        # self.slot_table[(1, 1)]["status"] = "Used"
-        # self.slot_table[(1, 2)]["status"] = "Used"
-        # self.slot_table[(1, 3)]["status"] = "Used"
+
+        # 임시 점유 테스트용 1-1~1-3
+        # self.slot_table[(1, 1)]["status"] = "occupied"
+        # self.slot_table[(1, 2)]["status"] = "occupied"
+        # self.slot_table[(1, 3)]["status"] = "occupied"
 
 
     #오더 투입시 해당 오더가 사용할 적재 공간 예약
@@ -70,12 +70,12 @@ class TaskManager(ITaskManager):
 
             slot = self.slot_table[pos_key]
 
-            if slot.get("status") != "Empty" or slot.get("order_id") is not None:
+            if slot.get("status") != "empty" or slot.get("order_id") is not None:
                 logger.warning("예약 불가 슬롯: %s-%s slot=%s", curr_row, curr_col, slot)
                 break
 
             slot["order_id"] = order_id
-            slot["status"] = "Reserved"
+            slot["status"] = "reserved"
 
             assigned += 1
             current_abs_idx += 1
@@ -108,7 +108,7 @@ class TaskManager(ITaskManager):
                 status = slot["status"]
                 order_id = slot["order_id"]
 
-                if status == "Empty":
+                if status == "empty":
                     text = f"{row}-{col}:EMPTY"
                 else:
                     text = f"{row}-{col}:{status}(O{order_id})"
@@ -131,9 +131,9 @@ class TaskManager(ITaskManager):
        
         for (f, c), data in self.slot_table.items():
             if data["order_id"] == order_id:
-                if data["status"] in ["Empty", "Reserved"]:
+                if data["status"] in ["empty", "reserved"]:
                     data["order_id"] = None
-                    data["status"] = "Empty"
+                    data["status"] = "empty"
 
     #작업 객체 생성 to orchestrator
     async def create_next_task(self, item_info: ItemStatusRecord, event: str = None) -> List[NextTaskResult]:
@@ -231,8 +231,8 @@ class TaskManager(ITaskManager):
                     # 2. [Slot Table 반영] 현재 불량 제품이 예약했던 슬롯을 다시 Empty로 변경
                     # item_info 혹은 현재 할당된 slot_table에서 'Reserved' 상태인 내 칸을 찾아 해제합니다.
                     for (f, c), data in self.slot_table.items():
-                        if data["order_id"] == item_info.order_id and data["status"] == "Reserved":
-                            data["status"] = "Empty"  # 소유권(order_id)은 유지, 상태만 초기화
+                        if data["order_id"] == item_info.order_id and data["status"] == "reserved":
+                            data["status"] = "empty"  # 소유권(order_id)은 유지, 상태만 초기화
                             logger.info("불량 발생으로 슬롯 %s-%s 복구 (오더 %s 전용)", f, c, item_info.order_id)
                             break
 
@@ -287,7 +287,7 @@ class TaskManager(ITaskManager):
         
         if task_type == TaskType.ToPAWait:
             for (row, col), data in sorted(self.slot_table.items()):
-                if data["order_id"] == item_info.order_id and data["status"] == "Reserved":
+                if data["order_id"] == item_info.order_id and data["status"] == "reserved":
                     strg_loc = (row, col)
 
                     await self.sm.update_item_storage_location(

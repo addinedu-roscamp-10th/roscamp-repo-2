@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ..contracts.enums import EventType
-from ..contracts.enums import TaskType, TxnStat
+from ..contracts.enums import ITEM_AFFINITY_PREDECESSORS, TaskType, TxnStat
 from ..contracts.models import (
     AmrRuntimeState,
     AllocateTaskResInput,
@@ -26,7 +26,6 @@ from ..contracts.models import (
 )
 
 logger = logging.getLogger(__name__)
-ITEM_AFFINITY_PREDECESSORS = {"MM", "POUR", "PP", "ToINSP", "INSP"}
 
 
 def _parse_iso(value: Any) -> datetime | None:
@@ -101,7 +100,6 @@ class StateManager:
         # orchestrator._build_execute_payload(INSP) 가 consume_inspection_image() 로
         # 1회 소비한다 (stale 방지).
         self._pending_inspection_images: dict[int, dict[str, Any]] = {}
-        self._seed_res_pool()
         if self._repo is None and enable_persistence:
             try:
                 from services.persistence.runtime_state_repository import RuntimeStateRepository
@@ -113,36 +111,46 @@ class StateManager:
                 logger.warning("[StateManager] DB persistence unavailable: %s", exc)
         elif self._repo is not None:
             self._db_ready = True
+        # _seed_res_pool 은 DB 초기화 이후에 호출 — 사용 가능 시 DB master 를 우선 사용.
+        self._seed_res_pool()
         logger.info("[StateManager] stub mode enabled")
 
-    # 개발용 res seed
+    # 자원/충전소: 시나리오 JSON 에서 로드 (mock 시작 상태)
+    # transfer_points / battery_thresholds: DB master 우선, 없으면 JSON 폴백
     def _seed_res_pool(self) -> None:
-        seed_resources = [
-            ("TAT1", "TAT", 0.0, 0.0, 80, "idle", None),
-            ("TAT2", "TAT", 0.0, 0.0, 65, "ALLOC", None),
-            ("TAT3", "TAT", 0.0, 0.0, 50, "idle", None),
-            ("CONV1", "CONV", 0.0, 0.0, 100, "idle", None),
-            ("PAT", "PAT", 0.0, 0.0, 100, "idle", None),
-            ("MAT", "MAT", 0.0, 0.0, 100, "idle", None),
-        ]
-        for res_id, res_type, x, y, battery_pct, status, item_id in seed_resources:
-            self._res_list[res_id] = {
-                "res_id": res_id,
-                "res_type": res_type,
+        from services.seed import load_scenario
+        seed = load_scenario()
+
+        self._res_list.clear()
+        for r in seed["resources"]:
+            self._res_list[r["res_id"]] = {
+                "res_id": r["res_id"],
+                "res_type": r["res_type"],
                 "task_id": None,
-                "item_id": item_id,
-                "status": status,
-                "x": x,
-                "y": y,
-                "battery_pct": battery_pct,
-                "condition": "NORMAL",
+                "item_id": None,
+                "status": r.get("status", "IDLE"),
+                "x": float(r.get("x", 0.0)),
+                "y": float(r.get("y", 0.0)),
+                "battery_pct": int(r.get("battery_pct", 100)),
             }
-        # 충전소 상태 정보 (메모리 관리용)
+
         self.charger_slots: dict[tuple[int, int], dict[str, Any]] = {
-            (1, 1): {"status": "empty", "res_id": None},
-            (1, 2): {"status": "empty", "res_id": None},
-            (1, 3): {"status": "empty", "res_id": None},
+            (int(s["row"]), int(s["col"])): {
+                "status": s.get("status", "empty"),
+                "res_id": s.get("res_id"),
+            }
+            for s in seed["charger_slots"]
         }
+
+        # tat_nav_pose_master / trans_task_bat_threshold: DB 가능하면 DB 우선
+        db_poses = self._safe_repo_call("load_tat_nav_poses") or {}
+        db_thresholds = self._safe_repo_call("load_trans_task_bat_thresholds") or {}
+        self.transfer_points: dict[str, tuple[float, float]] = (
+            dict(db_poses) if db_poses else dict(seed["transfer_points"])
+        )
+        self.battery_thresholds: dict = (
+            dict(db_thresholds) if db_thresholds else dict(seed["battery_thresholds"])
+        )
 
     def _safe_repo_call(self, method_name: str, *args, **kwargs):
         if not self._db_ready or self._repo is None:
@@ -377,7 +385,7 @@ class StateManager:
         ]
 
     async def get_item(self, item_id: int) -> ItemStatusRecord:
-        item = dict(self._items.get(item_id, {"item_id": item_id, "flow_stat": "HOLD"}))
+        item = dict(self._items.get(item_id, {"item_id": item_id, "flow_stat": "CREATED"}))
         last_task_type = item.get("last_task_type") or item.get("task_type")
         if isinstance(last_task_type, str):
             try:
@@ -452,7 +460,7 @@ class StateManager:
             res_id
             for res_id, res_meta in sorted(self._res_list.items())
             if res_meta.get("res_type") == req_res_type
-            and res_meta.get("status") in {"idle", "toidle"}
+            and res_meta.get("status") in {"IDLE", "TO_IDLE"}
             and res_meta.get("item_id") is None
         ]
         return available
@@ -473,7 +481,7 @@ class StateManager:
         res_meta = self._res_list.get(res_id)
         if res_meta is None:
             return False
-        return res_meta.get("status") in {"idle", "toidle"} and res_meta.get("item_id") is None
+        return res_meta.get("status") in {"IDLE", "TO_IDLE"} and res_meta.get("item_id") is None
 
     def get_task_id_for_resource(self, res_id: str) -> str | None:
         """해당 자원에 현재 할당되어 진행 중인 task_id 를 반환. 없으면 None."""
@@ -502,7 +510,7 @@ class StateManager:
         )
         if source is not None:
             res_meta["charger_return_source"] = source
-        if status in {"idle", "charging"}:
+        if status in {"IDLE", "CHG"}:
             self._occupy_charger(res_id)
         self._safe_repo_call("sync_resource_snapshot", res_meta)
         logger.info(
@@ -522,8 +530,8 @@ class StateManager:
         if task_meta is not None:
             task_meta["item_id"] = assign_input.item_id
             task_meta["res_id"] = assign_input.res_id
-            task_meta["assignment_status"] = "allocated"
-            task_meta["status"] = "allocated"
+            task_meta["assignment_status"] = "ALLOC"
+            task_meta["status"] = TxnStat.QUE.value
             task_meta["task_id"] = task_key
 
         self._res_list.setdefault(assign_input.res_id, {})
@@ -533,7 +541,7 @@ class StateManager:
                 "res_type": self._res_list.get(assign_input.res_id, {}).get("res_type"),
                 "task_id": assign_input.task_id,
                 "item_id": assign_input.item_id,
-                "status": "allocated",
+                "status": "ALLOC",
             }
         )
         if task_meta is not None:
@@ -642,14 +650,13 @@ class StateManager:
             self._safe_repo_call("sync_item_snapshot", item)
 
         res_meta = self._res_list.setdefault(assigned_res_id, {"res_id": assigned_res_id})
-        is_battery_low_tochg = self._is_battery_low_tochg(current_task_type, res_meta)
         if current_task_type == TaskType.ToCHG:
-            status = "charging" if is_battery_low_tochg else "toidle"
+            # ToCHG는 무조건 배터리 부족 AMR이 충전소로 가는 작업
             res_meta.update(
                 {
                     "task_id": req.task_id,
                     "item_id": None,
-                    "status": status,
+                    "status": "CHG",
                     "task_type": task_meta.get("task_type"),
                 }
             )
@@ -658,31 +665,11 @@ class StateManager:
                 {
                     "task_id": req.task_id,
                     "item_id": task_meta.get("item_id"),
-                    "status": TxnStat.PROC.value,
+                    "status": "ALLOC",
                     "task_type": task_meta.get("task_type"),
                 }
             )
         self._safe_repo_call("sync_resource_snapshot", res_meta)
-
-        if (
-            current_task_type == TaskType.ToCHG
-            and self._event_bridge is not None
-            and isinstance(res_meta.get("res_type"), str)
-            and res_meta.get("res_type")
-            and not is_battery_low_tochg
-        ):
-            self._event_bridge.publish(
-                Event(
-                    event_type=EventType.RESOURCE_AVAILABLE,
-                    item_id=task_meta.get("item_id"),
-                    res_id=assigned_res_id,
-                    payload={
-                        "req_res_type": res_meta.get("res_type"),
-                        "task_id": req.task_id,
-                        "status": "toidle",
-                    },
-                )
-            )
 
     def _handle_success_task_status(
         self,
@@ -726,14 +713,14 @@ class StateManager:
             return False, suppress_resource_available
 
         current_task_type = _normalize_task_type(task_meta.get("task_type"))
-        is_battery_low_tochg = self._is_battery_low_tochg(current_task_type, res_meta)
-        if is_battery_low_tochg:
+        if current_task_type == TaskType.ToCHG:
+            # ToCHG는 무조건 배터리 부족 AMR이 충전소로 가는 작업
             self._occupy_charger(assigned_res_id)
             res_meta.update(
                 {
                     "task_id": None,
                     "item_id": None,
-                    "status": "charging",
+                    "status": "CHG",
                     "task_type": task_meta.get("task_type"),
                 }
             )
@@ -747,7 +734,7 @@ class StateManager:
         res_meta.update(
             {
                 "task_id": None,
-                "status": "idle",
+                "status": "IDLE",
                 "task_type": task_meta.get("task_type"),
             }
         )
@@ -778,13 +765,6 @@ class StateManager:
                 )
             )
         return True, suppress_resource_available
-
-    def _is_battery_low_tochg(
-        self,
-        task_type: TaskType | None,
-        res_meta: dict[str, Any],
-    ) -> bool:
-        return task_type == TaskType.ToCHG and res_meta.get("condition") == "BATTERY_LOW"
 
     def _handle_pa_gp_completion(self, task_meta: dict[str, Any]) -> bool:
         """PA_GP 성공 시 DB 적재 슬롯을 occupied로 확정하고, gp_qty를 증가시켜 주문 생산 완료 여부를 판단."""
@@ -1049,7 +1029,7 @@ class StateManager:
     ) -> bool:
         res_meta = self._res_list.setdefault(res_id, {})
         res_meta["res_id"] = res_id
-        res_meta["status"] = "idle"
+        res_meta["status"] = "IDLE"
         if task_id is not None:
             res_meta["task_id"] = task_id
         if item_id is not None:
@@ -1081,11 +1061,11 @@ class StateManager:
 
     def mark_task_started(self, task_id: str, res_id: str, is_trans: bool) -> None:
         if task_id in self._tasks:
-            self._tasks[task_id]["status"] = "PROC"
+            self._tasks[task_id]["status"] = TxnStat.PROC.value
             self._tasks[task_id]["task_id"] = task_id
             self._safe_repo_call("sync_task_status", self._tasks[task_id])
         res_meta = self._res_list.setdefault(res_id, {"res_id": res_id})
-        res_meta.update({"task_id": task_id, "status": "PROC"})
+        res_meta.update({"task_id": task_id, "status": "ALLOC"})
         self._safe_repo_call("sync_resource_snapshot", res_meta)
         logger.info("[StateManager] mark_task_started: task=%s res=%s", task_id, res_id)
 
@@ -1140,11 +1120,13 @@ class StateManager:
             self._tasks[task_id]["status"] = cur_stat
             self._tasks[task_id]["task_id"] = task_id
             self._safe_repo_call("sync_task_status", self._tasks[task_id])
+        terminal = cur_stat in {TxnStat.SUCC.value, TxnStat.FAIL.value}
+        res_status = "IDLE" if terminal else ("ALLOC" if cur_stat == TxnStat.PROC.value else cur_stat)
         res_meta = self._res_list.setdefault(res_id, {"res_id": res_id})
         res_meta.update(
             {
-                "task_id": None if cur_stat in {TxnStat.SUCC.value, TxnStat.FAIL.value} else task_id,
-                "status": "idle" if cur_stat in {TxnStat.SUCC.value, TxnStat.FAIL.value} else cur_stat,
+                "task_id": None if terminal else task_id,
+                "status": res_status,
             }
         )
         self._safe_repo_call("sync_resource_snapshot", res_meta)
@@ -1182,7 +1164,7 @@ class StateManager:
             empty_slots = [
                 (row, col)
                 for (row, col), slot in sorted(self.task_manager.slot_table.items())
-                if slot.get("status") == "Empty"
+                if slot.get("status") == "empty"
                 and slot.get("order_id") is None
             ]
         # DB 조회
@@ -1190,7 +1172,7 @@ class StateManager:
             empty_slots = [
                 (int(slot["row"]), int(slot["col"]))
                 for slot in db_slots
-                if slot.get("status") == "Empty"
+                if slot.get("status") == "empty"
                 and slot.get("order_id") is None
             ]
 

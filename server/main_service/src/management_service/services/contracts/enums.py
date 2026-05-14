@@ -78,6 +78,68 @@ class ResourceBindingPolicy(str, Enum):
     FREE = "FREE"
     REQUIRED = "REQUIRED"
 
+
+## Resource (DDL res.res_type CHECK)
+class ResourceType(str, Enum):
+    MAT = "MAT"
+    PAT = "PAT"
+    CONV = "CONV"
+    TAT = "TAT"
+
+
+# TaskType → 어느 res_type 이 수행하는지 분류 (task_allocator 가 가용 자원 후보를 추리는 기준)
+MAT_TASKS = frozenset({
+    TaskType.MM,
+    TaskType.POUR,
+    TaskType.DM,
+})
+
+PAT_TASKS = frozenset({
+    TaskType.PA_GP,
+    TaskType.PA_DP,
+    TaskType.PICK,
+    TaskType.SHIP,
+})
+
+CONV_TASKS = frozenset({
+    TaskType.PP,
+    TaskType.INSP,
+    TaskType.ToINSP,
+    TaskType.ToPAWait,
+})
+
+TAT_TASKS = frozenset({
+    TaskType.ToPP,
+    TaskType.ToSTRG,
+    TaskType.ToSHIP,
+    TaskType.ToCHG,
+})
+
+# 실제 hw가 없어도 mock 으로 우회 가능한 task
+BYPASSABLE_TASK_TYPES = frozenset({
+    TaskType.PP,
+    TaskType.ToINSP,
+    TaskType.INSP,
+    TaskType.ToPAWait,
+})
+
+# 완료 후에도 item 이 같은 res 에 계속 머무는 선행 task 들
+ITEM_AFFINITY_PREDECESSORS = frozenset({
+    TaskType.MM,
+    TaskType.POUR,
+    TaskType.PP,
+    TaskType.ToINSP,
+    TaskType.INSP,
+})
+
+# TAT transport task → src(상차) pose 매핑. dest pose 는 task_type 과 동일.
+TRANS_SRC_POSE: dict[TaskType, str] = {
+    TaskType.ToPP: "ToCAST",
+    TaskType.ToSTRG: "ToINSP",
+    TaskType.ToSHIP: "ToPICK",
+}
+
+
 def get_resource_binding_policy(task_type: TaskType) -> ResourceBindingPolicy:
     if task_type in {
         TaskType.POUR,
@@ -88,3 +150,18 @@ def get_resource_binding_policy(task_type: TaskType) -> ResourceBindingPolicy:
     }:
         return ResourceBindingPolicy.REQUIRED
     return ResourceBindingPolicy.FREE
+
+
+def get_required_resource_type(
+    task_type: TaskType | None,
+    zone_nm: str | None = None,
+) -> ResourceType | None:
+    if task_type in TAT_TASKS:
+        return ResourceType.TAT
+    if task_type in CONV_TASKS:
+        return ResourceType.CONV
+    if task_type in PAT_TASKS:
+        return ResourceType.PAT
+    if task_type in MAT_TASKS:
+        return ResourceType.MAT
+    return None

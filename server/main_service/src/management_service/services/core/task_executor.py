@@ -6,7 +6,12 @@ import threading
 from collections import defaultdict
 from typing import Dict, List
 from services.contracts.models import *
-from services.contracts.enums import TaskType, TxnStat
+from services.contracts.enums import (
+    BYPASSABLE_TASK_TYPES,
+    ResourceType,
+    TaskType,
+    TxnStat,
+)
 from services.contracts.protocols import IAdapter, IEventBridge, IStateManager
 
 
@@ -16,16 +21,8 @@ class TaskExecutor:
         (1, 2): "ToCHG2",
         (1, 3): "ToCHG3",
     }
-    _HARDWARE_RESOURCE_IDS = frozenset({"MAT", "PAT"})
-    _HARDWARE_RESOURCE_PREFIXES = ("TAT",)
-    _BYPASSABLE_TASK_TYPES = frozenset(
-        {
-            TaskType.PP,
-            TaskType.ToINSP,
-            TaskType.INSP,
-            TaskType.ToPAWait,
-        }
-    )
+    _HARDWARE_RESOURCE_IDS = frozenset({ResourceType.MAT.value, ResourceType.PAT.value})
+    _HARDWARE_RESOURCE_PREFIXES = (ResourceType.TAT.value,)
     _EXTERNAL_WAIT_EVENTS = {
         EventType.HANDOFF_ACK,
         EventType.PP_DONE_REQUESTED,
@@ -510,7 +507,7 @@ class TaskExecutor:
         return self._CHARGER_POSE_MAP.get(charger_slot)
 
     def _should_bypass_task(self, task_type: TaskType) -> bool:
-        return self._bypass_non_robot_hardware and task_type in self._BYPASSABLE_TASK_TYPES
+        return self._bypass_non_robot_hardware and task_type in BYPASSABLE_TASK_TYPES
 
     def _should_bypass_external_wait(self, subtask_type: str) -> bool:
         if not self._bypass_non_robot_hardware:
@@ -557,10 +554,10 @@ class TaskExecutor:
 
 
 
-        # 충전소 이동 시 toidle 상태로 변경
+        # 충전소 이동 시 TO_IDLE 상태로 변경
         self.state_manager.update_amr_charger_return_state(
             res_id,
-            "toidle",
+            "TO_IDLE",
             source=source,
         )
         result = await self.adapter.send_command(
@@ -583,10 +580,10 @@ class TaskExecutor:
                 source,
                 result.message,
             )
-        # 충전소 도착 후 idle 상태로 변경
+        # 충전소 도착 후 IDLE 상태로 변경
         self.state_manager.update_amr_charger_return_state(
             res_id,
-            "idle",
+            "IDLE",
             source=source,
         )
         return result.success
