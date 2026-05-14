@@ -30,6 +30,23 @@ from app.generated import management_pb2, management_pb2_grpc
 
 logger = logging.getLogger(__name__)
 
+
+def _safe_prod_id(row: Any) -> int | None:
+    """ProductionOrder row 에서 prod_id 를 안전하게 추출.
+
+    backend proto 에 prod_id 가 아직 노출되지 않은 환경에서도 AttributeError 없이 None 반환.
+    Phase 1 PR (proto `optional int32 prod_id`) 머지 후 자동으로 실 값 반환.
+    """
+    val = getattr(row, "prod_id", None)
+    if val is None:
+        return None
+    try:
+        as_int = int(val)
+    except (TypeError, ValueError):
+        return None
+    return as_int or None
+
+
 HOST = os.environ.get("MANAGEMENT_GRPC_HOST", "localhost")
 PORT = int(os.environ.get("MANAGEMENT_GRPC_PORT", "50051"))
 TIMEOUT = float(os.environ.get("MANAGEMENT_GRPC_TIMEOUT", "5.0"))
@@ -245,6 +262,9 @@ class ManagementClient:
                 "requested_delivery": row.requested_delivery or "",
                 "confirmed_delivery": row.confirmed_delivery or "",
                 "created_at": row.created_at or "",
+                # 2026-05-14: proto 에 prod_id 가 아직 없을 수 있어 안전 접근.
+                # Phase 1 PR (backend) 머지 후 자동 반영.
+                "prod_id": _safe_prod_id(row),
             }
             for row in resp.orders
         ]

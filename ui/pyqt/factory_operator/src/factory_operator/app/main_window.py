@@ -29,28 +29,31 @@ from app.api_client import ApiClient
 from app.management_client import ManagementClient
 from app.pages.dashboard import DashboardPage
 from app.pages.logistics import LogisticsPage
-from app.pages.map import FactoryMapPage
-from app.pages.pattern_control import PatternControlPage
 from app.pages.operations import OperationsPage
+from app.pages.pattern_control import PatternControlPage
 from app.pages.pp_worker import PpWorkerPage
 from app.pages.production import ProductionPage
 from app.pages.quality import QualityPage
-from app.pages.schedule import SchedulePage
 from app.pages.storage import StoragePage
+# NOTE: 보존만 하는 페이지 (현재 사이드바 미노출).
+# - FactoryMapPage (pages/map.py): 2026-05-14 메뉴 제거, 추후 복귀 대비 파일만 유지.
+# - SchedulePage (pages/schedule.py): 2026-05-14 "생산현황" 화면에서 분리, 파일만 유지.
+# - ProductionStatusPage (pages/production_status.py): 더이상 사용 안 함, 파일만 유지.
 from app.widgets.alert_widgets import ToastNotification, _normalize_level
 
-# 2026-04-27: '실시간 운영 모니터링' (operations) 은 발주/패턴/공정단계/Item 위치/핸드오프 통합 관리,
-# '생산 모니터링' (production) 은 제어 패널 + 실시간 게이지 + 차트 (HW 직결 시각화) 전담.
+# 2026-05-14: 사이드바 재구성.
+# - 라벨만 변경 (파일명 유지): operations → "생산 계획", production → "설비 현황".
+# - 신규 병합 페이지: production_status = pattern_control + schedule (Splitter Vertical).
+# - "공장 맵" (map.py) 제거 — 코드는 보존, 사이드바에서만 빠짐.
 NAV_ITEMS: list[tuple[str, str]] = [
     ("dashboard", "대시보드"),
-    ("pattern_control", "패턴 위치 조작 및 생산 시작"),
-    ("operations", "실시간 운영 모니터링"),
+    # 2026-05-14: 순서 swap — "생산 계획" 을 대시보드 바로 아래로.
+    ("production_status", "생산 계획"),
+    ("operations", "생산현황"),
+    ("production", "설비 현황"),
     ("pp_worker", "후처리"),
-    ("map", "공장 맵"),
-    ("production", "생산 모니터링"),
-    ("schedule", "생산 계획"),
     ("quality", "품질 검사"),
-    ("logistics", "물류 / 이송"),
+    ("logistics", "물류 이송"),
     ("storage", "적재"),
 ]
 
@@ -144,26 +147,23 @@ class MainWindow(QMainWindow):
         root.addWidget(self._sidebar_toggle)
 
         # 우측 스택 (NAV_ITEMS 순서와 반드시 일치)
+        # 2026-05-14: 생산현황 = PatternControlPage 단독 (이전 SchedulePage 병합 제거).
         self._stack = QStackedWidget()
-        self._pattern_control = PatternControlPage(self._api)  # NAV_ITEMS[0] — 수동 패턴/생산 시작
-        self._operations = OperationsPage(self._api)  # NAV_ITEMS[1] — 실시간 운영 모니터링
-        self._pp_worker = PpWorkerPage(self._api)  # NAV_ITEMS[2]
-        self._dashboard = DashboardPage(self._api, self._mgmt)
-        self._map = FactoryMapPage(self._api)
-        self._production = ProductionPage(self._api)  # NAV_ITEMS[5] — 생산 모니터링 (게이지/차트)
-        self._schedule = SchedulePage(self._api)
-        self._quality = QualityPage(self._api)
-        self._logistics = LogisticsPage(self._api)
-        self._storage = StoragePage(self._api)
+        self._dashboard = DashboardPage(self._api, self._mgmt)             # NAV_ITEMS[0] 대시보드
+        self._pattern_control = PatternControlPage(self._api)              # NAV_ITEMS[1] 생산 계획 (패턴 등록 단독)
+        self._operations = OperationsPage(self._api)                       # NAV_ITEMS[2] 생산현황
+        self._production = ProductionPage(self._api)                       # NAV_ITEMS[3] 설비 현황
+        self._pp_worker = PpWorkerPage(self._api)                          # NAV_ITEMS[4] 후처리
+        self._quality = QualityPage(self._api)                             # NAV_ITEMS[5] 품질 검사
+        self._logistics = LogisticsPage(self._api)                         # NAV_ITEMS[6] 물류 이송
+        self._storage = StoragePage(self._api)                             # NAV_ITEMS[7] 적재
 
         for page in (
             self._dashboard,
             self._pattern_control,
             self._operations,
-            self._pp_worker,
-            self._map,
             self._production,
-            self._schedule,
+            self._pp_worker,
             self._quality,
             self._logistics,
             self._storage,

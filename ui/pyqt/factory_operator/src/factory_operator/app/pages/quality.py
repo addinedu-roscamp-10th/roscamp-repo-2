@@ -131,7 +131,7 @@ class QualityPage(QWidget):
 
         self._proc_table = QTableWidget(0, 6)
         self._proc_table.setHorizontalHeaderLabels(
-            ["txn_id", "item_id", "res", "시작 시각", "양품 (GP)", "불량 (DP)"]
+            ["검사 ID", "제품 ID", "검사 결과", "시작 시각", "양품", "불량"]
         )
         self._proc_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._proc_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
@@ -227,24 +227,24 @@ class QualityPage(QWidget):
                 qi.setTextAlignment(Qt.AlignCenter)
                 self._proc_table.setItem(row, col, qi)
 
-            gp_btn = QPushButton("✅ GP")
-            gp_btn.setToolTip("양품 처리 → insp_task_txn.result=True, item.is_defective=False")
+            gp_btn = QPushButton("✅ 양품")
+            gp_btn.setToolTip("양품으로 처리 (검사 완료 + 제품의 불량 여부 = 아니오)")
             gp_btn.clicked.connect(lambda _c, t=txn_id: self._complete_inspection(t, True))
             self._proc_table.setCellWidget(row, 4, gp_btn)
 
-            dp_btn = QPushButton("⚠ DP")
-            dp_btn.setToolTip("불량 처리 → insp_task_txn.result=False, item.is_defective=True")
+            dp_btn = QPushButton("⚠ 불량")
+            dp_btn.setToolTip("불량으로 처리 (검사 완료 + 제품의 불량 여부 = 예)")
             dp_btn.clicked.connect(lambda _c, t=txn_id: self._complete_inspection(t, False))
             self._proc_table.setCellWidget(row, 5, dp_btn)
 
     def _complete_inspection(self, txn_id: int, result: bool) -> None:
-        """GP/DP 버튼 핸들러 — POST /api/quality/inspections/{txn}/result?result=…"""
-        verdict = "양품 (GP)" if result else "불량 (DP)"
+        """양품/불량 버튼 핸들러 — POST /api/quality/inspections/{txn}/result?result=…"""
+        verdict = "양품" if result else "불량"
         confirm = QMessageBox.question(
             self,
             "검사 결과 확정",
-            f"insp_task_txn={txn_id} 를 {verdict} 으로 처리하시겠습니까?\n\n"
-            "✓ 확정 시 insp_task_txn SUCC + end_at + item.is_defective 갱신.",
+            f"검사 #{txn_id} 를 {verdict} 으로 처리하시겠습니까?\n\n"
+            "확정 시 검사가 완료 처리되고 제품의 불량 여부가 갱신됩니다.",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.Yes,
         )
@@ -253,17 +253,17 @@ class QualityPage(QWidget):
         try:
             rsp = self._api.complete_inspection(txn_id, result)
         except Exception as exc:  # noqa: BLE001
-            QMessageBox.critical(self, "검사 완료 실패", f"txn_id={txn_id}\n{exc}")
+            QMessageBox.critical(self, "검사 완료 실패", f"검사 #{txn_id}\n{exc}")
             return
 
         QMessageBox.information(
             self,
             "검사 완료",
-            f"txn_id={txn_id}\n"
-            f"  txn_stat = {rsp.get('txn_stat')}\n"
-            f"  result = {verdict}\n"
-            f"  end_at = {rsp.get('end_at')}\n\n"
-            "→ 발주 관리 페이지에서 DONE/SHIP/COMP 진행하세요.",
+            f"검사 #{txn_id}\n"
+            f"  진행 상태: {rsp.get('txn_stat')}\n"
+            f"  결과: {verdict}\n"
+            f"  완료 시각: {rsp.get('end_at')}\n\n"
+            "→ 주문 관리 페이지에서 다음 단계로 진행하세요.",
         )
         self.refresh()
 
