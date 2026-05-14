@@ -175,16 +175,16 @@ class ScheduleQueryService:
         days_left = (due_date - datetime.utcnow().date()).days if due_date else 999
 
         delivery_score = 25.0 if days_left <= 3 else 20.0 if days_left <= 7 else 15.0 if days_left <= 14 else 10.0
-        age_days = (
-            (datetime.utcnow() - ord_obj.created_at.replace(tzinfo=None)).days
-            if ord_obj.created_at
-            else 0
-        )
+        appr_txn = next((t for t in ord_obj.txns if t.txn_type == "APPR"), None)
+        appr_at = appr_txn.txn_at if appr_txn else ord_obj.created_at
+        age_days = (datetime.utcnow() - appr_at.replace(tzinfo=None)).days if appr_at else 0
         age_score = min(15.0, 5.0 + age_days * 2.0)
         qty_score = min(10.0, max(3.0, qty / 5.0))
         amount = float(detail.final_price or 0) if detail else 0.0
         amount_score = 10.0 if amount >= 1_000_000 else 7.0 if amount >= 500_000 else 5.0
-        delay_score = 15.0 if days_left <= 7 else 10.0 if days_left <= 14 else 7.0
+        estimated_days = 3 + (qty // 50)
+        buffer_days = days_left - estimated_days
+        delay_score = 15.0 if buffer_days <= 0 else 10.0 if buffer_days <= 3 else 5.0
         pattern_row = db.get(OrdPattern, ord_obj.ord_id)
         has_pattern = pattern_row is not None and pattern_row.ptn_loc_id is not None
         ready_score = 20.0 if has_pattern else 8.0
@@ -206,13 +206,13 @@ class ScheduleQueryService:
                 name="주문 체류 시간",
                 score=age_score,
                 max_score=15.0,
-                detail=f"접수 후 {age_days}일",
+                detail=f"승인 후 {age_days}일",
             ),
             ScheduleFactorQueryRow(
                 name="지연 위험도",
                 score=delay_score,
                 max_score=15.0,
-                detail="납기 기반 위험도",
+                detail=f"버퍼 {buffer_days}일 (예상 {estimated_days}일 소요)",
             ),
             ScheduleFactorQueryRow(
                 name="주문 금액",
@@ -252,5 +252,5 @@ class ScheduleQueryService:
             delay_risk=delay_risk,
             ready_status="ready" if has_pattern else "not_ready",
             blocking_reasons=blocking,
-            estimated_days=3 + (qty // 50),
+            estimated_days=estimated_days,
         )
