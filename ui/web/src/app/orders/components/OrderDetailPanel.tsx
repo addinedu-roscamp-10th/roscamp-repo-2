@@ -365,11 +365,11 @@ export function OrderDetailPanel({
                   type="button"
                   disabled={actionLoading || !onStartShipping}
                   onClick={() => onStartShipping?.(order.id)}
-                  className="flex-1 flex items-center justify-center gap-2 py-3 px-4 bg-emerald-600 text-white rounded-lg font-semibold text-base hover:bg-emerald-700 transition-colors shadow-sm disabled:opacity-50"
+                  className="flex-1 flex items-center justify-center gap-2 py-3 px-4 bg-[#ba00fa] text-white rounded-lg font-semibold text-base hover:bg-[#a700e0] transition-colors shadow-sm disabled:opacity-50"
                   title="TAT 가 적재장에서 주물을 가지고 출하장으로 이동합니다 (orchestrator.start_shipping)."
                 >
                   {actionLoading ? <Loader2 size={16} className="animate-spin" /> : <Truck size={16} />}
-                  출하 시작 (TAT 운반)
+                  출하 시작
                 </button>
               )}
               {order.status === "shipping_ready" && (
@@ -378,7 +378,7 @@ export function OrderDetailPanel({
                   title="orchestrator 가 운반 완료 시 SHIP→COMP 자체 전이를 수행합니다."
                 >
                   <PackageCheck size={16} className="text-purple-600" />
-                  출하 진행 중 — TAT 가 적재장에서 출하장으로 운반 중입니다
+                  출하 진행 중
                 </div>
               )}
             </div>
