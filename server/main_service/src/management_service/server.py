@@ -235,12 +235,22 @@ def serve() -> None:
     container.event_bridge.set_loop(orchestrator_thread.loop)
 
     container.start()
+    # SPEC-DB-EVENT-BRIDGE-001 Phase 2: DB row trigger listener 시작.
+    # feature flag MGMT_DB_EVENT_BRIDGE_ENABLED=0 이면 listener.start() 가 no-op (silent skip).
+    try:
+        orchestrator_thread.run_coro(container.db_event_listener.start())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("DbEventListener start 실패 (서비스는 계속 진행): %s", exc)
     server.start()
     logger.info("Management Service listening on %s [%s]", bind_addr, scheme)
 
     # Graceful shutdown
     def _stop(_signum, _frame):
         logger.info("Shutting down...")
+        try:
+            orchestrator_thread.run_coro(container.db_event_listener.stop())
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("DbEventListener stop 실패: %s", exc)
         orchestrator_thread.stop()
         container.close()
         server.stop(grace=5)

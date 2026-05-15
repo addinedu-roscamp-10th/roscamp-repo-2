@@ -12,6 +12,7 @@ from services.core.state_manager import StateManager
 from services.core.event_bridge import EventBridge
 from services.core.adapters.ros2_runtime import Ros2Runtime
 from services.core.adapters.amr_state_monitor import AmrStateMonitorService
+from services.core.db_event_listener import DbEventListener
 from services.http_image_server import HttpImageServer
 
 from services.query.item_query_service import ItemQueryService
@@ -84,6 +85,11 @@ class Container:
         # AI 서버 ↔ backend 사이 이미지 URL 전송용 정적 HTTP 서버
         # AI 서버가 /inspect 요청 시 받은 image_url 로 GET 한다.
         self.http_image_server = HttpImageServer()
+
+        # SPEC-DB-EVENT-BRIDGE-001 Phase 1+2: DB row trigger → EventBridge 어댑터.
+        # feature flag MGMT_DB_EVENT_BRIDGE_ENABLED=1 일 때만 활성 (기본 off).
+        # start/stop 은 server.py 의 OrchestratorThread loop 에서 호출 (async).
+        self.db_event_listener = DbEventListener(event_bridge=self.event_bridge)
 
         # PyQt ③ 후처리 완료 → 1회차 컨베이어 motor "start" 발신.
         # 2회차 "RUN" (검사 후 4초 출구 운반) 은 ConvAdapter 가 ToPAWait/CONV_ALLOW_MOVE
