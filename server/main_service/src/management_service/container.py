@@ -13,6 +13,7 @@ from services.core.event_bridge import EventBridge
 from services.core.adapters.ros2_runtime import Ros2Runtime
 from services.core.adapters.amr_state_monitor import AmrStateMonitorService
 from services.core.db_event_listener import DbEventListener
+from services.core.db_event_router import DbEventRouter, make_logging_handler
 from services.http_image_server import HttpImageServer
 
 from services.query.item_query_service import ItemQueryService
@@ -90,6 +91,15 @@ class Container:
         # feature flag MGMT_DB_EVENT_BRIDGE_ENABLED=1 일 때만 활성 (기본 off).
         # start/stop 은 server.py 의 OrchestratorThread loop 에서 호출 (async).
         self.db_event_listener = DbEventListener(event_bridge=self.event_bridge)
+
+        # SPEC-DB-EVENT-BRIDGE-001 Phase 3a: DB_ROW_CHANGED → table 별 in-process handler 라우팅.
+        # Phase 3a 는 logging handler 만 등록 — Phase 3b 에서 task_executor 측 실 처리 추가.
+        # dual delivery 안전성: (table, PK, op) 60s dedup cache 내장.
+        self.db_event_router = DbEventRouter()
+        for _table in ("insp_task_txn", "equip_task_txn", "trans_task_txn",
+                        "pp_task_txn", "item", "ord_stat"):
+            self.db_event_router.register_handler(_table, make_logging_handler(_table))
+        self.db_event_router.attach(self.event_bridge)
 
         # PyQt ③ 후처리 완료 → 1회차 컨베이어 motor "start" 발신.
         # 2회차 "RUN" (검사 후 4초 출구 운반) 은 ConvAdapter 가 ToPAWait/CONV_ALLOW_MOVE
