@@ -138,6 +138,13 @@ class _CalcPriorityWorker(QObject):
 
 # ── 메인 페이지 ───────────────────────────────────────────────────────────────
 
+
+def _field_label(text: str) -> QLabel:
+    lbl = QLabel(text)
+    lbl.setObjectName("fieldLabel")
+    return lbl
+
+
 class PatternControlPage(QWidget):
     """패턴 위치 수동 조작 + 생산 계획 페이지."""
 
@@ -208,7 +215,7 @@ class PatternControlPage(QWidget):
 
         # 좌측: 미등록 주문 목록
         left_pat = QVBoxLayout()
-        left_pat.addWidget(QLabel("미등록 주문 목록"))
+        left_pat.addWidget(_field_label("미등록 주문 목록"))
         self._unreg_list = QListWidget()
         self._unreg_list.itemClicked.connect(self._on_unreg_selected)
         left_pat.addWidget(self._unreg_list)
@@ -220,12 +227,12 @@ class PatternControlPage(QWidget):
 
         form = QGridLayout()
         form.setSpacing(8)
-        form.addWidget(QLabel("주문번호"), 0, 0)
+        form.addWidget(_field_label("주문번호"), 0, 0)
         self._order_no_lbl = QLabel("—")
         self._order_no_lbl.setObjectName("formValueLabel")
         form.addWidget(self._order_no_lbl, 0, 1)
 
-        form.addWidget(QLabel("패턴위치"), 1, 0)
+        form.addWidget(_field_label("패턴위치"), 1, 0)
         self._pattern_spin = QSpinBox()
         self._pattern_spin.setRange(1, 3)
         self._pattern_spin.setMinimumWidth(80)
@@ -253,7 +260,7 @@ class PatternControlPage(QWidget):
 
         # 좌측: 패턴 등록된 주문 목록 (다중 선택)
         left_prod = QVBoxLayout()
-        left_prod.addWidget(QLabel("주문 목록 (복수 선택 가능)"))
+        left_prod.addWidget(_field_label("주문 목록 (복수 선택 가능)"))
         self._reg_list = QListWidget()
         self._reg_list.setSelectionMode(QAbstractItemView.MultiSelection)
         self._reg_list.itemSelectionChanged.connect(self._on_reg_selection_changed)
@@ -262,7 +269,7 @@ class PatternControlPage(QWidget):
 
         # 우측: 우선순위 결과 테이블
         right_prod = QVBoxLayout()
-        right_prod.addWidget(QLabel("우선순위 결과"))
+        right_prod.addWidget(_field_label("우선순위 결과"))
         self._priority_table = QTableWidget(0, 2)
         self._priority_table.setHorizontalHeaderLabels(["주문", "계산 점수"])
         self._priority_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
