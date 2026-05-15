@@ -13,7 +13,7 @@ from services.core.adapters.conv_adapter import ConvAdapter
 from services.core.adapters.mat_adapter import MatAdapter
 from services.core.adapters.pat_adapter import PatAdapter
 from services.core.adapters.ros2_runtime import Ros2Runtime
-from services.core.adapters.tat_adapter import TAT_DOCK_ACTION, TATAdapter
+from services.core.adapters.tat_adapter import TATAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +123,7 @@ class AdapterRouter(IAdapter):
         if (
             res_type == ResourceType.TAT.value
             and self._ros2_runtime is not None
-            and action == TAT_DOCK_ACTION
+            and self._tat_adapter.supports(action)
         ):
             ok, message = await asyncio.to_thread(
                 self._tat_adapter.execute,

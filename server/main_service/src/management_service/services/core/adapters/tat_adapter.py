@@ -11,6 +11,7 @@ if TYPE_CHECKING:
 
 # router 호환성: router 가 직접 import 하여 action 비교에 사용한다.
 TAT_DOCK_ACTION = "dock_robot"
+TAT_UNDOCK_ACTION = "undock_robot"
 
 
 # ─── action_type 별 매핑 ─────────────────────────────────────────
@@ -41,6 +42,21 @@ def _build_dock_goal(action_cls: Any, params: dict) -> Any:
     return goal
 
 
+def _build_undock_goal(action_cls: Any, params: dict) -> Any:
+    """nav2_msgs/UndockRobot goal 생성."""
+    goal = action_cls.Goal()
+
+    dock_type = str(params.get("dock_type") or "")
+    if dock_type:
+        goal.dock_type = dock_type
+
+    max_undocking_time = params.get("max_undocking_time")
+    if max_undocking_time is not None:
+        goal.max_undocking_time = float(max_undocking_time)
+
+    return goal
+
+
 class TATAdapter:
     """AMR(이송) ROS2 action client."""
 
@@ -50,11 +66,11 @@ class TATAdapter:
             action_attr="_dock_action",
             goal_builder=_build_dock_goal,
         ),
-        # "undock_robot": ActionSpec(
-        #     name_fmt="/{robot_id}/undock_robot",
-        #     action_attr="_undock_action",
-        #     goal_builder=_build_undock_goal,
-        # ),
+        TAT_UNDOCK_ACTION: ActionSpec(
+            name_fmt="/{robot_id}/undock_robot",
+            action_attr="_undock_action",
+            goal_builder=_build_undock_goal,
+        ),
     }
 
     def __init__(self, ros2_runtime: Ros2Runtime | None = None) -> None:
@@ -64,6 +80,7 @@ class TATAdapter:
         self._action_client_cls: Any | None = None
         self._goal_status_cls: Any | None = None
         self._dock_action: Any | None = None
+        self._undock_action: Any | None = None
         self._clients: dict[str, Any] = {}
         self._started = False
 
@@ -83,7 +100,7 @@ class TATAdapter:
 
         try:
             from action_msgs.msg import GoalStatus
-            from nav2_msgs.action import DockRobot
+            from nav2_msgs.action import DockRobot, UndockRobot
             from rclpy.action import ActionClient
             from rclpy.callback_groups import ReentrantCallbackGroup
             from rclpy.node import Node
@@ -93,6 +110,7 @@ class TATAdapter:
         self._action_client_cls = ActionClient
         self._goal_status_cls = GoalStatus
         self._dock_action = DockRobot
+        self._undock_action = UndockRobot
         self._callback_group = ReentrantCallbackGroup()
         self._node = Node("tat_adapter")
         self._ros2_runtime.add_node(self._node)

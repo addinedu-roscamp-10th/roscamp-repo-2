@@ -117,13 +117,16 @@ class TaskExecutor:
                     params={"task_type": TaskType.DM},
                     timeout_sec=600,
                 ),
-                CommandStep(step_id=3, action="dock_robot", params={"pose_name": "ToPP"}),    # PP Zone 하차 대기 장소
+                CommandStep(step_id=3, action="undock_robot", params={}),  # undock
                 CommandStep(
-                    step_id=4,
+                    step_id=4, action="dock_robot", params={"pose_name": "ToPP"}),    # PP Zone 하차 대기 장소
+                CommandStep(
+                    step_id=5,
                     action="WAIT_SUBTASK_COMPLETED",
                     params={"subtask_type": EventType.HANDOFF_ACK.value},
                     timeout_sec=600,
                 ),
+                CommandStep(step_id=6, action="undock_robot", params={}),  # undock
             ],
             TaskType.ToSTRG: [
                 CommandStep(step_id=1, action="dock_robot", params={"pose_name": "ToINSP"}),   # 컨베이어 상차 대기 장소
@@ -133,13 +136,16 @@ class TaskExecutor:
                     params={"task_type": TaskType.ToPAWait},
                     timeout_sec=600,
                 ),
-                CommandStep(step_id=3, action="dock_robot", params={"pose_name": "ToSTRG"}),  # STRG zone 하차 대기 장소
+                CommandStep(step_id=3, action="undock_robot", params={}),  # undock
                 CommandStep(
-                    step_id=4,
+                    step_id=4, action="dock_robot", params={"pose_name": "ToSTRG"}),  # STRG zone 하차 대기 장소
+                CommandStep(
+                    step_id=5,
                     action="WAIT_SUBTASK_COMPLETED",
                     params={"subtask_type": "pa_dld_done"},
                     timeout_sec=600,
                 ),
+                CommandStep(step_id=6, action="undock_robot", params={}),  # undock
             ],
             TaskType.ToSHIP: [
                 CommandStep(step_id=1, action="dock_robot", params={"pose_name": "ToPICK"}),  # STRG Zone 상차 대기 장소
@@ -149,8 +155,10 @@ class TaskExecutor:
                     params={"task_type": TaskType.PICK},
                     timeout_sec=600,
                 ),
-                CommandStep(step_id=3, action="dock_robot", params={"pose_name": "ToSHIP"}),   # SHIP Zone 하차 대기 장소
-                CommandStep(step_id=4, action="WAIT_TIME", params={"duration_sec": 5}),  # 7초 대기로 하차 신호
+                CommandStep(step_id=3, action="undock_robot", params={}),  # undock
+                CommandStep(step_id=4, action="dock_robot", params={"pose_name": "ToSHIP"}),   # SHIP Zone 하차 대기 장소
+                CommandStep(step_id=5, action="WAIT_TIME", params={"duration_sec": 5}),  # 7초 대기로 하차 신호
+                CommandStep(step_id=6, action="undock_robot", params={}),  # undock
             ],
             TaskType.ToCHG: [
                 CommandStep(step_id=1, action="dock_robot", params={}),  # 실행 전 계산 후 주입
