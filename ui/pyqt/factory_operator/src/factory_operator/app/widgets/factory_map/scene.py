@@ -20,11 +20,15 @@ from PyQt5.QtWidgets import (
 )
 
 from ._constants import (
+    AMR_HOME_POSITIONS,
+    LOCATION_TO_SCENE,
     MAT_FIXED_POS,
     PAT_FIXED_POS,
     SCENE_H,
     SCENE_W,
     STATUS_COLORS,
+    TAT_HOME_MAP,
+    TAT_MOVING_STATES,
     _POS,
     _status_key,
     amcl_to_scene,
@@ -196,28 +200,60 @@ class FactoryMapScene(QGraphicsScene):
         except Exception:
             return None
 
+    # get_robot_status() 가 빈 리스트여도 항상 표시할 기본 TAT 목록
+    _DEFAULT_TATS: list[dict[str, Any]] = [
+        {"id": "TAT1", "type": "amr", "status": "idle", "battery": 0.0, "location": "-", "task_state": 1},
+        {"id": "TAT2", "type": "amr", "status": "idle", "battery": 0.0, "location": "-", "task_state": 1},
+        {"id": "TAT3", "type": "amr", "status": "idle", "battery": 0.0, "location": "-", "task_state": 1},
+    ]
+    _DEFAULT_TAT_IDS: frozenset[str] = frozenset({"TAT1", "TAT2", "TAT3"})
+
     def _update_tat_markers(self, robots: list[dict[str, Any]]) -> None:
-        """TAT1/2/3 AMCL 좌표 → scene 마커 보간 이동."""
+        """TAT AMCL 좌표 → scene 마커 보간 이동.
+
+        위치 결정 우선순위:
+        1. location 이 "x=1.23, y=4.56" AMCL 형식 → amcl_to_scene() 변환
+        2. location 이 LOCATION_TO_SCENE 키 → 직접 매핑
+        3. TAT_HOME_MAP 에 id 있으면 충전존 home
+        4. 인덱스 기반 fallback (AMR_HOME_POSITIONS)
+
+        실데이터가 없거나 TAT1/2/3 가 응답에 없으면 충전존 home 에 기본 마커 표시.
+        """
+        # 실데이터로 기본값 덮어쓰기: 실데이터에 없는 TAT 는 idle/home 으로 유지
+        real_by_id = {str(r.get("id", "")): r for r in robots if r.get("id")}
+        merged: list[dict[str, Any]] = [
+            real_by_id.get(d["id"], d) for d in self._DEFAULT_TATS
+        ]
+        # 기본 TAT ID 에 없는 추가 로봇(AMR-001 등)도 포함
+        for r in robots:
+            if str(r.get("id", "")) not in self._DEFAULT_TAT_IDS:
+                merged.append(r)
+
         seen: set[str] = set()
 
-        for robot in robots:
+        for idx, robot in enumerate(merged):
             rid = str(robot.get("id", ""))
             if not rid:
                 continue
             seen.add(rid)
 
-            loc = robot.get("location", "")
+            loc = str(robot.get("location", "")).strip()
+            task_state = robot.get("task_state", 1)
+
+            # 1) AMCL "x=..., y=..." 형식
             coords = self._parse_location(loc) if loc and "=" in loc else None
             if coords:
                 target_x, target_y = amcl_to_scene(*coords)
+            # 2) TAT_HOME_MAP — ID 로 개별 home 위치 (location="-" 일 때도 각자 home)
+            elif rid in TAT_HOME_MAP:
+                target_x, target_y = float(TAT_HOME_MAP[rid][0]), float(TAT_HOME_MAP[rid][1])
+            # 3) LOCATION_TO_SCENE 키 매핑
+            elif loc and loc in LOCATION_TO_SCENE:
+                target_x, target_y = float(LOCATION_TO_SCENE[loc][0]), float(LOCATION_TO_SCENE[loc][1])
+            # 4) 인덱스 기반 충전존 fallback
             else:
-                # No AMCL yet — show at known charging-zone home position.
-                _HOME = {"TAT1": _POS["amr1_home"], "TAT2": _POS["amr2_home"], "TAT3": _POS["amr3_home"]}
-                home = _HOME.get(rid)
-                if home:
-                    target_x, target_y = float(home[0]), float(home[1])
-                else:
-                    target_x = target_y = None
+                home = AMR_HOME_POSITIONS[idx % len(AMR_HOME_POSITIONS)]
+                target_x, target_y = float(home[0]), float(home[1])
 
             raw_status = robot.get("status", "")
             status_key = _status_key(raw_status)
@@ -227,8 +263,6 @@ class FactoryMapScene(QGraphicsScene):
 
             st = self._amr_state.get(rid)
             if st is None:
-                if target_x is None:
-                    continue
                 marker = QGraphicsRectItem(-28, -16, 56, 32)
                 marker.setBrush(QBrush(QColor("#ffffff")))
                 marker.setPen(QPen(QColor(color_info["border"]), 2))
@@ -258,8 +292,7 @@ class FactoryMapScene(QGraphicsScene):
                     "data": robot,
                 }
             else:
-                if target_x is not None:
-                    st["target"] = QPointF(target_x, target_y)
+                st["target"] = QPointF(target_x, target_y)
                 st["color"] = color
                 st["data"] = robot
                 st["marker"].setBrush(QBrush(QColor(color)))

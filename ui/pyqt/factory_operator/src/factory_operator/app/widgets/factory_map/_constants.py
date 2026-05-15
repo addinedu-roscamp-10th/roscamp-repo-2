@@ -50,28 +50,28 @@ STATUS_COLORS: dict[str, dict[str, str]] = {
 # 주요 좌표 상수 (zone 내부 + 통로 웨이포인트)
 _POS = {
     # 주조 기계 (이미지 좌측 끝)
-    "mold": (100, 465),
-    # Casting waiting zone (중앙)
-    "cast_wait": (640, 325),
+    "mold": (971, 422),
+    # Casting waiting zone f(중앙)
+    "cast_wait": (822, 313),
     "cast_pickup": (560, 265),
     # Charging zone (중앙 하단) — AMR 홈
-    "amr1_home": (525, 528),
-    "amr2_home": (638, 528),
-    "amr3_home": (750, 528),
+    "amr1_home": (611, 507),
+    "amr2_home": (677, 506),
+    "amr3_home": (737, 507),
     # Postprocessing zone (좌상단)
-    "unload_worker": (225, 105),
+    "unload_worker": (181, 133),
     "pp_worker": (325, 105),
     "conv_left": (345, 155),
     "conv_right": (590, 155),
     "conv_wait": (640, 155),
-    "conv_pickup": (555, 252),
+    "conv_pickup": (589, 121),
     # Staging location (좌하단 위 박스)
     "rack": (160, 340),
-    "rack_pickup": (268, 340),
+    "rack_pickup": (428, 349),
     # Putaway waiting zone (좌하단 아래 박스)
-    "putaway": (215, 515),
+    "putaway": (427, 422),
     # Shipping zone (우상단)
-    "outbound": (1000, 115),
+    "outbound": (945, 127),
     # 통로 웨이포인트
     "corridor_top": (450, 238),
     "corridor_right": (760, 238),
@@ -151,3 +151,82 @@ def amcl_to_scene(x_m: float, y_m: float) -> tuple[float, float]:
 # 실제 이미지에서 확인 후 갱신. MAT=주조 arm, PAT=피킹/출하 arm.
 PAT_FIXED_POS: tuple[float, float] = (291.0, 393.0)# (700.0, 220.0)
 MAT_FIXED_POS: tuple[float, float] = (948.0, 419.0) # (90.0, 460.0)
+
+# ---------------------------------------------------------------------------
+# TAT(AMR) 충전존 홈 위치 (인덱스 0=TAT1, 1=TAT2, 2=TAT3)
+# ---------------------------------------------------------------------------
+AMR_HOME_POSITIONS: list[tuple[float, float]] = [
+    _POS["amr1_home"],
+    _POS["amr2_home"],
+    _POS["amr3_home"],
+]
+
+# TAT ID 별 홈 위치 매핑 (Management Service 반환 ID 모두 포함)
+TAT_HOME_MAP: dict[str, tuple[float, float]] = {
+    "TAT1": _POS["amr1_home"],
+    "TAT2": _POS["amr2_home"],
+    "TAT3": _POS["amr3_home"],
+    "AMR-001": _POS["amr1_home"],
+    "AMR-002": _POS["amr2_home"],
+    "AMR-003": _POS["amr3_home"],
+    "amr1": _POS["amr1_home"],
+    "amr2": _POS["amr2_home"],
+    "amr3": _POS["amr3_home"],
+}
+
+# ---------------------------------------------------------------------------
+# Management Service location 문자열 → Scene 좌표
+#
+# ★ 실제 location 값 확인 방법 (Management Service 서버에서):
+#     grep -r "location" management_service/app/amr_battery.py
+#     또는 TAT RPi 코드에서 어떤 문자열을 set_location()에 넘기는지 확인
+#
+# ★ 이 딕셔너리 사용법:
+#   1. Management Service 가 robot.location 으로 반환하는 문자열을 키로 넣는다.
+#   2. 값은 _POS["..."] 중 해당 zone 의 좌표를 고른다.
+#   3. 여러 별칭(동의어)이 있으면 같은 값으로 여러 키를 추가한다.
+#   4. 모르는 location 이 있으면 TAT 가 충전존 home 으로 fallback 되므로 무방.
+#
+# pick_pixel.py 로 좌표 확인:
+#   cd ui/pyqt/factory_operator && .venv/bin/python pick_pixel.py
+# ---------------------------------------------------------------------------
+LOCATION_TO_SCENE: dict[str, tuple[float, float]] = {
+    # ── 충전존 (기본값 / AMR home) ─────────────────────────────────────────
+    # Management Service 에서 아직 위치를 안 보내면 "-" 가 기본값.
+    "-":             _POS["amr2_home"],   # 기본 fallback — 바꾸지 말 것
+    "charging":      _POS["amr2_home"],   # ← 실제 문자열로 교체
+    "CHG":           _POS["amr2_home"],   # ← 실제 문자열로 교체
+    "CH":            _POS["amr2_home"],   # ← 실제 문자열로 교체
+
+    # ── 주조존 (Casting) ──────────────────────────────────────────────────
+    "casting":       _POS["cast_wait"],   # ← 실제 문자열로 교체
+    "CS":            _POS["cast_wait"],   # ← 실제 문자열로 교체
+    "CT":            _POS["cast_wait"],   # ← 실제 문자열로 교체
+
+    # ── 후처리존 (PostProcessing) ─────────────────────────────────────────
+    "postprocessing": _POS["unload_worker"],  # ← 실제 문자열로 교체
+    "PP":            _POS["unload_worker"],   # ← 실제 문자열로 교체
+
+    # ── 보관존 (Storage / Putaway) ────────────────────────────────────────
+    "storage":       _POS["putaway"],     # ← 실제 문자열로 교체
+    "ST":            _POS["putaway"],     # ← 실제 문자열로 교체
+    "STO":           _POS["putaway"],     # ← 실제 문자열로 교체
+    "putaway":       _POS["putaway"],     # ← 실제 문자열로 교체
+
+    # ── 출하존 (Outbound / Shipping) ─────────────────────────────────────
+    "outbound":      _POS["outbound"],    # ← 실제 문자열로 교체
+    "OB":            _POS["outbound"],    # ← 실제 문자열로 교체
+
+    # ── 컨베이어존 (Conveyor) ─────────────────────────────────────────────
+    "conveyor":      _POS["conv_pickup"], # ← 실제 문자열로 교체
+    "CV":            _POS["conv_pickup"], # ← 실제 문자열로 교체
+    "CONV":          _POS["conv_pickup"], # ← 실제 문자열로 교체
+
+    # ── 미확인 / 추가 필요 ────────────────────────────────────────────────
+    # Management Service 에서 새 location 문자열이 나오면 여기에 추가:
+    # "???": _POS["..."],
+}
+
+# TAT 이동 중임을 나타내는 task_state 정수 집합 (AmrTaskState proto enum)
+# 0=UNSPECIFIED, 1=IDLE, 10=FAILED → 정지.  2~9 → 이동/작업 중.
+TAT_MOVING_STATES: frozenset[int] = frozenset(range(2, 10))

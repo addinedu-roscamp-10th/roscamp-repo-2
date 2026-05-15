@@ -422,8 +422,19 @@ class MainWindow(QMainWindow):
         self._amr_thread.start()
 
     def _on_amr_status(self, amr_list: list) -> None:
-        """AMR 실시간 데이터를 logistics 페이지에 직접 반영."""
+        """AMR 실시간 데이터를 logistics / 공장 맵 / 대시보드 미니맵에 반영.
+
+        처음에는 TAT 를 충전존 home 픽셀로 표시 (static).
+        location 이 AMCL "x=...,y=..." 또는 LOCATION_TO_SCENE 키이면 실시간 위치 갱신.
+        PAT/MAT(cobot) 는 고정 위치에 status 도트만 갱신.
+        """
         self._logistics.update_amr_live(amr_list)
+
+        amrs = [r for r in amr_list if r.get("type") == "amr"]
+        cobots = [r for r in amr_list if r.get("type") == "cobot"]
+
+        # 대시보드 맵 (FactoryMapPage 제거 후 유일한 맵 뷰)
+        self._dashboard._map.update_robots(amrs, cobots)
 
     # ---------- 종료 ----------
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
