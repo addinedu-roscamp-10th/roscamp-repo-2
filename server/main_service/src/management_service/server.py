@@ -233,6 +233,8 @@ def serve() -> None:
     servicer.orchestrator_thread = orchestrator_thread
     # sync 스레드(gRPC servicer)가 async handler 코루틴을 던질 루프 주입.
     container.event_bridge.set_loop(orchestrator_thread.loop)
+    # SPEC-DB-EVENT-BRIDGE-001 Phase 3b: dispatcher 의 async record_inspection_result 호출용 loop 주입.
+    container.insp_task_dispatcher.set_loop(orchestrator_thread.loop)
 
     container.start()
     # SPEC-DB-EVENT-BRIDGE-001 Phase 2: DB row trigger listener 시작.

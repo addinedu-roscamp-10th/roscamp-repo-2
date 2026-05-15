@@ -14,6 +14,7 @@ from services.core.adapters.ros2_runtime import Ros2Runtime
 from services.core.adapters.amr_state_monitor import AmrStateMonitorService
 from services.core.db_event_listener import DbEventListener
 from services.core.db_event_router import DbEventRouter, make_logging_handler
+from services.core.db_event_dispatchers import InspTaskTxnDispatcher
 from services.http_image_server import HttpImageServer
 
 from services.query.item_query_service import ItemQueryService
@@ -92,13 +93,27 @@ class Container:
         # start/stop 은 server.py 의 OrchestratorThread loop 에서 호출 (async).
         self.db_event_listener = DbEventListener(event_bridge=self.event_bridge)
 
-        # SPEC-DB-EVENT-BRIDGE-001 Phase 3a: DB_ROW_CHANGED → table 별 in-process handler 라우팅.
-        # Phase 3a 는 logging handler 만 등록 — Phase 3b 에서 task_executor 측 실 처리 추가.
-        # dual delivery 안전성: (table, PK, op) 60s dedup cache 내장.
+        # SPEC-DB-EVENT-BRIDGE-001 Phase 3a/3b: DB_ROW_CHANGED → table 별 in-process handler 라우팅.
+        # Phase 3a (PR #30): 모든 lifecycle table 에 logging handler — 라우팅 동작 검증.
+        # Phase 3b (본 PR): insp_task_txn 에 InspTaskTxnDispatcher 추가 — 외부 SQL INSERT(PROC)
+        #   가 들어와도 AIAdapter + state_manager.record_inspection_result 자동 진행.
+        # dual delivery 안전성: (table, PK, op) 60s dedup cache + consume_inspection_image 1회 소비.
         self.db_event_router = DbEventRouter()
         for _table in ("insp_task_txn", "equip_task_txn", "trans_task_txn",
                         "pp_task_txn", "item", "ord_stat"):
             self.db_event_router.register_handler(_table, make_logging_handler(_table))
+
+        # Phase 3b dispatcher — feature flag MGMT_DB_EVENT_TASK_DISPATCH=1 일 때만 실 처리.
+        # AIAdapter 는 dispatcher 전용 새 인스턴스 (adapter_router 와 격리 — 호출 충돌 회피).
+        from services.core.adapters.ai_adapter import AIAdapter
+        self.insp_task_dispatcher = InspTaskTxnDispatcher(
+            adapter=AIAdapter(),
+            state_manager=self.state_manager,
+        )
+        self.db_event_router.register_handler(
+            "insp_task_txn", self.insp_task_dispatcher.handle
+        )
+
         self.db_event_router.attach(self.event_bridge)
 
         # PyQt ③ 후처리 완료 → 1회차 컨베이어 motor "start" 발신.
