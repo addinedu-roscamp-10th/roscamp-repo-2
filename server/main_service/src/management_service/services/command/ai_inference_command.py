@@ -1,13 +1,22 @@
-"""AI 서버 추론 요청 커맨드 — multipart POST /infer.
+"""AI 서버 추론 요청 커맨드 — multipart POST /predict (옵션 B 합의 2026-05-14).
 
-`AIAdapter.execute` 가 본 커맨드를 호출하여 backend disk 에 저장된 검사 이미지를
-AI 서버로 forward 하고 양/불 판정 결과를 받는다. AI 서버 인터페이스는
-e2e 통합 테스트 동안 mock (`server/ai_service`) 가 응답한다.
+PatchCore router 호환:
+    - 요청: multipart `file` (검사 이미지 binary) + `model` (cate_cd: CMH/RMH/EMH)
+    - 응답: PredictResponse{pred_label, pred_score, segmented_image, result_image}
+        - pred_label: "Normal" | "Anomalous"
+        - pred_score: anomaly score (float)
+        - segmented_image / result_image: base64 PNG 두 장
+
+DB 매핑:
+    - pred_label="Anomalous" → is_defective=True, result="NG"
+    - pred_score → anomaly_score (insp_stat.anomaly_score)
+    - 송신 model → predicted_class (insp_stat.predicted_class)
+    - 응답 base64 이미지는 호출자(AIAdapter) 가 디스크 저장 후 경로만 보관
+      (raw_payload 에는 길이 마커로만 남겨 DB result_json 크기 폭주 방지)
 
 설계 원칙:
     - sync httpx — `AIAdapter.execute` 가 `asyncio.to_thread` 로 래핑됨
     - 1 회 retry — 일시적 네트워크 오류 흡수, 그 이상은 실패로 보고
-    - 응답 schema 는 DB (`insp_stat`, `ai_inference_txn`) 와 정합되도록 정규화
     - timeout 초과 / connection error 시 ok=False 반환 (예외 throw 하지 않음)
 """
 
@@ -16,6 +25,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -23,29 +33,34 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_HOST = "127.0.0.1"
-_DEFAULT_PORT = 8100
-_DEFAULT_TIMEOUT_SEC = 5.0
+# 옵션 B 합의 endpoint — .env.example 의 MGMT_AI_* 와 정합.
+_DEFAULT_HOST = "100.66.177.119"
+_DEFAULT_PORT = 30000
+_DEFAULT_TIMEOUT_SEC = 30.0
 _DEFAULT_RETRY_COUNT = 1
-_DEFAULT_PATH = "/infer"
+_DEFAULT_PATH = "/predict"
+
+_VALID_MODELS: tuple[str, ...] = ("CMH", "RMH", "EMH")
 
 
 @dataclass(frozen=True)
 class AiInferenceResult:
-    """AI 서버 추론 응답의 정규화 형태.
-
-    실패 시 ok=False + error_reason 채워서 반환. 호출자는 ok 만 보고 분기.
-    성공 시 result/is_defective + DB 필드 (predicted_class, ...) 가 모두 채워짐.
-    """
+    """AI 서버 추론 응답의 정규화 형태 (옵션 B + DB 매핑)."""
 
     ok: bool
     item_id: int
-    result: str = ""  # "OK" | "NG" | ""
+    # ----- 옵션 B 응답 원본 -----
+    pred_label: str | None = None
+    pred_score: float | None = None
+    segmented_image_b64: str | None = None
+    result_image_b64: str | None = None
+    # ----- DB 매핑 (insp_stat / ai_inference_txn / item) -----
+    result: str = ""                       # "OK" | "NG" | ""
     is_defective: bool | None = None
-    predicted_class: str | None = None
-    yolo_confidence: float | None = None
-    anomaly_score: float | None = None
-    anomaly_threshold: float | None = None
+    predicted_class: str | None = None     # = 송신 model (cate_cd)
+    yolo_confidence: float | None = None   # 옵션 B 미제공 → None
+    anomaly_score: float | None = None     # = pred_score
+    anomaly_threshold: float | None = None # 옵션 B 미제공 → None
     model_id: int | None = None
     model_nm: str | None = None
     model_type: str | None = None
@@ -103,11 +118,23 @@ class AiInferenceCommand:
         *,
         image_path: Path,
         item_id: int,
-        captured_at: float | None = None,
-        label: str | None = None,
+        model: str,
     ) -> AiInferenceResult:
+        """multipart POST /predict — PatchCore 추론 1 회 호출.
+
+        Args:
+            image_path: 디스크에 저장된 검사 이미지 경로
+            item_id: insp_task_txn 매칭용 (응답 자체에는 영향 없음, 결과 객체에만 보존)
+            model: PatchCore 라우팅 키 — product.cate_cd ("CMH" | "RMH" | "EMH")
+        """
         if item_id <= 0:
             return AiInferenceResult(ok=False, item_id=item_id, error_reason="invalid_item_id")
+        if model not in _VALID_MODELS:
+            return AiInferenceResult(
+                ok=False,
+                item_id=item_id,
+                error_reason=f"invalid_model:{model!r} (expected CMH/RMH/EMH)",
+            )
         if not image_path.exists():
             return AiInferenceResult(
                 ok=False,
@@ -129,11 +156,12 @@ class AiInferenceCommand:
                 error_reason=f"image_read_failed:{exc}",
             )
 
+        started_iso = _utcnow_iso()
         attempts = max(1, self._retry_count + 1)
         last_error: str | None = None
         for attempt in range(1, attempts + 1):
             try:
-                response = self._post(image_bytes, image_path.name, item_id, captured_at, label)
+                response = self._post(image_bytes, image_path.name, model)
             except httpx.HTTPError as exc:
                 last_error = f"http_error:{type(exc).__name__}:{exc}"
                 logger.warning(
@@ -143,7 +171,14 @@ class AiInferenceCommand:
                     last_error,
                 )
                 continue
-            return _normalize_response(item_id, response)
+            completed_iso = _utcnow_iso()
+            return _normalize_response(
+                item_id=item_id,
+                model=model,
+                response=response,
+                started_at=started_iso,
+                completed_at=completed_iso,
+            )
 
         return AiInferenceResult(
             ok=False,
@@ -155,23 +190,32 @@ class AiInferenceCommand:
         self,
         image_bytes: bytes,
         filename: str,
-        item_id: int,
-        captured_at: float | None,
-        label: str | None,
+        model: str,
     ) -> httpx.Response:
-        files = {"image": (filename, image_bytes, "image/jpeg")}
-        data: dict[str, str] = {"item_id": str(item_id)}
-        if captured_at is not None:
-            data["captured_at"] = f"{captured_at:.6f}"
-        if label:
-            data["label"] = label
+        # content-type 은 확장자로 추론 (.png → image/png, 그 외 image/jpeg). PatchCore 서버가
+        # multipart 본문의 content-type 을 검사해 application/octet-stream 은 502 로 reject 한
+        # 사례가 있어 명시적으로 image MIME 을 지정한다.
+        mime = "image/png" if filename.lower().endswith(".png") else "image/jpeg"
+        files = {"file": (filename, image_bytes, mime)}
+        data: dict[str, str] = {"model": model}
         with httpx.Client(timeout=self._timeout) as client:
             response = client.post(self.endpoint, files=files, data=data)
         response.raise_for_status()
         return response
 
 
-def _normalize_response(item_id: int, response: httpx.Response) -> AiInferenceResult:
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds")
+
+
+def _normalize_response(
+    *,
+    item_id: int,
+    model: str,
+    response: httpx.Response,
+    started_at: str,
+    completed_at: str,
+) -> AiInferenceResult:
     try:
         body = response.json()
     except ValueError:
@@ -180,42 +224,56 @@ def _normalize_response(item_id: int, response: httpx.Response) -> AiInferenceRe
             item_id=item_id,
             error_reason="ai_response_not_json",
         )
-    if not isinstance(body, dict) or not body.get("ok", False):
+    if not isinstance(body, dict):
         return AiInferenceResult(
             ok=False,
             item_id=item_id,
-            error_reason=str(body.get("detail") or body.get("error") or "ai_response_not_ok"),
-            raw_payload=body if isinstance(body, dict) else {},
+            error_reason="ai_response_not_dict",
         )
 
-    result = str(body.get("result") or "").upper()
-    is_defective_field = body.get("is_defective")
-    is_defective: bool | None
-    if isinstance(is_defective_field, bool):
-        is_defective = is_defective_field
-    elif result in ("OK", "NG"):
-        is_defective = result == "NG"
-    else:
-        is_defective = None
+    pred_label_raw = body.get("pred_label")
+    pred_score_raw = body.get("pred_score")
+    if pred_label_raw is None or pred_score_raw is None:
+        return AiInferenceResult(
+            ok=False,
+            item_id=item_id,
+            error_reason=f"ai_response_missing_fields:keys={sorted(body.keys())}",
+            raw_payload=_strip_b64(body),
+        )
+
+    pred_label = str(pred_label_raw)
+    pred_score = _as_float(pred_score_raw)
+    is_defective = pred_label.strip().upper() == "ANOMALOUS"
+    result = "NG" if is_defective else "OK"
 
     return AiInferenceResult(
         ok=True,
-        item_id=int(body.get("item_id") or item_id),
+        item_id=item_id,
+        pred_label=pred_label,
+        pred_score=pred_score,
+        segmented_image_b64=body.get("segmented_image"),
+        result_image_b64=body.get("result_image"),
         result=result,
         is_defective=is_defective,
-        predicted_class=body.get("predicted_class"),
-        yolo_confidence=_as_float(body.get("yolo_confidence")),
-        anomaly_score=_as_float(body.get("anomaly_score")),
-        anomaly_threshold=_as_float(body.get("anomaly_threshold")),
-        model_id=_as_int(body.get("model_id")),
-        model_nm=body.get("model_nm"),
-        model_type=body.get("model_type"),
-        step_type=body.get("step_type"),
-        started_at=body.get("started_at"),
-        completed_at=body.get("completed_at"),
-        saved_path=body.get("saved_path"),
-        raw_payload=body,
+        predicted_class=model,             # 송신 cate_cd 를 그대로 보존 — DB 의 insp_stat.predicted_class 키
+        anomaly_score=pred_score,          # 옵션 B pred_score 매핑
+        model_type="PATCHCORE",
+        step_type="CLASSIFICATION",
+        started_at=started_at,
+        completed_at=completed_at,
+        raw_payload=_strip_b64(body),      # base64 이미지는 raw_payload 에서 제외 (DB result_json 크기 절약)
     )
+
+
+def _strip_b64(body: dict[str, Any]) -> dict[str, Any]:
+    """raw_payload 의 base64 이미지 필드를 길이 마커로 치환 — DB result_json 사이즈 폭주 방지."""
+    out: dict[str, Any] = {}
+    for k, v in body.items():
+        if k in ("segmented_image", "result_image") and isinstance(v, str):
+            out[k] = f"<base64 omitted, len={len(v)}>"
+        else:
+            out[k] = v
+    return out
 
 
 def _as_float(value: Any) -> float | None:

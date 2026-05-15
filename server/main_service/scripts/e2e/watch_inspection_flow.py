@@ -110,8 +110,9 @@ def _snapshot_flow(db, txn_id: int) -> FlowSnapshot:
         end_at=insp.end_at,
         inference_id=inference.inference_id if inference else None,
         inference_stat=inference.txn_stat if inference else None,
-        predicted_class=stat.predicted_class if stat else None,
-        yolo_confidence=float(stat.yolo_confidence) if stat and stat.yolo_confidence is not None else None,
+        # 옵션 B 신 스키마: 추론 메타는 ai_inference_txn 으로 이동. insp_stat 은 final_result + FK 만 보유.
+        predicted_class=inference.predicted_class if inference else None,
+        yolo_confidence=float(inference.confidence) if inference and inference.confidence is not None else None,
         final_result=stat.final_result if stat else None,
         item_is_defective=item.is_defective if item else None,
     )
@@ -272,12 +273,25 @@ def run_sim_mode(timeout_sec: int, keep_data: bool) -> int:
         created_txn_id = int(row.txn_id)
     print(f"  [SIM] PROC insp_task_txn INSERT — txn_id={created_txn_id} item_id={item_id}")
 
-    # 3. 더미 JPEG 디스크 저장 (UploadInspectionImage RPC 시뮬레이션)
+    # 3. 검사 이미지 디스크 저장 (TOF 정지 → 카메라 촬영 → UploadInspectionImage RPC 시뮬레이션)
+    #    E2E_SIM_IMAGE_PATH 환경변수 지정 시 실 이미지 사용. 미지정 시 더미 JPEG.
+    sim_image_env = os.environ.get("E2E_SIM_IMAGE_PATH")
+    if sim_image_env:
+        image_path_in = Path(sim_image_env)
+        if not image_path_in.exists():
+            print(f"✗ E2E_SIM_IMAGE_PATH={sim_image_env} 가 존재하지 않습니다")
+            return 1
+        image_bytes_in = image_path_in.read_bytes()
+        label_in = f"e2e_sim_{image_path_in.stem}"
+        print(f"  [SIM] E2E_SIM_IMAGE_PATH 사용 — {image_path_in} ({len(image_bytes_in):,} bytes)")
+    else:
+        image_bytes_in = b"\xff\xd8\xff\xe0" + b"sim-e2e-jpeg" * 16 + b"\xff\xd9"
+        label_in = "e2e_sim"
     sink = InspectionImageSinkCommand()
     saved = sink.save(
         item_id=item_id,
-        image_bytes=b"\xff\xd8\xff\xe0" + b"sim-e2e-jpeg" * 16 + b"\xff\xd9",
-        label="e2e_sim",
+        image_bytes=image_bytes_in,
+        label=label_in,
     )
     if saved is None:
         print("✗ InspectionImageSinkCommand.save 실패")
@@ -416,6 +430,13 @@ def _finalize(
 def _cleanup(txn_id: int, item_id: int | None, temp_item_id: int | None = None) -> None:
     print(f"\n  [cleanup] insp_txn={txn_id} item={item_id} temp_item={temp_item_id} 정리...")
     with SessionLocal() as db:
+        # 옵션 B 신 스키마: insp_task_txn.final_inference_id 가 ai_inference_txn FK 라
+        # ai_inference_txn DELETE 전에 final_inference_id 를 NULL 로 풀어야 한다.
+        db.query(InspTaskTxn).filter(InspTaskTxn.txn_id == txn_id).update(
+            {InspTaskTxn.final_inference_id: None},
+            synchronize_session=False,
+        )
+        db.flush()
         db.query(InspStat).filter(InspStat.insp_txn_id == txn_id).delete(synchronize_session=False)
         db.flush()
         db.query(AiInferenceTxn).filter(AiInferenceTxn.insp_txn_id == txn_id).delete(
