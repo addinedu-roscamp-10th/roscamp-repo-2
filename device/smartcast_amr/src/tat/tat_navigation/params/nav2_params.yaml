@@ -378,7 +378,7 @@ docking_server:
     dock_backwards: false  # true이면 후진 도킹 수행
     dock_prestaging_tolerance: 0.5  # staging pose 근처면 네비게이션 생략하는 거리 기준
 
-    dock_plugins: ["aruco_dock", "STRG_dock"]  # 사용할 dock plugin 인스턴스 목록
+    dock_plugins: ["aruco_dock", "STRG_dock", "SHIP_dock"]  # 사용할 dock plugin 인스턴스 목록
     # docks:
     #   [
     #     "ToINSP",
@@ -440,7 +440,7 @@ docking_server:
       plugin: "opennav_docking::SimpleNonChargingDock"
       use_external_detection_pose: true  # 외부 detector pose 사용
       external_detection_timeout: 30.0  # detection timeout
-      external_detection_translation_x: -0.01  # 마커 기준 최종 dock pose 오프셋
+      external_detection_translation_x: -0.015  # 마커 기준 최종 dock pose 오프셋
       external_detection_translation_y: 0.0
       external_detection_rotation_pitch: 0.0
       external_detection_rotation_roll: 0.0
