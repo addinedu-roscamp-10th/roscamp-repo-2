@@ -5,10 +5,11 @@ import { CheckCircle, XCircle } from "lucide-react";
 import type { InspectionRecord } from "@/lib/types";
 import { formatDate } from "@/lib/utils";
 
-// 2026-05-15: 검사 이미지 base URL — backend HttpImageServer 또는 AI 서버 HTTP.
-// 환경변수로 오버라이드 가능 (예: http://100.66.177.119:8080).
+// 2026-05-15: 검사 이미지 base URL — AI 서버 HTTP (100.66.177.119:8080).
+// git pull 만으로 다른 PC 도 동일 동작하도록 default 를 AI 서버로 지정.
+// 다른 base 가 필요하면 NEXT_PUBLIC_INSPECTION_IMAGE_BASE env 로 오버라이드.
 const IMAGE_BASE_URL = (
-  process.env.NEXT_PUBLIC_INSPECTION_IMAGE_BASE ?? "http://localhost:18800"
+  process.env.NEXT_PUBLIC_INSPECTION_IMAGE_BASE ?? "http://100.66.177.119:8080"
 ).replace(/\/$/, "");
 
 interface VisionCameraFeedProps {

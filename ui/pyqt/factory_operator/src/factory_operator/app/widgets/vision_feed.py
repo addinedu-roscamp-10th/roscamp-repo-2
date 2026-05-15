@@ -22,8 +22,11 @@ from PyQt5.QtWidgets import QFrame, QGridLayout, QLabel, QSizePolicy
 
 logger = logging.getLogger(__name__)
 
-# 2026-05-15: backend HttpImageServer 의 base URL. env 로 오버라이드 가능.
-_IMAGE_BASE_URL = os.environ.get("INSPECTION_IMAGE_BASE_URL", "http://localhost:18800").rstrip("/")
+# 2026-05-15: 검사 이미지 base URL — AI 서버 HTTP (100.66.177.119:8080).
+# git pull 만으로 다른 PC 도 동일 동작하도록 default 를 AI 서버로 지정. env 로 오버라이드 가능.
+_IMAGE_BASE_URL = os.environ.get(
+    "INSPECTION_IMAGE_BASE_URL", "http://100.66.177.119:8080"
+).rstrip("/")
 
 
 class VisionFeedCard(QFrame):
