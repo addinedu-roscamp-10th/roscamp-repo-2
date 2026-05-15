@@ -422,11 +422,25 @@ docking_server:
       staging_x_offset: -0.1  # 최종 dock pose 기준 staging pose
       staging_yaw_offset: 0.0
 
+    SHIP_dock:
+      plugin: "opennav_docking::SimpleNonChargingDock"
+      use_external_detection_pose: true  # 외부 detector pose 사용
+      external_detection_timeout: 30.0  # detection timeout
+      external_detection_translation_x: -0.07  # 마커 기준 최종 dock pose 오프셋
+      external_detection_translation_y: 0.0
+      external_detection_rotation_pitch: 0.0
+      external_detection_rotation_roll: 0.0
+      filter_coef: 0.3
+      use_stall_detection: false
+      docking_threshold: 0.05
+      staging_x_offset: -0.1  # 최종 dock pose 기준 staging pose
+      staging_yaw_offset: 0.0
+
     STRG_dock:
       plugin: "opennav_docking::SimpleNonChargingDock"
       use_external_detection_pose: true  # 외부 detector pose 사용
       external_detection_timeout: 30.0  # detection timeout
-      external_detection_translation_x: -0.02  # 마커 기준 최종 dock pose 오프셋
+      external_detection_translation_x: -0.01  # 마커 기준 최종 dock pose 오프셋
       external_detection_translation_y: 0.0
       external_detection_rotation_pitch: 0.0
       external_detection_rotation_roll: 0.0
@@ -443,9 +457,9 @@ docking_server:
       id: "ToINSP"  # plugin에서 필요 시 사용할 수 있는 선택적 식별자
 
     ToSHIP:
-      type: "aruco_dock"  # 이 dock 인스턴스가 사용할 dock plugin 타입
+      type: "SHIP_dock"  # 이 dock 인스턴스가 사용할 dock plugin 타입
       frame: "map"  # 이 dock pose가 표현된 기준 프레임
-      pose: [-0.67, 0.12, 1.57]  # [x, y, theta]
+      pose: [-0.67, 0.42, 1.57]  # [x, y, theta]
       id: "ToSHIP"  # plugin에서 필요 시 사용할 수 있는 선택적 식별자
 
     ToCAST:
@@ -485,7 +499,7 @@ docking_server:
       id: "ToSTRG"
 
     ToPICK:
-      type: "aruco_dock"
+      type: "STRG_dock"
       frame: "map"
       pose: [-0.223, -0.5, -1.57]
       id: "ToPICK"
