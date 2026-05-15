@@ -439,7 +439,7 @@ docking_server:
     ToINSP:
       type: "aruco_dock"  # 이 dock 인스턴스가 사용할 dock plugin 타입
       frame: "map"  # 이 dock pose가 표현된 기준 프레임
-      pose: [-0.67, -0.15, -1.57]  # [x, y, theta]
+      pose: [-0.72, -0.12, -1.57]  # [x, y, theta]
       id: "ToINSP"  # plugin에서 필요 시 사용할 수 있는 선택적 식별자
 
     ToSHIP:
