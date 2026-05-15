@@ -11,11 +11,19 @@
 
 from __future__ import annotations
 
+import logging
+import os
 from typing import Any
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QUrl
 from PyQt5.QtGui import QPixmap
+from PyQt5.QtNetwork import QNetworkAccessManager, QNetworkRequest
 from PyQt5.QtWidgets import QFrame, QGridLayout, QLabel, QSizePolicy
+
+logger = logging.getLogger(__name__)
+
+# 2026-05-15: backend HttpImageServer 의 base URL. env 로 오버라이드 가능.
+_IMAGE_BASE_URL = os.environ.get("INSPECTION_IMAGE_BASE_URL", "http://localhost:18800").rstrip("/")
 
 
 class VisionFeedCard(QFrame):
@@ -70,6 +78,11 @@ class VisionFeedCard(QFrame):
 
         self._last_pixmap: QPixmap | None = None
 
+        # 2026-05-15: backend HttpImageServer 에서 검사 이미지 fetch.
+        self._net = QNetworkAccessManager(self)
+        self._net.finished.connect(self._on_image_fetched)
+        self._pending_image_id: str | None = None
+
     # ---- 외부 API --------------------------------------------------------
 
     def update_data(self, inspection: dict[str, Any] | None) -> None:
@@ -117,6 +130,47 @@ class VisionFeedCard(QFrame):
             Qt.SmoothTransformation,
         )
         self._image.setPixmap(scaled)
+
+    def load_image_for(self, image_id: str | None) -> None:
+        """검사 row 의 image_id 로 backend HttpImageServer 에서 비동기 fetch.
+
+        성공 시 set_image(pixmap), 실패 또는 image_id 없음 시 placeholder 유지.
+        """
+        if not image_id:
+            logger.info("vision_feed: image_id 없음 → NO IMAGE 유지")
+            self.set_image(None)
+            return
+        self._pending_image_id = image_id
+        url = f"{_IMAGE_BASE_URL}/{image_id}.jpg"
+        logger.info("vision_feed: GET %s", url)
+        self._net.get(QNetworkRequest(QUrl(url)))
+
+    def _on_image_fetched(self, reply) -> None:
+        try:
+            err = reply.error()
+            if err:
+                logger.warning(
+                    "vision_feed: fetch 실패 url=%s err=%s msg=%s",
+                    reply.url().toString(),
+                    int(err),
+                    reply.errorString(),
+                )
+                self.set_image(None)
+                return
+            data = reply.readAll()
+            logger.info(
+                "vision_feed: fetched url=%s bytes=%d",
+                reply.url().toString(),
+                data.size(),
+            )
+            pixmap = QPixmap()
+            if not pixmap.loadFromData(data) or pixmap.isNull():
+                logger.warning("vision_feed: QPixmap.loadFromData 실패 (시그니처 미인식)")
+                self.set_image(None)
+                return
+            self.set_image(pixmap)
+        finally:
+            reply.deleteLater()
 
     # ---- 내부 헬퍼 -------------------------------------------------------
 
