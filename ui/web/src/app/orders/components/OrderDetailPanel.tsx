@@ -22,8 +22,8 @@ interface OrderDetailPanelProps {
   order: Order;
   details: OrderDetail[];
   onStatusChange: (orderId: string, status: OrderStatus) => void;
-  /** 출하 시작 핸들러 — shipping_ready 상태에서 TAT 출하 task 를 trigger.
-   *  page.tsx 에서 startShipping API 를 호출하는 useCallback 으로 전달된다.
+  /** 출하 시작 핸들러 — production_completed (ord_stat=DONE, 적재 완료) 상태에서
+   *  TAT 출하 task 를 trigger. page.tsx 에서 startShipping API 를 호출하는 useCallback 으로 전달된다.
    */
   onStartShipping?: (orderId: string) => void | Promise<void>;
   actionLoading: boolean;
@@ -361,15 +361,6 @@ export function OrderDetailPanel({
                 </button>
               )}
               {order.status === "production_completed" && (
-                <div
-                  className="flex-1 flex items-center justify-center gap-2 py-3 px-4 bg-purple-50 border border-purple-200 text-purple-800 rounded-lg font-medium text-sm"
-                  title="적재 완료(SHIP) 전환은 PyQt 적재 화면에서 수행하고, 본 화면은 그 다음 단계의 출하 시작 버튼을 노출합니다."
-                >
-                  <PackageCheck size={16} className="text-purple-600" />
-                  생산 완료 — 출고 시작은 PyQt 화면에서 적재 완료 상태에서 진행합니다
-                </div>
-              )}
-              {order.status === "shipping_ready" && (
                 <button
                   type="button"
                   disabled={actionLoading || !onStartShipping}
@@ -380,6 +371,15 @@ export function OrderDetailPanel({
                   {actionLoading ? <Loader2 size={16} className="animate-spin" /> : <Truck size={16} />}
                   출하 시작 (TAT 운반)
                 </button>
+              )}
+              {order.status === "shipping_ready" && (
+                <div
+                  className="flex-1 flex items-center justify-center gap-2 py-3 px-4 bg-purple-50 border border-purple-200 text-purple-800 rounded-lg font-medium text-sm"
+                  title="orchestrator 가 운반 완료 시 SHIP→COMP 자체 전이를 수행합니다."
+                >
+                  <PackageCheck size={16} className="text-purple-600" />
+                  출하 진행 중 — TAT 가 적재장에서 출하장으로 운반 중입니다
+                </div>
               )}
             </div>
           </div>

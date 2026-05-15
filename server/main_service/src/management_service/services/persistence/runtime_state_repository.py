@@ -448,6 +448,140 @@ class RuntimeStateRepository:
             qty = getattr(detail, "qty", None)
             return int(qty) if qty is not None and int(qty) > 0 else None
 
+    def release_storage_slot_for_item(self, item_id: int) -> bool:
+        """item_id 와 매핑된 strg_location_stat 슬롯을 empty 로 되돌린다.
+
+        PICK 완료 시점에 PAT 가 물리적으로 item 을 storage 에서 빼내므로
+        DB 도 같은 의미로 정리한다. 매핑이 이미 없으면 noop (False 반환).
+        """
+        if self._strg_location_stat_model is None:
+            return False
+        with self._session_factory() as db:
+            slots = (
+                db.query(self._strg_location_stat_model)
+                .filter(self._strg_location_stat_model.item_id == item_id)
+                .all()
+            )
+            if not slots:
+                return False
+            for slot in slots:
+                slot.item_id = None
+                slot.status = "empty"
+                slot.stored_at = datetime.utcnow()
+            db.commit()
+            logger.info(
+                "[RuntimeStateRepository] storage slot released: item_id=%s slots=%d",
+                item_id,
+                len(slots),
+            )
+            return True
+
+    def auto_rebind_storage_for_order(self, ord_id: int) -> int:
+        """STORED 인데 strg_location_stat 점유 매핑이 끊어진 item 들을 빈 슬롯에 다시 묶는다.
+
+        외부 reset 스크립트나 DB 트리거가 strg_location_stat 만 비웠을 때 self-heal
+        용도. cur_stat='STORED' = 논리적으로 적재 완료된 상태이므로 binding 만 복원해도
+        의미적으로 안전.
+
+        반환값: 새로 binding 된 item 수.
+        """
+        if self._item_model is None or self._strg_location_stat_model is None:
+            return 0
+
+        with self._session_factory() as db:
+            stored_items = (
+                db.query(self._item_model)
+                .filter(self._item_model.ord_id == ord_id)
+                .filter(self._item_model.cur_stat == "STORED")
+                .order_by(self._item_model.item_id.asc())
+                .all()
+            )
+            if not stored_items:
+                return 0
+
+            already_bound = {
+                int(r.item_id)
+                for r in db.query(self._strg_location_stat_model)
+                .filter(self._strg_location_stat_model.item_id.in_([i.item_id for i in stored_items]))
+                .filter(self._strg_location_stat_model.status == "occupied")
+                .all()
+            }
+            unbound = [int(i.item_id) for i in stored_items if int(i.item_id) not in already_bound]
+            if not unbound:
+                return 0
+
+            empty_slots = (
+                db.query(self._strg_location_stat_model)
+                .filter(self._strg_location_stat_model.status == "empty")
+                .filter(self._strg_location_stat_model.item_id.is_(None))
+                .order_by(self._strg_location_stat_model.loc_id.asc())
+                .limit(len(unbound))
+                .all()
+            )
+            if len(empty_slots) < len(unbound):
+                logger.warning(
+                    "[RuntimeStateRepository] auto_rebind: insufficient empty slots ord_id=%s need=%d have=%d",
+                    ord_id,
+                    len(unbound),
+                    len(empty_slots),
+                )
+                return 0
+
+            for slot, item_id in zip(empty_slots, unbound):
+                slot.item_id = item_id
+                slot.status = "occupied"
+                slot.stored_at = datetime.utcnow()
+            db.commit()
+            logger.info(
+                "[RuntimeStateRepository] auto_rebind: ord_id=%s rebound=%d items",
+                ord_id,
+                len(unbound),
+            )
+            return len(unbound)
+
+    def load_order_items_with_strg(self, ord_id: int) -> list[dict[str, Any]]:
+        """주문 한 건의 item + strg_location_stat 점유 슬롯을 join 하여 한꺼번에 반환.
+
+        DB-only 시드 (예: scripts/10_create_done_order_in_storage.py) 또는 리스타트 직후
+        StateManager._items 가 비어있는 상태를 채우기 위한 read-side hydration 진입점.
+        item 은 모두 반환하고, strg_location_stat 에 occupied 매핑이 있는 경우에만
+        strg_loc 가 (row, col) tuple 로 채워진다.
+        """
+        if self._item_model is None:
+            return []
+
+        with self._session_factory() as db:
+            items = (
+                db.query(self._item_model)
+                .filter(self._item_model.ord_id == ord_id)
+                .order_by(self._item_model.item_id.asc())
+                .all()
+            )
+            if not items:
+                return []
+
+            slots_by_item: dict[int, tuple[int, int]] = {}
+            if self._strg_location_stat_model is not None:
+                slot_rows = (
+                    db.query(self._strg_location_stat_model)
+                    .filter(self._strg_location_stat_model.item_id.in_([i.item_id for i in items]))
+                    .filter(self._strg_location_stat_model.status == "occupied")
+                    .all()
+                )
+                slots_by_item = {
+                    int(r.item_id): (int(r.loc_row), int(r.loc_col)) for r in slot_rows
+                }
+
+            return [
+                {
+                    "item_id": int(it.item_id),
+                    "ord_id": int(it.ord_id),
+                    "cur_stat": getattr(it, "cur_stat", None),
+                    "strg_loc": slots_by_item.get(int(it.item_id)),
+                }
+                for it in items
+            ]
+
     def get_storage_slots(self) -> list[dict[str, Any]]:
         if self._strg_location_stat_model is None:
             return []

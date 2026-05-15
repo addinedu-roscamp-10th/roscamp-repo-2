@@ -179,7 +179,7 @@ class Orchestrator(IOrchestrator):
     async def start_shipping(self, ord_id: int | None = None) -> list[int]:
         """출고 시작 진입점."""
         if ord_id is None:
-            logger.warning("start shipping skipped: ord_id is required")
+            logger.warning("start ship failed: ord_id is required")
             return []
 
         return await self._schedule_ship_task(ord_id, event="ship_start")
@@ -349,6 +349,13 @@ class Orchestrator(IOrchestrator):
     ) -> list[int]:
         """출고 이벤트에 따라 다음 출고 task를 만들고 실행한다."""
         item_locations = await self._collect_ship_item_locations(ord_id)
+        if not item_locations:
+            logger.warning(
+                "start ship failed: ord_id=%s reason=no eligible item_locations event=%s",
+                ord_id,
+                event,
+            )
+            return []
         ship_task = await self.task_manager.create_ship_task(
             order_id=ord_id,
             item_locations=item_locations,
@@ -549,15 +556,8 @@ class Orchestrator(IOrchestrator):
         return payload
 
     async def _collect_ship_item_locations(self, ord_id: int) -> list[tuple[int, int, int]]:
-        """주문별 출고 대상 item의 적재 위치를 모은다."""
-        item_locations: list[tuple[int, int, int]] = []
-        items = await self.state_manager.get_items_by_order(ord_id)
-        for item in items:
-            strg_loc = item.strg_loc
-            if not isinstance(strg_loc, tuple) or len(strg_loc) != 2:
-                continue
-            item_locations.append((int(item.item_id), int(strg_loc[0]), int(strg_loc[1])))
-        return item_locations
+        """주문별 출고 대상 item의 적재 위치를 DB에서 직접 조회."""
+        return await self.state_manager.load_ship_item_locations(ord_id)
 
 
     def _build_rejected_ack(self, ord_id: int, reason: str) -> "StartProductionOrderAckModel":

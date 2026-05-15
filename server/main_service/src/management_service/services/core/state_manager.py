@@ -829,7 +829,7 @@ class StateManager:
 
         item_id = task_meta.get("item_id")
         if item_id is not None:
-            item = self._items.get(item_id, {})
+            item = self._items.setdefault(item_id, {"item_id": item_id})
             strg_loc = _storage_loc_tuple(item.get("strg_loc"))
             if isinstance(strg_loc, tuple):
                 self._safe_repo_call(
@@ -838,6 +838,10 @@ class StateManager:
                     int(strg_loc[0]),
                     int(strg_loc[1]),
                 )
+            # PA_GP 성공 == 적재 완료. item.cur_stat='STORED' 로 라이프사이클 전이.
+            item["flow_stat"] = "STORED"
+            item["last_task_type"] = task_meta.get("task_type")
+            self._safe_repo_call("sync_item_snapshot", item)
 
         db_complete = self._safe_repo_call("increment_order_gp_qty", ord_id)
         if db_complete is not None:
@@ -1191,6 +1195,31 @@ class StateManager:
             res_id,
             cur_stat,
         )
+    async def load_ship_item_locations(self, ord_id: int) -> list[tuple[int, int, int]]:
+        """주문의 출고 대상 item 적재 위치를 DB 에서 직접 조회.
+
+        cur_stat='STORED' 인데 strg_location_stat 매핑이 풀린 경우를 best-effort
+        self-heal 한 뒤, occupied 슬롯이 있는 item 들의 (item_id, row, col) 을 모은다.
+        """
+        rebound = self._safe_repo_call("auto_rebind_storage_for_order", ord_id)
+        if rebound:
+            logger.info("[StateManager] auto_rebind: ord_id=%s rebound=%s", ord_id, rebound)
+
+        rows = self._safe_repo_call("load_order_items_with_strg", ord_id) or []
+        result: list[tuple[int, int, int]] = []
+        for r in rows:
+            strg_loc = _storage_loc_tuple(r.get("strg_loc"))
+            if not isinstance(strg_loc, tuple) or len(strg_loc) != 2:
+                continue
+            result.append((int(r["item_id"]), int(strg_loc[0]), int(strg_loc[1])))
+        logger.info(
+            "[StateManager] load_ship_item_locations ord_id=%s rows=%d eligible=%d",
+            ord_id,
+            len(rows),
+            len(result),
+        )
+        return result
+
     # 적재 예정 위치를 메모리에 기록한다. DB 점유 확정은 PA_GP 성공 시 처리한다.
     async def update_item_storage_location(self, item_id: int, strg_loc: tuple[int, int] | str) -> None:
         item = self._items.setdefault(item_id, {"item_id": item_id})
