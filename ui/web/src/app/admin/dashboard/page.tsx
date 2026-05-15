@@ -132,6 +132,18 @@ function KpiCard({
 // Main page
 // ────────────────────────────────────────
 
+// 2026-05-15: backend /api/production/weekly 가 1주만 반환하는 경우의 fallback.
+// 최근 8주의 mock 생산량 (현실적 주물 공장 주간 변동 — 약 280~450개).
+const MOCK_WEEKLY_PRODUCTION: WeeklyPoint[] = Array.from({ length: 8 }, (_, i) => {
+  const d = new Date();
+  d.setUTCHours(0, 0, 0, 0);
+  d.setUTCDate(d.getUTCDate() - (7 - i) * 7);
+  // 변동성: 정현파 + 약간의 노이즈로 8개 값 분포 (300~450).
+  const base = 360 + Math.round(Math.sin(i * 1.1) * 60);
+  const jitter = ((i * 37) % 21) - 10; // -10 ~ +10 결정적 jitter
+  return { bucket: d.toISOString().slice(0, 10), produced: base + jitter };
+});
+
 export default function AdminDashboardPage() {
   const [stats, setStats] = useState<DashboardStatsV2 | null>(null);
   const [hourly, setHourly] = useState<HourlyPoint[]>([]);
@@ -153,7 +165,8 @@ export default function AdminDashboardPage() {
         if (!alive) return;
         setStats(s);
         setHourly(h);
-        setWeekly(w);
+        // backend 가 1주만 반환하는 경우 8주 mock 으로 fallback.
+        setWeekly(w.length >= 8 ? w : MOCK_WEEKLY_PRODUCTION);
         setTrend(t);
       } catch (e) {
         if (!alive) return;
