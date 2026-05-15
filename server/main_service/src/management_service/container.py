@@ -14,7 +14,7 @@ from services.core.adapters.ros2_runtime import Ros2Runtime
 from services.core.adapters.amr_state_monitor import AmrStateMonitorService
 from services.core.db_event_listener import DbEventListener
 from services.core.db_event_router import DbEventRouter, make_logging_handler
-from services.core.db_event_dispatchers import InspTaskTxnDispatcher
+from services.core.db_event_dispatchers import InspTaskTxnDispatcher, TaskTxnUpdateDispatcher
 from services.http_image_server import HttpImageServer
 
 from services.query.item_query_service import ItemQueryService
@@ -113,6 +113,16 @@ class Container:
         self.db_event_router.register_handler(
             "insp_task_txn", self.insp_task_dispatcher.handle
         )
+
+        # Phase 4a: task_txn UPDATE(SUCC/FAIL) → TASK_COMPLETED in-process publish
+        # → task_executor._on_task_completed 가 동일하게 waiter 해제
+        # state_manager 의 기존 publish 와 dual delivery — _task_waiters.pop() list 의
+        # 자연 dedup 으로 안전 (한 번 비워지면 두 번째 publish 는 no-op).
+        self.task_txn_update_dispatcher = TaskTxnUpdateDispatcher(event_bridge=self.event_bridge)
+        for _task_table in ("equip_task_txn", "trans_task_txn", "pp_task_txn", "insp_task_txn"):
+            self.db_event_router.register_handler(
+                _task_table, self.task_txn_update_dispatcher.handle
+            )
 
         self.db_event_router.attach(self.event_bridge)
 

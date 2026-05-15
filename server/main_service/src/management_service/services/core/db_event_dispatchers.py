@@ -24,12 +24,30 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from services.contracts.enums import EventType, TaskType, TxnStat
+from services.contracts.models import Event
+
 if TYPE_CHECKING:
-    from services.contracts.models import Event
     from services.core.adapters.ai_adapter import AIAdapter
+    from services.core.event_bridge import EventBridgeImpl
     from services.core.state_manager import StateManager
 
 logger = logging.getLogger(__name__)
+
+
+# Phase 4a: task_txn UPDATE → TASK_COMPLETED 처리 대상 테이블
+_TRACKED_TASK_TXN_TABLES: frozenset[str] = frozenset({
+    "equip_task_txn", "trans_task_txn", "pp_task_txn", "insp_task_txn",
+})
+# task lifecycle 종결 상태 (PROC/QUE 는 신호 아님)
+_TERMINAL_TASK_STATS: frozenset[str] = frozenset({
+    TxnStat.SUCC.value, TxnStat.FAIL.value,
+})
+# table 별 고정 TaskType (row.task_type 컬럼 없는 테이블용)
+_TABLE_FIXED_TASK_TYPE: dict[str, TaskType] = {
+    "insp_task_txn": TaskType.INSP,
+    "pp_task_txn": TaskType.PP,
+}
 
 
 class InspTaskTxnDispatcher:
@@ -146,4 +164,108 @@ class InspTaskTxnDispatcher:
             logger.warning(
                 "[InspDispatcher] record_inspection_result 예외 item_id=%s insp_txn=%s exc=%s",
                 item_id, txn_id, exc,
+            )
+
+
+class TaskTxnUpdateDispatcher:
+    """task_txn UPDATE(SUCC/FAIL) → in-process TASK_COMPLETED publish (Phase 4a).
+
+    SPEC: docs/db_event_bridge/SPEC.md §6 Phase 4 + PHASE4_ANALYSIS.md §3.1
+
+    동작:
+        DB AFTER UPDATE OF txn_stat trigger → pg_notify → router → 본 dispatcher
+        → EventBridge.publish(TASK_COMPLETED, payload={task_type, status})
+        → task_executor._on_task_completed (기존 subscriber) 가 동일하게 waiter 해제
+
+    dual delivery 안전성:
+        - DbEventRouter 가 (table, PK, op) 60s dedup 으로 DB-origin 중복 차단
+        - state_manager 가 in-memory TASK_COMPLETED 도 발행 (기존) → 둘이 동일 (item_id, task_type)
+          publish 하지만 task_executor._on_task_completed 가 _task_waiters.pop() 사용 (list).
+          한 번 pop 되면 두 번째는 empty list → 두 번째 publish 는 no-op (안전).
+        - 즉 in-memory publish 가 먼저 도착하든 DB-origin 이 먼저 도착하든 한 번만 처리됨.
+        - Phase 4a 의 다음 단계 (별도 PR) 에서 state_manager 의 in-memory publish 를 제거하면
+          오직 DB-origin 만 신호 → DB 가 단일 진실 원천.
+
+    table 별 task_type 결정:
+        - equip_task_txn / trans_task_txn: row.task_type (예: 'MM', 'POUR', 'DM', 'ToPP')
+        - pp_task_txn: 고정 TaskType.PP (row 에 task_type 컬럼 없음)
+        - insp_task_txn: 고정 TaskType.INSP (row 에 task_type 컬럼 없음)
+
+    feature flag: MGMT_DB_EVENT_TASK_DISPATCH=1 일 때만 활성 (기본 off).
+    """
+
+    def __init__(self, *, event_bridge: "EventBridgeImpl") -> None:
+        self._event_bridge = event_bridge
+
+    @staticmethod
+    def _is_enabled() -> bool:
+        return os.environ.get("MGMT_DB_EVENT_TASK_DISPATCH", "0") in ("1", "true", "yes")
+
+    def handle(self, event: Event) -> None:
+        """DbEventRouter 의 task_txn handler — UPDATE OF txn_stat 만 처리."""
+        if not self._is_enabled():
+            return
+        payload = event.payload or {}
+        op = payload.get("op")
+        if op != "UPDATE":
+            return
+        table = payload.get("table")
+        if table not in _TRACKED_TASK_TXN_TABLES:
+            return
+
+        row = payload.get("row") or {}
+        new_stat = row.get("txn_stat")
+        if new_stat not in _TERMINAL_TASK_STATS:
+            return  # PROC/QUE 등은 종결 신호 아님
+
+        old_row = payload.get("old_row") or {}
+        if old_row.get("txn_stat") == new_stat:
+            return  # 의미 있는 전이 아님 (다른 컬럼만 변경)
+
+        item_id_raw = row.get("item_id")
+        if item_id_raw is None:
+            return
+        try:
+            item_id = int(item_id_raw)
+        except (TypeError, ValueError):
+            return
+
+        # table 별 task_type 결정
+        fixed = _TABLE_FIXED_TASK_TYPE.get(table)
+        if fixed is not None:
+            task_type = fixed
+        else:
+            raw = row.get("task_type")
+            try:
+                task_type = TaskType(raw)
+            except (TypeError, ValueError):
+                logger.info(
+                    "[TaskTxnDispatcher] unknown task_type=%r table=%s — skip",
+                    raw, table,
+                )
+                return
+
+        try:
+            self._event_bridge.publish(
+                Event(
+                    event_type=EventType.TASK_COMPLETED,
+                    item_id=item_id,
+                    payload={
+                        "task_type": task_type,
+                        "status": new_stat,
+                        "_origin": "db_event_router",
+                        "_table": table,
+                        "_txn_id": row.get("txn_id") or row.get("trans_task_txn_id"),
+                    },
+                )
+            )
+            logger.info(
+                "[TaskTxnDispatcher] publish TASK_COMPLETED item_id=%s task_type=%s "
+                "status=%s table=%s",
+                item_id, task_type.value, new_stat, table,
+            )
+        except Exception as exc:  # noqa: BLE001 — handler 격리
+            logger.warning(
+                "[TaskTxnDispatcher] publish 실패 item_id=%s table=%s exc=%s",
+                item_id, table, exc,
             )
