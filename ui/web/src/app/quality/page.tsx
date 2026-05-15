@@ -66,10 +66,12 @@ export default function QualityPage(): React.JSX.Element {
       try {
         setLoading(true);
         setError(null);
+        // 2026-05-15: 각 API 가 500 등 실패해도 페이지 전체가 에러로 빠지지 않게 .catch fallback.
+        // mock fallback 로직이 빈 결과를 받아 mockInspections / mockInspectionStandards 로 채움.
         const [inspData, statsData, stdData] = await Promise.all([
-          fetchInspections(),
-          fetchQualityStats(),
-          fetchInspectionStandards(),
+          fetchInspections().catch(() => [] as InspectionRecord[]),
+          fetchQualityStats().catch(() => null),
+          fetchInspectionStandards().catch(() => [] as InspectionStandard[]),
         ]);
         // 최근 검사 이력 — backend 빈 응답이면 PyQt INSPECTIONS 와 동일한 mock 으로 fallback.
         setInspections(inspData.length > 0 ? inspData : mockInspections);

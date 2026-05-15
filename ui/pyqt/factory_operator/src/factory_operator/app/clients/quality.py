@@ -38,12 +38,17 @@ class QualityMixin:
             for item in data:
                 normalized.append(
                     {
+                        "id": item.get("id", ""),
                         "inspected_at": item.get("inspected_at", item.get("timestamp", "")),
                         "product": item.get("product", item.get("product_name", "")),
                         "result": str(item.get("result", "")).upper(),
                         "defect_type": item.get("defect_type", "") or "",
                         "inspector": item.get("inspector", item.get("inspected_by", "")),
                         "note": item.get("note", item.get("comment", "")) or "",
+                        # 2026-05-15: vision feed 동기화에 필요한 필드 — confidence/casting_id/image_id 보존.
+                        "confidence": item.get("confidence"),
+                        "casting_id": item.get("casting_id", item.get("castingId", "")),
+                        "image_id": item.get("image_id", item.get("imageId", "")),
                     }
                 )
             return normalized

@@ -141,6 +141,8 @@ class QualityPage(QWidget):
         self._table.setSelectionMode(QTableWidget.SingleSelection)
         self._table.cellClicked.connect(self._on_inspection_row_clicked)
         self._inspections_cache: list[dict] = []
+        # 2026-05-15: 사용자 선택 보존. 주기 refresh 가 vision feed 를 덮어쓰지 않도록.
+        self._selected_inspection_id: str | None = None
         layout.addWidget(self._table)
 
         # ===== 검사 진행 중 (PROC) — 결과 입력 (Gap 5, 2026-04-27) =====
@@ -175,10 +177,19 @@ class QualityPage(QWidget):
             self._colorize_rate(rate)
 
         # 2026-05-14: 분류 다이얼 → 비전 카메라 피드. 최신 검사 1건을 web 과 동일하게 표시.
-        # web 의 latestInspection 과 동일한 source (INSPECTIONS[0]).
+        # 2026-05-15: 사용자가 행을 선택한 상태면 그 row 유지, 아니면 latest (INSPECTIONS[0]).
         latest_inspections = self._api.get_quality_inspections() or []
-        latest = latest_inspections[0] if latest_inspections else None
-        self._vision_feed.update_data(latest)
+        target = None
+        if self._selected_inspection_id:
+            target = next(
+                (i for i in latest_inspections if i.get("id") == self._selected_inspection_id),
+                None,
+            )
+        if target is None:
+            target = latest_inspections[0] if latest_inspections else None
+        self._vision_feed.update_data(target)
+        if target:
+            self._vision_feed.load_image_for(target.get("image_id"))
 
         # TOP3 + 기준 + 차트
         defects = self._api.get_defect_type_dist()
@@ -226,9 +237,13 @@ class QualityPage(QWidget):
         self._refresh_proc_table()
 
     def _on_inspection_row_clicked(self, row: int, _col: int) -> None:
-        """최근 검사 이력 행 클릭 → 비전 피드에 해당 검사 표시."""
+        """최근 검사 이력 행 클릭 → 비전 피드에 해당 검사 표시 + 이미지 fetch."""
         if 0 <= row < len(self._inspections_cache):
-            self._vision_feed.update_data(self._inspections_cache[row])
+            insp = self._inspections_cache[row]
+            # 2026-05-15: 선택 보존 — 주기 refresh 가 latest 로 덮어쓰지 못하게.
+            self._selected_inspection_id = insp.get("id") or None
+            self._vision_feed.update_data(insp)
+            self._vision_feed.load_image_for(insp.get("image_id"))
 
     def _refresh_proc_table(self) -> None:
         """진행 중 검사 row 만 골라 GP/DP 버튼 행으로 표시."""
