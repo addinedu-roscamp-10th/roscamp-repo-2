@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import inspect
 import logging
 import threading
@@ -32,7 +33,12 @@ class EventBridgeImpl:
     def __init__(self) -> None:
         self._handlers: dict[EventType, list[HandlerMeta]] = defaultdict(list)
         self._lock = threading.Lock()
+        self._loop: asyncio.AbstractEventLoop | None = None
         logger.info("EventBridgeImpl 초기화 완료")
+
+    # orchestrator loop 저장
+    def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        self._loop = loop
 
     # publish ----------------------------------------------------------
     def publish(self, event: Event) -> PublishResult:
@@ -47,12 +53,20 @@ class EventBridgeImpl:
                 result = meta.handler(event)
                 if inspect.isawaitable(result):
                     try:
-                        loop = asyncio.get_running_loop()
-                    except RuntimeError as exc:
+                        running = asyncio.get_running_loop()
+                    except RuntimeError:
+                        running = None
+                    # 내부 event
+                    if running is not None:
+                        task: asyncio.Task | concurrent.futures.Future = running.create_task(result)
+                    # grpc 등 외부는 server.py에서 주입된 orchestrator의 loop에 코루틴 전달
+                    elif self._loop is not None:
+                        task = asyncio.run_coroutine_threadsafe(result, self._loop)
+                    else:
                         raise RuntimeError(
-                            f"async handler '{meta.subscriber_name}' requires a running event loop"
-                        ) from exc
-                    task = loop.create_task(result)
+                            f"async handler '{meta.subscriber_name}' requires a running event loop "
+                            f"or EventBridge.set_loop() injection"
+                        )
                     task.add_done_callback(
                         lambda t, subscriber_name=meta.subscriber_name, event_type=event.event_type.value: _log_async_handler_result(
                             t,
@@ -147,7 +161,11 @@ class EventBridgeImpl:
             return list(self._handlers.get(event_type, []))
 
 
-def _log_async_handler_result(task: asyncio.Task, subscriber_name: str, event_type: str) -> None:
+def _log_async_handler_result(
+    task: asyncio.Task | concurrent.futures.Future,
+    subscriber_name: str,
+    event_type: str,
+) -> None:
     try:
         task.result()
     except Exception as exc:  # noqa: BLE001
