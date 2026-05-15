@@ -74,8 +74,8 @@ export default function OrdersPage() {
     }
   }, []);
 
-  // 출하 시작 — TAT 가 적재장에서 출하장으로 운반을 시작한다.
-  // orchestrator.start_shipping 호출 → 운반 완료 시 orchestrator 가 SHIP→COMP 자체 전이.
+  // 출하 시작 — production_completed (ord_stat=DONE, 적재 완료) 상태에서 호출.
+  // orchestrator.start_shipping → TAT 가 적재장→출하장 운반, 완료 시 orchestrator 가 SHIP→COMP 자체 전이.
   const handleStartShipping = useCallback(async (orderId: string) => {
     try {
       setActionLoading(true);
