@@ -106,6 +106,22 @@ class Orchestrator(IOrchestrator):
             try:
                 # 주문 수량 확인
                 target_qty = await self.state_manager.get_order_target_qty(ord_id)
+                
+                # 주문 수량 조회 실패
+                if target_qty is None:
+                    result = self._build_rejected_ack(
+                        ord_id,
+                        "Order target quantity not found.",
+                    )
+                    logger.warning(
+                        "start production rejected: ord_id=%s reason=%s",
+                        ord_id,
+                        result.reason,
+                    )
+                    rejected += 1
+                    results.append(result)
+                    continue
+
                 self.task_manager.log_slot_table()
                 # TM이 빈 슬롯 찾기
                 start_pos = await self.state_manager.get_empty_start_slot(target_qty)
@@ -203,10 +219,20 @@ class Orchestrator(IOrchestrator):
         # 출고는 따로
         if event.payload.get("task_type") == TaskType.PICK:
             item_info = await self.state_manager.get_item(item_id)
-            await self._schedule_ship_task(
-                item_info.order_id,
-                event="pick_done",
+
+            # 현재 완료된 batch pop
+            finished_batch = self.task_manager.pop_finished_ship_batch(
+                item_info.order_id
             )
+
+            # batch 전체 상태 업데이트
+            if finished_batch:
+                await self.state_manager.complete_ship_batch(
+                    finished_batch
+                )
+            # 다음 batch 출고 계속
+            if self.task_manager.has_ship_plan(item_info.order_id):
+                await self._schedule_ship_task(item_info.order_id, event="pick_done")
             return
 
         await self._schedule_next_task(

@@ -428,7 +428,7 @@ class StateManager:
             order_id=int(item.get("order_id") or item.get("ord_id") or 0),
             last_task_type=last_task_type,
             req_res_id=item.get("req_res_id"),
-            flow_stat=item.get("flow_stat"),
+            flow_stat=item.get("flow_stat") or item.get("cur_stat"),
             is_defective=bool(item.get("is_defective", False)),
             ptn_id=item.get("ptn_id"),
             strg_loc=_storage_loc_tuple(item.get("strg_loc")),
@@ -453,8 +453,9 @@ class StateManager:
             "item_id": task_input.item_id,
             "ord_id": item_meta.get("ord_id") or item_meta.get("order_id"),
             "task_type": task_input.task_type.value,
-            "status": str(task_input.txn_stat),
+            "status": task_input.txn_stat.value,
             "res_id": task_input.res_id,
+            "chg_loc": task_input.chg_loc,
         }
         db_txn_id = self._safe_repo_call("sync_task_created", task_meta)
         if db_txn_id is not None:
@@ -466,8 +467,18 @@ class StateManager:
         return txn_id
 
     async def create_empty_item(self, order_id: int) -> int:
-        item_id = self._next_item_id
-        self._next_item_id += 1
+        db_item_id = self._safe_repo_call(
+            "create_empty_item",
+            int(order_id),
+        )
+
+        if db_item_id is not None:
+            item_id = int(db_item_id)
+            self._next_item_id = max(self._next_item_id, item_id + 1)
+        else:
+            item_id = self._next_item_id
+            self._next_item_id += 1
+
         self._items[item_id] = {
             "item_id": item_id,
             "ord_id": order_id,
@@ -866,7 +877,7 @@ class StateManager:
 
                     if self.task_manager is not None:  
                         self.task_manager.remove_order_reserve(ord_id)  
-                        self.task_manager.remove_order_config(ord_id)  
+                        self.task_manager.release_order_slots(ord_id)  
                         #self.task_manager.log_slot_table()
                     else:  
                         logger.warning("task_manager is not configured; order cleanup skipped")  
@@ -883,7 +894,7 @@ class StateManager:
 
                 if self.task_manager is not None:  
                     self.task_manager.remove_order_reserve(ord_id) 
-                    self.task_manager.remove_order_config(ord_id)
+                    self.task_manager.release_order_slots(ord_id)
                     #self.task_manager.log_slot_table()  
                 else:  
                     logger.warning("task_manager is not configured; order cleanup skipped")  
@@ -912,7 +923,7 @@ class StateManager:
 
             if self.task_manager is not None:  
                 self.task_manager.remove_order_reserve(ord_id)  
-                self.task_manager.remove_order_config(ord_id)
+                self.task_manager.release_order_slots(ord_id)
                 #self.task_manager.log_slot_table()  
             else: 
                 logger.warning("task_manager is not configured; order cleanup skipped")  
@@ -1205,12 +1216,29 @@ class StateManager:
         if rebound:
             logger.info("[StateManager] auto_rebind: ord_id=%s rebound=%s", ord_id, rebound)
 
+        shipping_marked = self._safe_repo_call("mark_order_shipping", ord_id)
+        logger.info(
+            "[StateManager] mark_order_shipping called: ord_id=%s result=%s",
+            ord_id,
+            shipping_marked,
+        )
         rows = self._safe_repo_call("load_order_items_with_strg", ord_id) or []
         result: list[tuple[int, int, int]] = []
         for r in rows:
             strg_loc = _storage_loc_tuple(r.get("strg_loc"))
             if not isinstance(strg_loc, tuple) or len(strg_loc) != 2:
                 continue
+            
+            item_id = int(r["item_id"])
+            self._items[item_id] = {
+                **self._items.get(item_id, {}),
+                "item_id": item_id,
+                "ord_id": int(r.get("ord_id") or ord_id),
+                "order_id": int(r.get("order_id") or r.get("ord_id") or ord_id),
+                "flow_stat": r.get("flow_stat") or r.get("cur_stat"),
+                "cur_stat": r.get("cur_stat") or r.get("flow_stat"),
+                "strg_loc": strg_loc,
+            }
             result.append((int(r["item_id"]), int(strg_loc[0]), int(strg_loc[1])))
         logger.info(
             "[StateManager] load_ship_item_locations ord_id=%s rows=%d eligible=%d",
@@ -1267,3 +1295,30 @@ class StateManager:
 
         row, col = empty_slots[0]
         return (row, col)
+    #item 상태 출고 완료 /보관 위치 제거 /rack slot 해제
+    async def complete_ship_batch(self, batch: list[tuple[int, int, int]]) -> None:
+        for item_id, row, col in batch:
+            item = self._items.setdefault(item_id, {"item_id": item_id})
+            item["flow_stat"] = "READY_TO_SHIP"
+            item["cur_stat"] = "READY_TO_SHIP"
+            item["strg_loc"] = None
+            item["last_task_type"] = "PICK"
+
+            self._safe_repo_call("sync_item_snapshot", item)
+
+            logger.info(
+                "[SHIP DEBUG] complete item: item_id=%s loc=(%s,%s)",
+                item_id,
+                row,
+                col,
+            )
+
+            self._safe_repo_call("mark_item_shipped", item_id)
+            released = self._safe_repo_call("release_storage_slot_for_item", item_id)
+            logger.info(
+                "[StateManager] complete_ship_batch: item=%s loc=(%s,%s) released=%s",
+                item_id,
+                row,
+                col,
+                released,
+            )

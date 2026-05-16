@@ -382,6 +382,7 @@ class RuntimeStateRepository:
                     txn_stat=_txn_stat_value(task_meta.get("status")),
                     item_id=task_meta.get("item_id"),
                     ord_id=task_meta.get("ord_id"),
+                    chg_loc_id=task_meta.get("chg_loc_id"),
                 )
                 db.add(txn)
                 db.commit()
@@ -577,6 +578,7 @@ class RuntimeStateRepository:
                     "item_id": int(it.item_id),
                     "ord_id": int(it.ord_id),
                     "cur_stat": getattr(it, "cur_stat", None),
+                    "flow_stat": getattr(it, "cur_stat", None),
                     "strg_loc": slots_by_item.get(int(it.item_id)),
                 }
                 for it in items
@@ -794,6 +796,18 @@ class RuntimeStateRepository:
             db.commit()
             return True
 
+    def create_empty_item(self, order_id: int) -> int | None:
+        with self._session_factory() as db:
+            item = self._item_model(
+                ord_id=int(order_id),
+                cur_stat="CREATED",
+                is_defective=False,
+            )
+            db.add(item)
+            db.commit()
+            db.refresh(item)
+            return int(item.item_id)
+    
     def sync_task_status(self, task_meta: dict[str, Any]) -> None:
         txn_id = task_meta.get("txn_id") or _task_id_to_int(task_meta.get("task_id"))
         task_type = _task_db_value(task_meta.get("task_type"))
@@ -967,3 +981,28 @@ class RuntimeStateRepository:
                 "gp_qty": int(stat.gp_qty or 0),
                 "qty": target_qty,
             }
+
+    def mark_order_shipping(self, ord_id: int) -> bool:
+        if self._ord_stat_model is None:
+            return False
+
+        with self._session_factory() as db:
+            stat = (
+                db.query(self._ord_stat_model)
+                .filter(self._ord_stat_model.ord_id == ord_id)
+                .first()
+            )
+
+            if stat is None:
+                return False
+
+            stat.ord_stat = "SHIPPING"
+            stat.updated_at = datetime.utcnow()
+
+            db.commit()
+
+            logger.info(
+                "[RuntimeStateRepository] order marked shipping: ord_id=%s",
+                ord_id,
+            )
+            return True

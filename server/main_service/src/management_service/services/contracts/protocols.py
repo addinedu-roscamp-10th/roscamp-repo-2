@@ -30,19 +30,20 @@ class ITaskManager(Protocol):
     async def create_next_task(self, item_info: ItemStatusRecord ,eventMsg: Optional[str] = None) -> List[NextTaskResult]: 
         ...
 
-    async def create_ship_task(
-        self,
-        order_id: int,
-        item_locations: List[tuple[int, int, int]],
-        event: Optional[str] = None,
-    ) -> ShipTaskResult | None:
+    async def create_ship_task( self, order_id: int, item_locations: List[tuple[int, int, int]], event: Optional[str] = None,) -> ShipTaskResult | None:
         ...
 
-    def reissue_task_on_error(self, item_info: ItemStatusRecord) -> List[NextTaskResult]: 
+    def pop_finished_ship_batch(self, order_id: int) -> List[tuple[int, int, int]]:
         ...
 
-    def get_order_progress(self, order_id: int) : 
-     ...
+    def has_ship_plan(self, order_id: int) -> bool:
+        ...
+
+    def release_order_slots(self, order_id: int) -> None:
+        ...
+
+    def release_order_slots( self, order_id: int, ) -> None:
+        ...
 
 class ITaskAllocator(Protocol):
     async def allocate(self, input_data)  :

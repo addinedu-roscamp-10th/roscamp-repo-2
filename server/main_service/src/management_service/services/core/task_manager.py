@@ -16,7 +16,8 @@ logger = logging.getLogger(__name__)
 # 15점 : 배터리 저하로 인한 ToPP 작업 재할당
 # 10점 : 배터리 저하 AMR 충전소 이동 작업(ToCHG)
 # 10점 : 불량으로 인한 재생산 작업(MM)
-#  5점 : 일반 공정 작업(MM 제외)
+#  7점 : 적재 구역으로 이동 (ToSTRG) 
+#  5점 : 일반 생산 공정 작업(MM,ToSTRG 제외)
 #  3점 : 출고 관련 작업(PICK, ToSHIP)
 #  0점 : 신규 주문 최초 작업(MM)
 # ============================================================
@@ -28,12 +29,11 @@ class TaskManager(ITaskManager):
     
     def __init__(self, sm:IStateManager):
         self.sm = sm
-        self.order_start_configs = {}#오더별로 할당된 적재 기준 위치
         self.slot_table: dict[tuple[int, int], dict] = {}  # 메모리 상의 보관랙
 
         self._init_slot_table()
         self.ship_plans: dict[int, dict] = {}  #order_id별 출고 진행 상태
-        #self.order_assigned_counts = {}#오더별로 할당된 양품 개수를 관리
+ 
 
     def _init_slot_table(self):
         """3x6 적재 슬롯 초기화"""
@@ -119,15 +119,9 @@ class TaskManager(ITaskManager):
 
         logger.info("======================================")
 
-    #오더 종료시 오더 적재기준 위치 메모리 해제
-    def remove_order_reserve(self, order_id: int):
-        """주문이 완전히 종료되면 호출하여 메모리 해제"""
-        if order_id in self.order_start_configs:
-            del self.order_start_configs[order_id]
-            logger.info("주문 %s 설정이 메모리에서 제거되었습니다.", order_id)
-
+    
     #오더 종료 시 Empty 슬롯의 소유권 해제 (Occupied는 유지 - 출고용)
-    def remove_order_config(self, order_id: int):
+    def release_order_slots(self, order_id: int):
        
         for (f, c), data in self.slot_table.items():
             if data["order_id"] == order_id:
@@ -193,7 +187,7 @@ class TaskManager(ITaskManager):
             elif event == "amr_battery_low_ToPP": #tochg = 10 topp =15
                 task_results.append(NextTaskResult(
                         item_id=item_info.item_id, 
-                        txn_id=await self.sm.insert_task_txn(CreateTaskInput(item_id=item_info.item_id, task_type=TaskType.ToPP)),
+                        txn_id=await self.sm.insert_task_txn(CreateTaskInput(item_id=item_info.item_id, task_type=TaskType.ToPP )),
                         task_type=TaskType.ToPP, 
                         priority=15
                     ))
@@ -209,7 +203,7 @@ class TaskManager(ITaskManager):
                     )
                 task_results.append(NextTaskResult(
                         item_id=item_info.item_id, 
-                        txn_id=await self.sm.insert_task_txn(CreateTaskInput(item_id=item_info.item_id, task_type=TaskType.ToCHG)),
+                        txn_id=await self.sm.insert_task_txn(CreateTaskInput(item_id=item_info.item_id, task_type=TaskType.ToCHG,chg_loc=chg_loc)),
                         task_type=TaskType.ToCHG, 
                         priority=10,
                         chg_loc=chg_loc
@@ -228,13 +222,6 @@ class TaskManager(ITaskManager):
                         priority=10
                     ))
 
-                    # 2. [Slot Table 반영] 현재 불량 제품이 예약했던 슬롯을 다시 Empty로 변경
-                    # item_info 혹은 현재 할당된 slot_table에서 'Reserved' 상태인 내 칸을 찾아 해제합니다.
-                    for (f, c), data in self.slot_table.items():
-                        if data["order_id"] == item_info.order_id and data["status"] == "reserved":
-                            data["status"] = "empty"  # 소유권(order_id)은 유지, 상태만 초기화
-                            logger.info("불량 발생으로 슬롯 %s-%s 복구 (오더 %s 전용)", f, c, item_info.order_id)
-                            break
 
                     # 3. 불량품 배출(PA_DP) 태스크 추가
                     task_results.append(await self._create_result(item_info, TaskType.PA_DP))
@@ -264,7 +251,11 @@ class TaskManager(ITaskManager):
         if next_type:
             if isinstance(next_type, list):
                 for t in next_type:
-                    task_results.append(await self._create_result(item_info, t))
+                    res = await self._create_result(item_info, t)
+
+                    if t == TaskType.ToSTRG:
+                        res.priority = 7
+                    task_results.append(res)
             else:
                 task_results.append(await self._create_result(item_info, next_type))
 
@@ -347,9 +338,9 @@ class TaskManager(ITaskManager):
             )
         # PICK 완료 → 현재 batch 제거 후 다음 batch ToSHIP 생성
         elif event == "pick_done":
-            finished_batch = plan["batches"].pop(0)
+            #finished_batch = plan["batches"].pop(0)
 
-            logger.info( "출고 batch 완료: order_id=%s finished_batch=%s", order_id, finished_batch, )
+            #logger.info( "출고 batch 완료: order_id=%s finished_batch=%s", order_id, finished_batch, )
 
             if not plan["batches"]:
                 logger.info("출고 작업 전체 완료: order_id=%s", order_id)
@@ -365,6 +356,27 @@ class TaskManager(ITaskManager):
             logger.warning("알 수 없는 출고 이벤트: order_id=%s event=%s", order_id, event)
             return None
         
+    def pop_finished_ship_batch(self, order_id: int) -> list[tuple[int, int, int]]: 
+        plan = self.ship_plans.get(order_id)  
+
+        if not plan or not plan["batches"]:  
+            logger.warning("완료 처리할 출고 batch 없음: order_id=%s", order_id)  
+            self.ship_plans.pop(order_id, None)  
+            return []  
+
+        finished_batch = plan["batches"].pop(0)  
+
+        logger.info(  
+            "출고 batch 완료: order_id=%s finished_batch=%s",  
+            order_id,  
+            finished_batch,  
+        )  
+
+        if not plan["batches"]:  
+            logger.info("출고 작업 전체 완료: order_id=%s", order_id)  
+            del self.ship_plans[order_id] 
+
+        return finished_batch  
 
     async def _create_ship_task( self, order_id: int, task_type: TaskType, ) -> ShipTaskResult | None:
         """
@@ -377,9 +389,12 @@ class TaskManager(ITaskManager):
         plan = self.ship_plans.get(order_id)
         current_batch = plan["batches"][0]
 
+        # 현재 batch의 첫 번째 item을 대표 item으로 사용
+        representative_item_id = current_batch[0][0]
+
         txn_id = await self.sm.insert_task_txn(
             CreateTaskInput(
-                item_id=None,
+                item_id=representative_item_id,
                 task_type=task_type,
                 txn_stat=TxnStat.QUE,
                 res_id=None,
@@ -400,4 +415,13 @@ class TaskManager(ITaskManager):
             txn_id=txn_id,
             task_type=task_type,
             priority=3,
+            batch=current_batch,
         )
+    
+    def has_ship_plan(self, order_id: int) -> bool:
+        plan = self.ship_plans.get(order_id)
+
+        if not plan:
+            return False
+
+        return bool(plan.get("batches"))

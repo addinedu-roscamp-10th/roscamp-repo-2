@@ -12,6 +12,7 @@ from .enums import (
     TxnStat,
     TaskType,
     EventType,
+    FlowStatus,
 
 )
 ## Orchestrator
@@ -80,7 +81,7 @@ class ItemStatusRecord(BaseModel): #ok -> tm
     order_id: int  # 어느 주문에 속한 아이tuple인지 추적하기 위해 추가
     last_task_type: Optional[TaskType] = None
     req_res_id: str | None = None
-    flow_stat: Optional[str] = None
+    flow_stat: FlowStatus = FlowStatus.CREATED
     is_defective: bool = False
     ptn_id: Optional[int] = None
     strg_loc: Optional[tuple[int, int]] = None
@@ -89,8 +90,9 @@ class ItemStatusRecord(BaseModel): #ok -> tm
 class CreateTaskInput(BaseModel): #tm -> sm TASK 정보 중 디비에 기록할것
     item_id: Optional[int] = None
     task_type: TaskType
-    txn_stat: str = "que"
+    txn_stat: TxnStat = TxnStat.QUE
     res_id : Optional[int] = None
+    chg_loc: Optional[tuple[int, int]] = None,
 
 
 class NextTaskResult(BaseModel): # tm -> ok
