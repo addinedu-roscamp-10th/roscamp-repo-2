@@ -49,6 +49,10 @@ class QualityMixin:
                         "confidence": item.get("confidence"),
                         "casting_id": item.get("casting_id", item.get("castingId", "")),
                         "image_id": item.get("image_id", item.get("imageId", "")),
+                        # 2026-05-18: AI /predict 결과 이미지 URL — backend HttpImageServer 가 서빙.
+                        # vision_feed 가 result_image_url 우선 사용, 없으면 image_id fallback.
+                        "result_image_url": item.get("result_image_url"),
+                        "segmented_image_url": item.get("segmented_image_url"),
                     }
                 )
             return normalized

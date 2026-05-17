@@ -15,6 +15,7 @@ from ._base import (
     Integer,
     Numeric,
     String,
+    Text,
     UniqueConstraint,
     func,
     synonym,
@@ -109,6 +110,10 @@ class AiInferenceTxn(Base):
     anomaly_threshold = Column(Numeric)
     is_anomaly = Column(Boolean)
     result_json = Column(JSONB)
+    # 옵션 B 검사 결과 이미지 (AI /predict 응답의 segmented_image / result_image
+    # base64 를 backend 디스크 저장 후 외부 fetch URL 만 보관) — 2026-05-18
+    segmented_image_url = Column(Text, nullable=True)
+    result_image_url = Column(Text, nullable=True)
     req_at = Column(DateTime, server_default=func.now())
     start_at = Column(DateTime)
     end_at = Column(DateTime)

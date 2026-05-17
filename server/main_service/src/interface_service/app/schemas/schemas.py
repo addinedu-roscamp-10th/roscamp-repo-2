@@ -281,6 +281,10 @@ class InspTaskTxnOut(_ORM):
     req_at: datetime | None = None
     start_at: datetime | None = None
     end_at: datetime | None = None
+    # AI /predict 결과 이미지 fetch URL — backend HttpImageServer 가 서빙.
+    # 정의: ai_inference_txn.segmented_image_url / result_image_url (옵션 B + 2026-05-18).
+    segmented_image_url: str | None = None
+    result_image_url: str | None = None
 
 
 # =====================

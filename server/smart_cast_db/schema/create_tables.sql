@@ -427,6 +427,10 @@ CREATE TABLE ai_inference_txn (
     is_anomaly        BOOLEAN,
     -- 공통
     result_json       JSONB,
+    -- 검사 결과 이미지 (AI /predict 응답 base64 → backend 디스크 저장 후 외부 fetch URL 만 보관)
+    -- HttpImageServer 가 MGMT_INSP_IMAGE_SAVE_DIR 의 {item_id}/{filename} 을 서빙.
+    segmented_image_url TEXT,
+    result_image_url    TEXT,
     req_at            TIMESTAMP    DEFAULT now(),
     start_at          TIMESTAMP,
     end_at            TIMESTAMP

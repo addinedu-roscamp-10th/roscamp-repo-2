@@ -1026,6 +1026,8 @@ class StateManager:
                 started_at=_parse_iso(inference.get("started_at")),
                 completed_at=_parse_iso(inference.get("completed_at")),
                 raw_inference_payload=inference.get("raw_payload"),
+                segmented_image_b64=inference.get("segmented_image_b64"),
+                result_image_b64=inference.get("result_image_b64"),
             )
             logger.info(
                 "[StateManager] record_inspection_result OK: item_id=%d insp_txn=%d "
