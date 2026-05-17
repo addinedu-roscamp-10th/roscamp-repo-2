@@ -348,6 +348,9 @@ def run_sim_mode(timeout_sec: int, keep_data: bool) -> int:
                 started_at=_to_dt(inference_dict.get("started_at")),
                 completed_at=_to_dt(inference_dict.get("completed_at")),
                 raw_inference_payload=inference_dict.get("raw_payload"),
+                # 2026-05-18: PR #37 wire — sink 가 backend 디스크 저장 + AiInferenceTxn URL 영속화
+                segmented_image_b64=inference_dict.get("segmented_image_b64"),
+                result_image_b64=inference_dict.get("result_image_b64"),
             )
             print("  [SIM] InspectionResultCommand.record_inspection_result OK")
         except (LookupError, ValueError) as exc:
