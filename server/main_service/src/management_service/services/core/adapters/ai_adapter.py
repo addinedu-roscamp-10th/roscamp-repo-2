@@ -154,7 +154,11 @@ class AIAdapter:
 
 
 def _inference_to_dict(inference: AiInferenceResult) -> dict:
-    """state_manager.record_inspection_result 가 사용할 추론 결과 dict 형식."""
+    """state_manager.record_inspection_result 가 사용할 추론 결과 dict 형식.
+
+    segmented_image_b64 / result_image_b64 는 record_inspection_result 가
+    AiResultImageSinkCommand 로 디스크 저장 + URL 영속화에 사용하는 raw 값.
+    """
     return {
         "ok": True,
         "is_defective": bool(inference.is_defective),
@@ -168,6 +172,8 @@ def _inference_to_dict(inference: AiInferenceResult) -> dict:
         "started_at": inference.started_at,
         "completed_at": inference.completed_at,
         "raw_payload": inference.raw_payload,
+        "segmented_image_b64": inference.segmented_image_b64,
+        "result_image_b64": inference.result_image_b64,
     }
 
 

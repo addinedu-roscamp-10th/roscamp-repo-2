@@ -56,6 +56,8 @@ class InspectionResultCommand:
         started_at: datetime | None = None,
         completed_at: datetime | None = None,
         raw_inference_payload: dict[str, Any] | None = None,
+        segmented_image_b64: str | None = None,
+        result_image_b64: str | None = None,
     ) -> InspectionResultRow:
         """PROC insp_task_txn → SUCC 종결 + 부속 결과 영속화.
 
@@ -91,6 +93,15 @@ class InspectionResultCommand:
             if insp_row.start_at is None:
                 insp_row.start_at = started_at
 
+            # AI 응답 base64 이미지 → backend 디스크 저장 + 외부 fetch URL 합성.
+            # 디스크 쓰기 실패 / base64 디코드 실패 시 URL 은 None — 영속화는 NULL 로 진행.
+            saved_images = _save_result_images(
+                item_id=item_id,
+                insp_txn_id=insp_row.txn_id,
+                segmented_image_b64=segmented_image_b64,
+                result_image_b64=result_image_b64,
+            )
+
             # 옵션 B 신 스키마: 추론 메타(class/score/threshold/is_anomaly/result_json)는 ai_inference_txn 으로 이동.
             inference = AiInferenceTxn(
                 insp_txn_id=insp_row.txn_id,
@@ -103,6 +114,8 @@ class InspectionResultCommand:
                 anomaly_threshold=anomaly_threshold,
                 is_anomaly=is_defective,
                 result_json=raw_inference_payload or None,
+                segmented_image_url=saved_images.segmented_url,
+                result_image_url=saved_images.result_url,
                 start_at=started_at,
                 end_at=completed_at,
             )
@@ -226,3 +239,44 @@ def _normalize_class(value: str | None) -> str | None:
     if value in ("CMH", "RMH", "EMH"):
         return value
     return None
+
+
+def _save_result_images(
+    *,
+    item_id: int,
+    insp_txn_id: int,
+    segmented_image_b64: str | None,
+    result_image_b64: str | None,
+):
+    """AiResultImageSinkCommand wrapper — sink 호출 예외도 흡수.
+
+    URL 두 개가 모두 None 인 빈 결과를 반환하더라도 caller 는 AiInferenceTxn 의 url
+    컬럼을 NULL 로 채우면 됨. inference 자체는 SUCC 유지 책임 보장.
+    """
+    # 지연 import — 모듈 import 시 sink 가 disk root 를 검사하지 않도록 격리.
+    from .ai_result_image_sink_command import (
+        AiResultImageSinkCommand,
+        SavedAiResultImages,
+    )
+
+    try:
+        sink = AiResultImageSinkCommand()
+        return sink.save(
+            item_id=item_id,
+            insp_txn_id=insp_txn_id,
+            segmented_image_b64=segmented_image_b64,
+            result_image_b64=result_image_b64,
+        )
+    except Exception as exc:  # noqa: BLE001 — sink 실패는 inference SUCC 유지 정책
+        logger.warning(
+            "InspectionResultCommand: _save_result_images 예외 item_id=%d insp_txn=%d exc=%s",
+            item_id, insp_txn_id, exc,
+        )
+        return SavedAiResultImages(
+            item_id=item_id,
+            insp_txn_id=insp_txn_id,
+            segmented_path=None,
+            segmented_url=None,
+            result_path=None,
+            result_url=None,
+        )
