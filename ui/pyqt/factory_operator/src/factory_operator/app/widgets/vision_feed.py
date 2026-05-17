@@ -148,6 +148,20 @@ class VisionFeedCard(QFrame):
         logger.info("vision_feed: GET %s", url)
         self._net.get(QNetworkRequest(QUrl(url)))
 
+    def load_image_url(self, image_url: str | None) -> None:
+        """완전 URL 로 직접 fetch — backend AiInferenceTxn.result_image_url 용 (2026-05-18).
+
+        backend 가 응답에 완전 URL 을 포함하므로 클라이언트 측 base url 합성 불필요.
+        URL 이 비어 있으면 placeholder 유지.
+        """
+        if not image_url:
+            logger.info("vision_feed: image_url 없음 → NO IMAGE 유지")
+            self.set_image(None)
+            return
+        self._pending_image_id = image_url
+        logger.info("vision_feed: GET %s", image_url)
+        self._net.get(QNetworkRequest(QUrl(image_url)))
+
     def _on_image_fetched(self, reply) -> None:
         try:
             err = reply.error()

@@ -189,7 +189,12 @@ class QualityPage(QWidget):
             target = latest_inspections[0] if latest_inspections else None
         self._vision_feed.update_data(target)
         if target:
-            self._vision_feed.load_image_for(target.get("image_id"))
+            # 2026-05-18: backend AI /predict 결과 이미지 URL 우선, 없으면 mock image_id fallback.
+            result_url = target.get("result_image_url")
+            if result_url:
+                self._vision_feed.load_image_url(result_url)
+            else:
+                self._vision_feed.load_image_for(target.get("image_id"))
 
         # TOP3 + 기준 + 차트
         defects = self._api.get_defect_type_dist()
@@ -243,7 +248,12 @@ class QualityPage(QWidget):
             # 2026-05-15: 선택 보존 — 주기 refresh 가 latest 로 덮어쓰지 못하게.
             self._selected_inspection_id = insp.get("id") or None
             self._vision_feed.update_data(insp)
-            self._vision_feed.load_image_for(insp.get("image_id"))
+            # 2026-05-18: backend AI /predict 결과 URL 우선, 없으면 mock image_id fallback.
+            result_url = insp.get("result_image_url")
+            if result_url:
+                self._vision_feed.load_image_url(result_url)
+            else:
+                self._vision_feed.load_image_for(insp.get("image_id"))
 
     def _refresh_proc_table(self) -> None:
         """진행 중 검사 row 만 골라 GP/DP 버튼 행으로 표시."""
