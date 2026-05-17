@@ -264,7 +264,12 @@ def test_execute_task_runs_topp_sequence_without_inline_charge_return(
         result = await executor.execute_task(_execute_input(TaskType.ToPP))
 
         assert result.final_status == TxnStat.SUCC
-        assert result.steps_executed == 3
+        # ToPP sequence (task_executor.py 의 TaskType.ToPP 정의):
+        #   step1 dock_robot(ToCAST) → step2 WAIT_TASK_COMPLETED(DM)
+        #   → step3 undock_robot → step4 dock_robot(ToPP)
+        #   → step5 WAIT_SUBTASK_COMPLETED(HANDOFF_ACK) → step6 undock_robot
+        # step5 는 TAT 가 ToPP 도크에서 작업자 핸드오프 ACK 까지 대기시키는 핵심 단계.
+        assert result.steps_executed == 6
         assert state_manager.charger_requests == []
         assert adapter.calls == [
             {
@@ -274,8 +279,18 @@ def test_execute_task_runs_topp_sequence_without_inline_charge_return(
             },
             {
                 "res_id": "TAT2",
+                "action": "undock_robot",
+                "params": {},
+            },
+            {
+                "res_id": "TAT2",
                 "action": "dock_robot",
                 "params": {"pose_name": "ToPP"},
+            },
+            {
+                "res_id": "TAT2",
+                "action": "undock_robot",
+                "params": {},
             },
         ]
         assert state_manager.status_updates == [
