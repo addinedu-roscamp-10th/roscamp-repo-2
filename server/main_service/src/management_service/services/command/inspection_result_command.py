@@ -91,11 +91,18 @@ class InspectionResultCommand:
             if insp_row.start_at is None:
                 insp_row.start_at = started_at
 
+            # 옵션 B 신 스키마: 추론 메타(class/score/threshold/is_anomaly/result_json)는 ai_inference_txn 으로 이동.
             inference = AiInferenceTxn(
                 insp_txn_id=insp_row.txn_id,
                 model_id=resolved_model_id,
                 step_type=(step_type or _AI_INFERENCE_STEP_TYPE).upper(),
                 txn_stat="SUCC",
+                predicted_class=_normalize_class(predicted_class),
+                confidence=yolo_confidence,
+                anomaly_score=anomaly_score,
+                anomaly_threshold=anomaly_threshold,
+                is_anomaly=is_defective,
+                result_json=raw_inference_payload or None,
                 start_at=started_at,
                 end_at=completed_at,
             )
@@ -103,19 +110,20 @@ class InspectionResultCommand:
             db.flush()  # inference_id 확보
 
             final_result = "DP" if is_defective else "GP"
+            # model_type 으로 yolo / patchcore FK 분기. PatchCore 흐름(옵션 B)은 patchcore_inference_id.
+            is_patchcore = (model_type or "").strip().upper() == "PATCHCORE"
             insp_stat = InspStat(
                 insp_txn_id=insp_row.txn_id,
                 item_id=item_id,
-                yolo_inference_id=inference.inference_id,
-                predicted_class=_normalize_class(predicted_class),
-                yolo_confidence=yolo_confidence,
-                anomaly_score=anomaly_score,
-                anomaly_threshold=anomaly_threshold,
+                yolo_inference_id=None if is_patchcore else inference.inference_id,
+                patchcore_inference_id=inference.inference_id if is_patchcore else None,
                 final_result=final_result,
-                result_json=raw_inference_payload or None,
                 updated_at=completed_at,
             )
             db.merge(insp_stat)
+
+            # insp_task_txn.final_inference_id 도 갱신 — 추적성 강화
+            insp_row.final_inference_id = inference.inference_id
 
             item: Item | None = db.get(Item, item_id)
             if item is not None:
