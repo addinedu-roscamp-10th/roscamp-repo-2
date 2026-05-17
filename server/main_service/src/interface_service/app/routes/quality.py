@@ -16,7 +16,7 @@ from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
 from smart_cast_db.database import get_db
-from smart_cast_db.models import InspStat, InspTaskTxn, ItemStat, Ord
+from smart_cast_db.models import AiInferenceTxn, InspStat, InspTaskTxn, ItemStat, Ord
 from app.schemas.schemas import InspectionSummary, InspTaskTxnOut
 
 router = APIRouter(prefix="/api/quality", tags=["quality"])
@@ -28,13 +28,26 @@ def list_inspections(
     item_id: int | None = None,
     db: Session = Depends(get_db),
 ) -> list[InspTaskTxnOut]:
-    q = db.query(InspTaskTxn, InspStat).outerjoin(InspStat, InspStat.insp_txn_id == InspTaskTxn.txn_id)
+    # ai_inference_txn outerjoin — 옵션 B 의 segmented/result_image_url 노출 (2026-05-18).
+    # PatchCore 흐름은 insp_stat.patchcore_inference_id 로, YOLO 흐름은 yolo_inference_id 로
+    # 연결되므로 coalesce 로 한 컬럼만 처리. PR #36 도 isnt-patchcore 분기 갱신 정합.
+    q = (
+        db.query(InspTaskTxn, InspStat, AiInferenceTxn)
+        .outerjoin(InspStat, InspStat.insp_txn_id == InspTaskTxn.txn_id)
+        .outerjoin(
+            AiInferenceTxn,
+            AiInferenceTxn.inference_id == func.coalesce(
+                InspStat.patchcore_inference_id,
+                InspStat.yolo_inference_id,
+            ),
+        )
+    )
     if item_id is not None:
         q = q.filter(InspTaskTxn.item_stat_id == item_id)
     if ord_id is not None:
         q = q.join(ItemStat, ItemStat.item_stat_id == InspTaskTxn.item_stat_id).filter(ItemStat.ord_id == ord_id)
     out: list[InspTaskTxnOut] = []
-    for txn, stat in q.order_by(desc(InspTaskTxn.req_at)).limit(200).all():
+    for txn, stat, inference in q.order_by(desc(InspTaskTxn.req_at)).limit(200).all():
         result = None
         if stat and stat.final_result == "GP":
             result = True
@@ -51,6 +64,8 @@ def list_inspections(
                     "req_at": txn.req_at,
                     "start_at": txn.start_at,
                     "end_at": txn.end_at,
+                    "segmented_image_url": inference.segmented_image_url if inference else None,
+                    "result_image_url": inference.result_image_url if inference else None,
                 }
             )
         )
