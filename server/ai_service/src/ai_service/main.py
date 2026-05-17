@@ -1,38 +1,53 @@
-"""FastAPI mock AI service — 검사 이미지 수신 + 양/불 판정 응답.
+"""FastAPI mock AI service — 옵션 B 정합 (PatchCore /predict).
 
 엔드포인트:
-    GET  /health            → 헬스체크
-    POST /infer (multipart) → 이미지 + item_id 수신 → mock 판정 결과 반환
-    GET  /metrics           → 누적 호출 통계 (debug)
+    GET  /health              → 헬스체크
+    POST /predict (multipart) → file + model(cate_cd) 수신 → PredictResponse 응답
+    GET  /metrics             → 누적 호출 통계 (debug)
+
+옵션 B 합의 (2026-05-14):
+    - 요청: multipart `file` (binary) + `model` (str: CMH/RMH/EMH)
+    - 응답 PredictResponse {pred_label, pred_score, segmented_image, result_image}
+        * pred_label: "Normal" | "Anomalous"
+        * pred_score: 0.0~1.0 (anomaly score)
+        * segmented_image / result_image: base64 PNG (mock 은 1px 더미)
 
 환경변수:
-    AI_INSP_IMAGE_ROOT  - 이미지 저장 루트 (기본 ./Inspection_Image)
-    AI_INSP_MAX_FILES   - item_id 폴더당 최대 파일 (기본 50)
     AI_MOCK_MODE        - always_pass | always_fail | round_robin | random (기본 round_robin)
-    AI_MOCK_PASS_RATIO  - random 모드 OK 비율 (기본 0.7)
+    AI_MOCK_PASS_RATIO  - random 모드 OK(=Normal) 비율 (기본 0.7)
     AI_SERVICE_HOST     - bind host (uvicorn 기본 127.0.0.1)
-    AI_SERVICE_PORT     - bind port (uvicorn 기본 8100)
+    AI_SERVICE_PORT     - bind port (uvicorn 기본 30000)
 """
 
 from __future__ import annotations
 
+import base64
 import logging
 import threading
 import time
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, Form, HTTPException, UploadFile, File
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
 from .mock_engine import MockInferenceEngine
-from .storage import InspectionImageStore
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+_VALID_MODELS: tuple[str, ...] = ("CMH", "RMH", "EMH")
+
+# 1x1 단색 PNG (mock 응답 segmented_image / result_image 용 — 디코드 가능 최소 PNG)
+_DUMMY_PNG_B64 = base64.b64encode(
+    bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+        "0000000d49444154789c63601000000005000156a3680e0000000049454e44ae426082"
+    )
+).decode("ascii")
 
 
 class _Metrics:
@@ -41,45 +56,44 @@ class _Metrics:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._total = 0
-        self._ok = 0
-        self._ng = 0
+        self._normal = 0
+        self._anomalous = 0
         self._last_at: str | None = None
 
-    def record(self, result: str) -> None:
+    def record(self, pred_label: str) -> None:
         with self._lock:
             self._total += 1
-            if result == "OK":
-                self._ok += 1
-            elif result == "NG":
-                self._ng += 1
+            if pred_label == "Normal":
+                self._normal += 1
+            elif pred_label == "Anomalous":
+                self._anomalous += 1
             self._last_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             return {
                 "total": self._total,
-                "ok": self._ok,
-                "ng": self._ng,
+                "normal": self._normal,
+                "anomalous": self._anomalous,
                 "last_at": self._last_at,
             }
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.store = InspectionImageStore()
     app.state.engine = MockInferenceEngine()
     app.state.metrics = _Metrics()
-    logger.info("ai_service mock 시작 완료")
+    logger.info("ai_service mock 시작 완료 (옵션 B /predict)")
     yield
     logger.info("ai_service mock 종료")
 
 
-app = FastAPI(title="SmartCast Mock AI Service", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="SmartCast Mock AI Service", version="0.2.0", lifespan=lifespan)
 
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    return {"status": "ok", "service": "ai-mock"}
+    return {"status": "ok", "service": "ai-mock", "version": "0.2.0"}
 
 
 @app.get("/metrics")
@@ -87,48 +101,42 @@ async def metrics() -> dict[str, Any]:
     return app.state.metrics.snapshot()
 
 
-@app.post("/infer")
-async def infer(
-    image: UploadFile = File(..., description="검사 이미지 (JPEG/PNG)"),
-    item_id: int = Form(..., description="대상 item.item_id"),
-    captured_at: float | None = Form(default=None, description="원본 캡처 시각 (epoch sec)"),
-    label: str | None = Form(default=None, description="저장 파일명 부속 라벨"),
+@app.post("/predict")
+async def predict(
+    file: UploadFile = File(..., description="검사 이미지 (JPEG/PNG binary)"),
+    model: str = Form(..., description="PatchCore 라우팅 키 — cate_cd (CMH|RMH|EMH)"),
 ) -> JSONResponse:
-    if item_id <= 0:
-        raise HTTPException(status_code=400, detail="item_id_must_be_positive")
+    if model not in _VALID_MODELS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid_model:{model!r} (expected one of CMH/RMH/EMH)",
+        )
+
     try:
-        image_bytes = await image.read()
+        image_bytes = await file.read()
     except Exception as exc:  # noqa: BLE001
-        logger.warning("infer: image read 실패 item_id=%d exc=%s", item_id, exc)
+        logger.warning("predict: image read 실패 model=%s exc=%s", model, exc)
         raise HTTPException(status_code=400, detail="image_read_failed") from exc
 
     if not image_bytes:
         raise HTTPException(status_code=400, detail="image_bytes_empty")
 
     started = time.time()
-    stored = app.state.store.save(
-        item_id=item_id,
-        image_bytes=image_bytes,
-        captured_at=captured_at,
-        label=label,
-    )
-    inference = app.state.engine.infer(item_id=item_id, started_at=started)
-    app.state.metrics.record(inference.result)
+    inference = app.state.engine.infer(item_id=0, started_at=started)
+    pred_label = "Anomalous" if inference.is_defective else "Normal"
+    app.state.metrics.record(pred_label)
 
     payload: dict[str, Any] = {
-        "ok": True,
-        "item_id": item_id,
-        "saved_path": str(stored.path) if stored else None,
-        "saved_size": stored.size_bytes if stored else 0,
-        "captured_at": stored.captured_at_iso if stored else None,
-        **inference.to_payload(),
+        "pred_label": pred_label,
+        "pred_score": round(float(inference.anomaly_score), 4),
+        "segmented_image": _DUMMY_PNG_B64,
+        "result_image": _DUMMY_PNG_B64,
     }
     logger.info(
-        "infer: item_id=%d result=%s class=%s anomaly=%.3f saved=%s",
-        item_id,
-        inference.result,
-        inference.predicted_class,
-        inference.anomaly_score,
-        stored.path if stored else "<skipped>",
+        "predict: model=%s bytes=%d pred_label=%s pred_score=%.4f",
+        model,
+        len(image_bytes),
+        pred_label,
+        payload["pred_score"],
     )
     return JSONResponse(payload)
