@@ -180,7 +180,7 @@ def simulate_handoff_ack(
     )
     if _MGMT_DIR not in sys.path:
         sys.path.insert(0, _MGMT_DIR)
-    from services.core.legacy.handoff_pipeline import apply_handoff  # type: ignore
+    from services.legacy.handoff_pipeline import apply_handoff  # type: ignore
 
     operator_id = payload.get("operator_id")
     now_ms = int(datetime.now().timestamp() * 1000)
