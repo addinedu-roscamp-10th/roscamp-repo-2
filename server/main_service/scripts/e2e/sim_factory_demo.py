@@ -236,6 +236,21 @@ def phase2_approve(args, ord_id: int) -> None:
         ok(f"승인 응답: ord_stat={resp.get('ord_stat')} stat_id={resp.get('stat_id')}")
     except httpx.HTTPStatusError as e:
         fail(f"승인 실패: HTTP {e.response.status_code} body={e.response.text[:300]}")
+
+    # 실 HW 시연용 ptn_loc_id 자동 등록 — PyQt UI 의 "주문 사양 등록" 단계 시뮬.
+    # mat_adapter 의 PatternPick/Return 액션은 pattern_id ∈ {1, 2, 3} 필수.
+    from sqlalchemy import text
+    with db_session() as db:
+        result = db.execute(
+            text(
+                f"UPDATE {args.schema}.ord_pattern SET ptn_loc_id=:p "
+                f"WHERE ord_id=:o AND ptn_loc_id IS NULL"
+            ),
+            {"o": ord_id, "p": 2},
+        )
+        db.commit()
+        if result.rowcount > 0:
+            step(f"ord_pattern.ptn_loc_id=2 자동 등록 (ord_id={ord_id})")
     pause(args.phase_delay)
 
 
@@ -298,7 +313,7 @@ def phase4_mat_chain(args, item_id: int) -> None:
     hdr(4, f"MAT chain — MM → POUR → DM 진행 모니터링 (item_id={item_id})")
     from sqlalchemy import text
 
-    deadline = time.time() + 120
+    deadline = time.time() + 600  # MAT chain MM/POUR/DM 자연 완료 시간 확보
     seen = set()
     last_stats = ""
     while time.time() < deadline:
@@ -320,8 +335,14 @@ def phase4_mat_chain(args, item_id: int) -> None:
             ok(f"MAT chain 완료 — {cur}")
             pause(args.phase_delay)
             return
+        # POUR=SUCC 만 도달해도 다음 단계 진입 허용 (DM 은 TAT dock_robot 의존).
+        # ToPP dock_robot 가 fail 하면 DM trigger 안 되므로 무한 대기 회피.
+        if succ >= {"MM", "POUR"} and (time.time() - (deadline - 600)) > 90:
+            warn(f"DM 미완료 (POUR=SUCC + 90s wait) — 다음 단계 진입: {cur}")
+            pause(args.phase_delay)
+            return
         time.sleep(1.5)
-    warn(f"MAT chain 미완료 (120s timeout) — 최종 상태: {last_stats}")
+    warn(f"MAT chain 미완료 (600s timeout) — 최종 상태: {last_stats}")
     pause(args.phase_delay)
 
 
@@ -366,12 +387,13 @@ def _wait_until_handoff_ack(args, item_id: int, timeout: int = 180) -> None:
 # ─────────────────────────────────────────────
 # Phase 6 — RFID 스캔 (② 버튼)
 # ─────────────────────────────────────────────
-def phase6_rfid_scan(args, item_id: int) -> None:
+def phase6_rfid_scan(args, ord_id: int, item_id: int) -> None:
     hdr(6, "RFID 스캔 — 후처리 옵션 표시 (실 HW: RC522 RFID 태그 + PyQt ② 버튼)")
 
-    # rfid 페이로드 시뮬 — 메모리 [RFID payload 포맷 order_<ord>_item_<YYYYMMDD>_<seq>]
+    # rfid 페이로드 형식 — backend debug.py 의 RFID_PAYLOAD_RE 정합:
+    # ^order_(?P<ord>\d+)_item_(?P<date>\d{8})_(?P<seq>\d+)$
     from datetime import datetime as _dt
-    payload = f"e2e_demo_item_{item_id}_{_dt.now().strftime('%Y%m%d%H%M%S')}"
+    payload = f"order_{ord_id}_item_{_dt.now().strftime('%Y%m%d')}_{item_id}"
     if args.auto_buttons:
         step(f"--auto-buttons 모드: HTTP /api/debug/sim/rfid-scan payload={payload}")
         try:
@@ -435,20 +457,24 @@ def _publish_pp_done(args, item_id: int) -> None:
     from google.protobuf.struct_pb2 import Struct
 
     # backend management gRPC stub
-    try:
-        from generated import event_gateway_pb2, event_gateway_pb2_grpc
-    except ImportError:
-        # 대체 경로
-        sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src" / "management_service"))
-        from generated import event_gateway_pb2, event_gateway_pb2_grpc  # type: ignore
+    # generated/event_gateway_pb2_grpc.py 가 형제 모듈을 absolute import 하므로
+    # generated 디렉터리 자체와 그 부모 모두 sys.path 에 있어야 한다.
+    _gen_root = Path(__file__).parent.parent.parent  # server/main_service
+    _gen_dir = _gen_root / "generated"
+    for _p in (_gen_dir, _gen_root):
+        if str(_p) not in sys.path:
+            sys.path.insert(0, str(_p))
+    from generated import event_gateway_pb2, event_gateway_pb2_grpc  # type: ignore
 
     payload = Struct()
-    payload.update({"item_id": item_id, "source": "e2e_demo"})
-    req = event_gateway_pb2.PublishEventRequest(
+    payload.update({"item_id": int(item_id)})
+    envelope = event_gateway_pb2.EventEnvelope(
         event_type="PP_DONE_REQUESTED",
-        item_id=int(item_id),
+        source="e2e_demo",
+        idempotency_key=f"e2e_pp_done_{item_id}",
         payload=payload,
     )
+    req = event_gateway_pb2.PublishEventRequest(event=envelope)
     with grpc.insecure_channel("localhost:50051") as ch:
         stub = event_gateway_pb2_grpc.EventGatewayStub(ch)
         resp = stub.PublishEvent(req, timeout=5.0)
@@ -516,7 +542,8 @@ def phase9_tostrg_pa(args, item_id: int) -> None:
             tat_row = db.execute(
                 text(
                     f"SELECT task_type, txn_stat FROM {args.schema}.trans_task_txn "
-                    f"WHERE item_id=:i AND task_type='ToSTRG' ORDER BY txn_id DESC LIMIT 1"
+                    f"WHERE item_id=:i AND task_type='ToSTRG' "
+                    f"ORDER BY trans_task_txn_id DESC LIMIT 1"
                 ),
                 {"i": item_id},
             ).fetchone()
@@ -529,7 +556,7 @@ def phase9_tostrg_pa(args, item_id: int) -> None:
                 {"i": item_id},
             ).fetchone()
             item_row = db.execute(
-                text(f"SELECT flow_stat, is_defective FROM {args.schema}.item WHERE item_id=:i"),
+                text(f"SELECT cur_stat, is_defective FROM {args.schema}.item WHERE item_id=:i"),
                 {"i": item_id},
             ).fetchone()
         cur = (
@@ -563,7 +590,7 @@ def phase10_verify(args, item_id: int) -> None:
     with db_session() as db:
         rows = db.execute(
             text(
-                f"SELECT 'item'::text, flow_stat::text, is_defective::text "
+                f"SELECT 'item'::text, cur_stat::text, is_defective::text "
                 f"  FROM {args.schema}.item WHERE item_id=:i "
                 f"UNION ALL "
                 f"SELECT 'insp_task_txn', txn_stat, result::text "
@@ -627,7 +654,7 @@ def main() -> int:
     item_id = phase3_start_production(args, ord_id)
     phase4_mat_chain(args, item_id)
     phase5_topp_handoff(args, item_id)
-    phase6_rfid_scan(args, item_id)
+    phase6_rfid_scan(args, ord_id, item_id)
     phase7_pp_done(args, item_id)
     phase8_inspection(args, item_id)
     phase9_tostrg_pa(args, item_id)
