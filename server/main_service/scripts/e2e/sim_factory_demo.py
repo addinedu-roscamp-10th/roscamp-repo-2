@@ -192,6 +192,8 @@ def phase1_create_order(args) -> int:
     suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
     customer_name = f"E2E시연-{suffix}"
     email = f"e2e_{suffix}@example.com"
+    from datetime import date, timedelta
+    due_date = (date.today() + timedelta(days=7)).isoformat()
     body = {
         "company_name": "E2E 시연 주식회사",
         "customer_name": customer_name,
@@ -199,7 +201,7 @@ def phase1_create_order(args) -> int:
         "phone": "010-0000-0000",
         "shipping_address": "테스트 주소",
         "total_amount": base_price,
-        "requested_delivery": None,
+        "requested_delivery": due_date,
         "details": [
             {
                 "product_id": str(prod_id),
@@ -208,6 +210,10 @@ def phase1_create_order(args) -> int:
                 "unit_price": base_price,
                 "subtotal": base_price,
                 "post_processing_ids": [],
+                "diameter": "450",
+                "thickness": "25",
+                "material": "FC200",
+                "load_class": "A15",
             }
         ],
     }
@@ -246,19 +252,22 @@ def phase3_start_production(args, ord_id: int) -> int:
     hdr(3, f"생산 시작 — item 생성 + MM PROC (ord_id={ord_id})")
     try:
         resp = http_post(
-            f"{args.backend}/api/management/production/start",
+            f"{args.backend}/api/production/start",
             json_body={"ord_id": ord_id},
         )
     except httpx.HTTPStatusError as e:
-        # 일부 빌드에서는 /api/orders/{id}/start 또는 별도 endpoint. fallback 으로 DB 직접 INSERT.
-        warn(f"/api/management/production/start 실패 ({e.response.status_code}) — DB 직접 INSERT fallback")
+        # 일부 빌드에서는 별도 endpoint. fallback 으로 DB 직접 INSERT.
+        warn(f"/api/production/start 실패 ({e.response.status_code}) — DB 직접 INSERT fallback")
         return _phase3_db_fallback(args, ord_id)
 
-    items = resp.get("items") or resp.get("created_items") or []
+    items = resp.get("item_ids") or resp.get("items") or resp.get("created_items") or []
+    if not items and resp.get("item_id"):
+        items = [resp["item_id"]]
     if not items:
         warn(f"item 응답 비어있음: {resp} — DB 직접 INSERT fallback")
         return _phase3_db_fallback(args, ord_id)
-    item_id = int(items[0].get("item_id") or items[0])
+    first = items[0]
+    item_id = int(first.get("item_id") if isinstance(first, dict) else first)
     ok(f"item_id={item_id} 생성")
     pause(args.phase_delay)
     return item_id
@@ -268,10 +277,10 @@ def _phase3_db_fallback(args, ord_id: int) -> int:
     from sqlalchemy import text
 
     with db_session() as db:
-        # 신규 item INSERT (flow_stat=CREATED)
+        # 신규 item INSERT (cur_stat=CREATED)
         item_row = db.execute(
             text(
-                f"INSERT INTO {args.schema}.item (ord_id, flow_stat) "
+                f"INSERT INTO {args.schema}.item (ord_id, cur_stat) "
                 f"VALUES (:o, 'CREATED') RETURNING item_id"
             ),
             {"o": ord_id},
