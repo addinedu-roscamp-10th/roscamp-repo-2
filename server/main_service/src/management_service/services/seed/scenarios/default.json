@@ -1,8 +1,8 @@
 {
     "resources": [
-        {"res_id": "TAT1",  "res_type": "TAT",  "x": 0.0, "y": 0.0, "battery_pct": 80,  "status": "ALLOC"},
+        {"res_id": "TAT1",  "res_type": "TAT",  "x": 0.0, "y": 0.0, "battery_pct": 80,  "status": "IDLE"},
         {"res_id": "TAT2",  "res_type": "TAT",  "x": 0.0, "y": 0.0, "battery_pct": 65,  "status": "IDLE"},
-        {"res_id": "TAT3",  "res_type": "TAT",  "x": 0.0, "y": 0.0, "battery_pct": 50,  "status": "ALLOC"},
+        {"res_id": "TAT3",  "res_type": "TAT",  "x": 0.0, "y": 0.0, "battery_pct": 50,  "status": "IDLE"},
         {"res_id": "CONV1", "res_type": "CONV", "x": 0.0, "y": 0.0, "battery_pct": 100, "status": "IDLE"},
         {"res_id": "PAT",   "res_type": "PAT",  "x": 0.0, "y": 0.0, "battery_pct": 100, "status": "IDLE"},
         {"res_id": "MAT",   "res_type": "MAT",  "x": 0.0, "y": 0.0, "battery_pct": 100, "status": "IDLE"}

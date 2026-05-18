@@ -287,13 +287,13 @@ class HandoffAck(Base):
     """
 
     __tablename__ = "handoff_acks"
+    # smartcast 스키마에 생성된 handoff_acks 사용 (legacy transport_tasks FK 제거).
+    __table_args__ = ({"schema": "smartcast"},)
 
     # DB 서버에 TimescaleDB 미설치 → 단순 PK 사용. 추후 hypertable 전환 시 (id, ack_at) 로 변경.
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     ack_at = Column(DateTime(timezone=True), nullable=False, default=_utc_now, index=True)
-    task_id = Column(
-        String, ForeignKey("transport_tasks.id", ondelete="SET NULL"), nullable=True, index=True
-    )
+    task_id = Column(String, nullable=True, index=True)
     zone = Column(String, nullable=False, index=True)
     amr_id = Column(String, nullable=True)
     ack_source = Column(
