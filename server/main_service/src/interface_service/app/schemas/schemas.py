@@ -277,10 +277,14 @@ class InspTaskTxnOut(_ORM):
     item_id: int | None = None
     res_id: str | None = None
     txn_stat: str | None = None
-    result: bool | None = None
+    # PyQt vision_feed 의 PASS/FAIL 배지가 "OK"/"NG" 문자열로 매칭 — bool 대신 string.
+    result: str | None = None
     req_at: datetime | None = None
     start_at: datetime | None = None
     end_at: datetime | None = None
+    # 검사 시각 — PyQt vision_feed timestamp 영역에 표시.
+    # 우선순위: end_at (검사 종료) → start_at → req_at.
+    inspected_at: datetime | None = None
     # AI /predict 결과 이미지 fetch URL — backend HttpImageServer 가 서빙.
     # 정의: ai_inference_txn.segmented_image_url / result_image_url (옵션 B + 2026-05-18).
     segmented_image_url: str | None = None
