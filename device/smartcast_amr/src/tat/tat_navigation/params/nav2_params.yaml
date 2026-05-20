@@ -30,7 +30,7 @@ amcl:
     sigma_hit: 0.2
     tf_broadcast: true
     transform_tolerance: 1.0
-    update_min_a: 0.02
+    update_min_a: 0.1
     update_min_d: 0.015
     z_hit: 0.5
     # z_max: 0.05  # beam 전용 param
@@ -451,7 +451,7 @@ docking_server:
       staging_yaw_offset: 0.0
 
     ToINSP:
-      type: "aruco_dock"  # 이 dock 인스턴스가 사용할 dock plugin 타입
+      type: "STRG_dock"  # 이 dock 인스턴스가 사용할 dock plugin 타입
       frame: "map"  # 이 dock pose가 표현된 기준 프레임
       pose: [-0.72, -0.12, -1.57]  # [x, y, theta]
       id: "ToINSP"  # plugin에서 필요 시 사용할 수 있는 선택적 식별자
