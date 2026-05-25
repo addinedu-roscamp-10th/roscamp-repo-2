@@ -33,18 +33,18 @@ kubectl create secret docker-registry dockerhub-secret \
   --docker-password=<password>
 ```
 
-### 2. 모델 체크포인트 배치
+### 2. 모델 체크포인트
 
 각 모델 Pod가 배치되는 노드에 체크포인트 파일을 준비합니다.  
 Pod는 호스트의 `/opt/checkpoints`를 마운트하므로, 해당 경로에 파일을 위치시킵니다.
 
-| 노드 | 경로 | Pod |
-| --- | --- | --- |
-| ai-server-1 | `/opt/checkpoints/model.ckpt` | model-circle |
-| ai-server-2 | `/opt/checkpoints/model.ckpt` | model-ellipse |
-| ai-server-3 | `/opt/checkpoints/model.ckpt` | model-rectangle |
+| 노드 | 경로 | Pod | ckpt |
+| --- | --- | --- | --- |
+| ai-server-1 | `/opt/checkpoints/model.ckpt` | model-circle | [download](https://drive.google.com/file/d/1u0seFNLTVm1yG6Nm9ZYjHlGvuzsCbmNc/view?usp=drive_link) |
+| ai-server-2 | `/opt/checkpoints/model.ckpt` | model-ellipse | [download](https://drive.google.com/file/d/1eDZBFZD3rrGtlCwvqzCu5SYb6DYURcGL/view?usp=drive_link) |
+| ai-server-3 | `/opt/checkpoints/model.ckpt` | model-rectangle | [download](https://drive.google.com/file/d/1sXuC_MpSS8dTvSyg9DxUKonOXXhpTiS0/view?usp=drive_link) |
 
-SAM2 체크포인트는 `preprocessing_server/checkpoints` 경로에 파일을 위치시킵니다.
+SAM2 체크포인트([download](https://drive.google.com/file/d/1p9pES_OpBUTn0mj2_CCZm9lQfDCFZ1h9/view?usp=drive_link))는 `preprocessing_server/checkpoints` 경로에 파일을 위치시킵니다.
 
 ### 3. 노드 hostname 확인
 
