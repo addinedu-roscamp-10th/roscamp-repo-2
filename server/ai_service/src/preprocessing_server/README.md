@@ -3,6 +3,9 @@
 GroundingDINO + SAM2를 사용해 이미지에서 제품 객체를 감지하고 crop하는 전처리 서버입니다.  
 routing_server의 요청을 받아 동작합니다.
 
+[Grounded-SAM-2](https://github.com/IDEA-Research/Grounded-SAM-2) 원본 레포지토리를 기반으로,  
+`segmenter.py`와 `segmenter_server.py`를 추가해 FastAPI 서버로 구성했습니다.
+
 ## Docker Image
 
 ```bash
