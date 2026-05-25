@@ -21,7 +21,7 @@ spec:
         kubernetes.io/hostname: ai-server-2
       containers:
       - name: preprocessing
-        image: addteam2/preprocessing-server:v1.0
+        image: addteam2/preprocessing-server:v1.1
         ports:
         - containerPort: 8080
         env:
@@ -31,6 +31,8 @@ spec:
           value: "all"
         - name: CUDA_VISIBLE_DEVICES
           value: "0"
+        - name: CHECKPOINT_PATH
+          value: "/home/appuser/Grounded-SAM-2/checkpoints/sam2.1_hiera_large.pt"
         readinessProbe:
           httpGet:
             path: /readyz
@@ -46,3 +48,10 @@ spec:
           periodSeconds: 30
           failureThreshold: 3
           timeoutSeconds: 5
+        volumeMounts:
+        - name: models
+          mountPath: /home/appuser/Grounded-SAM-2/checkpoints
+      volumes:
+      - name: models
+        hostPath:
+          path: /opt/checkpoints
