@@ -1,0 +1,12 @@
+# model-rectangle-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: model-rectangle-service
+spec:
+  type: ClusterIP
+  selector:
+    app: model-rectangle
+  ports:
+  - port: 8080           # 클러스터 내부 포트
+    targetPort: 8080     # Pod 포트

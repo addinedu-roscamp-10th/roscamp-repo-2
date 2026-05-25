@@ -1,0 +1,48 @@
+# preprocessing-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: preprocessing
+  labels:
+    app: preprocessing
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: preprocessing
+  template:
+    metadata:
+      labels:
+        app: preprocessing
+    spec:
+      imagePullSecrets:
+      - name: dockerhub-secret
+      nodeSelector:
+        kubernetes.io/hostname: ai-server-2
+      containers:
+      - name: preprocessing
+        image: addteam2/preprocessing-server:v1.0
+        ports:
+        - containerPort: 8080
+        env:
+        # K8s가 GPU를 관리하지 않고, 컨테이너가 호스트 GPU에 접근하도록 함
+        # (같은 노드에 PatchCore Pod과 GPU 공유)
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: "all"
+        - name: CUDA_VISIBLE_DEVICES
+          value: "0"
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 5
+          failureThreshold: 60     # GroundedSAM2 로딩 시간 더 김
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 120
+          periodSeconds: 30
+          failureThreshold: 3
+          timeoutSeconds: 5

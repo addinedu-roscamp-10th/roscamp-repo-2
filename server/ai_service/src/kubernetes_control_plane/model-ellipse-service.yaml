@@ -1,0 +1,12 @@
+# model-ellipse-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: model-ellipse-service
+spec:
+  type: ClusterIP
+  selector:
+    app: model-ellipse
+  ports:
+  - port: 8080           # 클러스터 내부 포트
+    targetPort: 8080     # Pod 포트

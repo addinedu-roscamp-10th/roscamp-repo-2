@@ -1,0 +1,12 @@
+# preprocessing-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: preprocessing-service
+spec:
+  type: ClusterIP
+  selector:
+    app: preprocessing
+  ports:
+  - port: 8080
+    targetPort: 8080

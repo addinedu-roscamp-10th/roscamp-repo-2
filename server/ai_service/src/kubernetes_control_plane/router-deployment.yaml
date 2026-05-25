@@ -1,0 +1,48 @@
+# router-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: router
+  labels:
+    app: router
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: router
+  template:
+    metadata:
+      labels:
+        app: router
+    spec:
+      imagePullSecrets:
+      - name: dockerhub-secret
+      nodeSelector:
+        kubernetes.io/hostname: ai-server-1
+      containers:
+      - name: router
+        image: addteam2/routing-server:v2.2
+        ports:
+        - containerPort: 8080
+        env:
+        - name: PREPROCESSING_URL
+          value: "http://preprocessing-service:8080"
+        - name: CIRCLE_URL
+          value: "http://model-circle-service:8080"
+        - name: ELLIPSE_URL
+          value: "http://model-ellipse-service:8080"
+        - name: RECTANGLE_URL
+          value: "http://model-rectangle-service:8080"
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8080
+          initialDelaySeconds: 3
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          failureThreshold: 3

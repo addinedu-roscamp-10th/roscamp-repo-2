@@ -1,0 +1,67 @@
+# model-rectangle-deployment.yaml
+# ──────────────────────────────────────────────────────────
+# Rectangle 모델 추론 Pod
+# 배치 노드: ai-server-3
+# Fallback 없음 (GPU 자원 제약으로 V1에서 제외, V2 복원 예정)
+# ──────────────────────────────────────────────────────────
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: model-rectangle
+  labels:
+    app: model-rectangle
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: model-rectangle
+  template:
+    metadata:
+      labels:
+        app: model-rectangle
+    spec:
+      imagePullSecrets:
+      - name: dockerhub-secret
+      nodeSelector:
+        kubernetes.io/hostname: ai-server-3
+      containers:
+      - name: model-rectangle
+        image: addteam2/ai-server:v2.6
+        ports:
+        - containerPort: 8080
+        env:
+        - name: MODEL
+          value: "rectangle"
+        - name: CHECKPOINT_PATH
+          value: "/app/checkpoints/model.ckpt"
+        - name: SEED
+          value: "42"
+        # resources:
+        #   limits:
+        #     nvidia.com/gpu: 1
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          failureThreshold: 60       # PatchCore 로딩 최대 5분 허용
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 90    # readiness 완료 후부터 체크
+          periodSeconds: 30
+          failureThreshold: 3
+          timeoutSeconds: 5
+        volumeMounts:
+        - name: models
+          mountPath: /app/checkpoints
+      imagePullSecrets:
+      - name: dockerhub-secret
+      volumes:
+      - name: models
+        hostPath:
+          path: /opt/checkpoints
+
