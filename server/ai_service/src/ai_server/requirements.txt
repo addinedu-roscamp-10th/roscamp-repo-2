@@ -1,0 +1,41 @@
+# 추론 서버
+fastapi==0.136.0
+uvicorn==0.44.0
+python-multipart==0.0.26
+starlette==1.0.0
+
+# AI / 모델
+anomalib==2.3.2
+torchmetrics==1.9.0
+lightning==2.6.1
+pytorch-lightning==2.6.1
+timm==1.0.26
+kornia==0.8.2
+kornia_rs==0.1.10
+open-clip-torch==2.24.0
+einops==0.8.2
+FrEIA==0.2
+
+# 이미지 처리
+opencv-python==4.13.0.92
+pillow==12.1.1
+scikit-image==0.26.0
+imagecodecs==2026.3.6
+ImageIO==2.37.3
+
+# 데이터 처리
+numpy==2.4.3
+scipy==1.17.1
+scikit-learn==1.8.0
+pandas==2.3.3
+
+# 유틸
+omegaconf==2.3.0
+jsonargparse==4.46.0
+huggingface_hub==1.9.0
+safetensors==0.7.0
+transformers==5.5.0
+tokenizers==0.22.2
+pydantic==2.12.5
+PyYAML==6.0.3
+tqdm==4.67.3
