@@ -4,8 +4,6 @@
     <arg name="namespace" default=""/>
     <arg name="use_sim_time" default="False"/>
     <arg name="frame_prefix" default=""/>
-    <arg name="wheel_radius" default="0.027"/>
-    <arg name="wheel_separation" default="0.0961"/>
     <arg name="odom_frame_id" default=""/>
     <arg name="base_frame_id" default=""/>
     <arg name="lidar_frame_id" default=""/>
@@ -56,8 +54,6 @@
 
         <node pkg="tat_bringup" exec="bringup">
             <param from="$(find-pkg-share tat_bringup)/config/tat_params.yaml"/>
-            <param name="wheel_radius" value="$(var wheel_radius)"/>
-            <param name="wheel_separation" value="$(var wheel_separation)"/>
             <param name="odom_frame_id" value="$(var odom_frame_id_resolved)"/>
             <param name="base_frame_id" value="$(var base_frame_id_resolved)"/>
             <param name="left_joint_name" value="$(var left_joint_name_resolved)"/>

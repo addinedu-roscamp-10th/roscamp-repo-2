@@ -40,8 +40,6 @@ def _launch_setup(context, *args, **kwargs):
                 "namespace": namespace,
                 "use_sim_time": LaunchConfiguration("use_sim_time").perform(context),
                 "frame_prefix": frame_prefix,
-                "wheel_radius": LaunchConfiguration("wheel_radius").perform(context),
-                "wheel_separation": LaunchConfiguration("wheel_separation").perform(context),
                 "odom_frame_id": f"{frame_prefix}odom",
                 "base_frame_id": f"{frame_prefix}base_footprint",
                 "lidar_frame_id": f"{frame_prefix}rplidar_link",
@@ -72,8 +70,6 @@ def generate_launch_description():
                 description="Optional namespace override. If empty, the value from robot_config_file is used.",
             ),
             DeclareLaunchArgument("use_sim_time", default_value="False"),
-            DeclareLaunchArgument("wheel_radius", default_value="0.027"),
-            DeclareLaunchArgument("wheel_separation", default_value="0.0961"),
             OpaqueFunction(function=_launch_setup),
         ]
     )
