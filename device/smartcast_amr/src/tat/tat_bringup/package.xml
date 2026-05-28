@@ -13,7 +13,8 @@
   <test_depend>python3-pytest</test_depend>
 
   <depend>tf_transformations</depend>
-  
+  <exec_depend>laser_filters</exec_depend>
+
   <export>
     <build_type>ament_python</build_type>
   </export>

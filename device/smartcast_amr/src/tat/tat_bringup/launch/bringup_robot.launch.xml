@@ -52,6 +52,10 @@
             <arg name="scan_mode" value="DenseBoost"/>
         </include>
 
+    <node pkg="laser_filters" exec="scan_to_scan_filter_chain" name="scan_filter_chain_node">
+        <param from="$(find-pkg-share tat_bringup)/config/scan_filter.yaml"/>
+    </node>
+
         <node pkg="tat_bringup" exec="bringup">
             <param from="$(find-pkg-share tat_bringup)/config/tat_params.yaml"/>
             <param name="odom_frame_id" value="$(var odom_frame_id_resolved)"/>
