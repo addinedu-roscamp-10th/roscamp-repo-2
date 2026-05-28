@@ -39,12 +39,12 @@ from services.core.task_executor import TaskExecutor
         ),
         (
             TaskType.PA_GP,
-            CommandStep(step_id=1, action="pat_place_storage_action", params={}),
+            CommandStep(step_id=1, action="pat_pick_action", params={}),
             "pa_dld_done",
         ),
         (
             TaskType.PA_DP,
-            CommandStep(step_id=1, action="pat_defect_drop_action", params={}),
+            CommandStep(step_id=1, action="pat_pick_action", params={}),
             "pa_dld_done",
         ),
     ],

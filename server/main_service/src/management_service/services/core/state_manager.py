@@ -1153,8 +1153,8 @@ class StateManager:
         if self._event_bridge is None:
             return False
 
-        task_key = task_id if task_id.startswith("task_") else f"task_{task_id}"
-        task_meta = self._tasks.get(task_key, {})
+        task_key = _make_task_key(task_id, task_type)
+        task_meta = self._tasks.get(task_key) or self._tasks.get(f"task_{task_id}", {})
         payload_task_type = task_type or _normalize_task_type(task_meta.get("task_type"))
         self._event_bridge.publish(
             Event(

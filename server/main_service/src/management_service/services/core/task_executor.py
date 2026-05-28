@@ -717,11 +717,9 @@ class TaskExecutor:
             subtask_type = "tostrg_dld"
         elif input_data.task_type == TaskType.ToSHIP and step.action == "dock_robot" and pose_name == "ToPICK":
             subtask_type = "toship_src_arrived"
-        elif input_data.task_type == TaskType.PA_GP and step.action == "pat_place_storage_action":
-            # PA_GP 종결 step(pat_place_storage_action) 후 ToSTRG step4 waiter 풀기 위함
+        elif input_data.task_type == TaskType.PA_GP and step.action == "pat_pick_action":
             subtask_type = "pa_dld_done"
-        elif input_data.task_type == TaskType.PA_DP and step.action == "pat_defect_drop_action":
-            # PA_DP 는 step1(pat_pick_action) 후 step2(pat_defect_drop_action) 종결 시점에 발행
+        elif input_data.task_type == TaskType.PA_DP and step.action == "pat_pick_action":
             subtask_type = "pa_dld_done"
         if subtask_type is None:
             return
