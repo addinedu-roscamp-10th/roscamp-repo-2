@@ -54,8 +54,8 @@ def _task_id_to_int(task_id: Any) -> int | None:
     if task_id is None:
         return None
     raw = str(task_id)
-    if raw.startswith("task_"):
-        raw = raw.removeprefix("task_")
+    if ":" in raw:
+        raw = raw.split(":", 1)[1]
     try:
         return int(raw)
     except ValueError:
@@ -341,7 +341,7 @@ class RuntimeStateRepository:
                 new_item = self._item_model(
                     ord_id=ord_id,
                     cur_stat="CREATED",
-                    cur_res="PAT",
+                    cur_res="PAT1",
                     is_defective=None,
                 )
                 db.add(new_item)

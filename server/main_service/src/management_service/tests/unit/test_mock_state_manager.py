@@ -81,8 +81,8 @@ def test_update_item_storage_location_defers_repository_write_until_pa_gp_succes
 
         assert repo.calls == []
 
-        state_manager._tasks["task_9001"] = {
-            "task_id": "task_9001",
+        state_manager._tasks["PA_GP:9001"] = {
+            "task_id": "PA_GP:9001",
             "task_type": "PA_GP",
             "item_id": 1001,
             "ord_id": 7,
@@ -90,7 +90,7 @@ def test_update_item_storage_location_defers_repository_write_until_pa_gp_succes
         state_manager.orders[7] = {"target": 2}
 
         await state_manager.update_task_status(
-            UpdateTaskStatusInput(task_id="9001", new_stat=TxnStat.SUCC)
+            UpdateTaskStatusInput(task_id="9001", task_type=TaskType.PA_GP, new_stat=TxnStat.SUCC)
         )
 
         assert repo.calls == [(1001, 2, 4)]
