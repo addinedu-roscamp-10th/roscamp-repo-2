@@ -1,0 +1,32 @@
+name: tat1_to_control_bridge
+from_domain: 11
+to_domain: 100
+
+topics:
+  /map:
+    type: nav_msgs/msg/OccupancyGrid
+    remap: /TAT1/map
+
+  /battery/percent:
+    type: std_msgs/msg/Float32
+    remap: /TAT1/battery/percent
+
+  /amcl_pose:
+    type: geometry_msgs/msg/PoseWithCovarianceStamped
+    remap: /TAT1/amcl_pose
+
+  /plan:
+    type: nav_msgs/msg/Path
+    remap: /TAT1/plan
+
+  /TAT1/initialpose:
+    type: geometry_msgs/msg/PoseWithCovarianceStamped
+    from_domain: 100
+    to_domain: 11
+    remap: /initialpose
+
+  /TAT1/goal_pose:
+    type: geometry_msgs/msg/PoseStamped
+    from_domain: 100
+    to_domain: 11
+    remap: /goal_pose

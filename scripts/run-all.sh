@@ -4,6 +4,7 @@
 # GUI 터미널이 있으면 backend / management / pyqt / web 을 각각 별도 창으로 실행.
 # GUI 터미널을 열 수 없으면 nohup 으로 백그라운드 실행 + logs/ 디렉터리에 출력.
 set -euo pipefail
+export ROS_DOMAIN_ID=100
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 MANAGEMENT_ARGS=()

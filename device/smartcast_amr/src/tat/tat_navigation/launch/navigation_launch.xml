@@ -18,73 +18,91 @@
                        'docking_server',
                        'waypoint_follower',
                        'velocity_smoother']"/>
-    <let
-        name="container_name_full"
-        value='$(eval "\"/\" + \"$(var namespace)\" + \"/\" + \"$(var container_name)\" if \"$(var namespace)\" else \"/\" + \"$(var container_name)\"")'
-    />
-    
-    <group if="$(var use_composition)">
-        <load_composable_node target="$(var container_name_full)">
-            <composable_node pkg="nav2_controller" plugin="nav2_controller::ControllerServer" name="controller_server" namespace="$(var namespace)">
-                <param from="$(var params_file)"/>
-                <param name="use_sim_time" value="$(var use_sim_time)"/>
-                <param name="autostart" value="$(var autostart)"/>
-                <remap from="cmd_vel" to="cmd_vel_nav"/>
-            </composable_node>
 
-            <composable_node pkg="nav2_smoother" plugin="nav2_smoother::SmootherServer" name="smoother_server" namespace="$(var namespace)">
-                <param from="$(var params_file)"/>
-                <param name="use_sim_time" value="$(var use_sim_time)"/>
-                <param name="autostart" value="$(var autostart)"/>
-            </composable_node>
+    <load_composable_node target="$(var container_name)" if="$(var use_composition)">
+        <composable_node pkg="nav2_controller" plugin="nav2_controller::ControllerServer" name="controller_server">
+            <param from="$(var params_file)"/>
+            <param name="use_sim_time" value="$(var use_sim_time)"/>
+            <param name="autostart" value="$(var autostart)"/>
 
-            <composable_node pkg="nav2_planner" plugin="nav2_planner::PlannerServer" name="planner_server" namespace="$(var namespace)">
-                <param from="$(var params_file)"/>
-                <param name="use_sim_time" value="$(var use_sim_time)"/>
-                <param name="autostart" value="$(var autostart)"/>
-            </composable_node>
+            <remap from="/tf" to="tf"/>
+            <remap from="/tf_static" to="tf_static"/>
+            <remap from="cmd_vel" to="cmd_vel_nav"/>
+        </composable_node>
 
-            <composable_node pkg="nav2_behaviors" plugin="behavior_server::BehaviorServer" name="behavior_server" namespace="$(var namespace)">
-                <param from="$(var params_file)"/>
-                <param name="use_sim_time" value="$(var use_sim_time)"/>
-                <param name="autostart" value="$(var autostart)"/>
-            </composable_node>
+        <composable_node pkg="nav2_smoother" plugin="nav2_smoother::SmootherServer" name="smoother_server">
+            <param from="$(var params_file)"/>
+            <param name="use_sim_time" value="$(var use_sim_time)"/>
+            <param name="autostart" value="$(var autostart)"/>
 
-            <composable_node pkg="nav2_bt_navigator" plugin="nav2_bt_navigator::BtNavigator" name="bt_navigator" namespace="$(var namespace)">
-                <param from="$(var params_file)"/>
-                <param name="use_sim_time" value="$(var use_sim_time)"/>
-                <param name="autostart" value="$(var autostart)"/>
-                <remap from="cmd_vel" to="cmd_vel_nav"/>
-            </composable_node>
+            <remap from="/tf" to="tf"/>
+            <remap from="/tf_static" to="tf_static"/>
+        </composable_node>
 
-            <composable_node pkg="opennav_docking" plugin="opennav_docking::DockingServer" name="docking_server" namespace="$(var namespace)">
-                <param from="$(var params_file)"/>
-                <param name="use_sim_time" value="$(var use_sim_time)"/>
-                <param name="autostart" value="$(var autostart)"/>
-                <remap from="cmd_vel" to="cmd_vel_nav"/>
-            </composable_node>
+        <composable_node pkg="nav2_planner" plugin="nav2_planner::PlannerServer" name="planner_server">
+            <param from="$(var params_file)"/>
+            <param name="use_sim_time" value="$(var use_sim_time)"/>
+            <param name="autostart" value="$(var autostart)"/>
 
-            <composable_node pkg="nav2_waypoint_follower" plugin="nav2_waypoint_follower::WaypointFollower" name="waypoint_follower" namespace="$(var namespace)">
-                <param from="$(var params_file)"/>
-                <param name="use_sim_time" value="$(var use_sim_time)"/>
-                <param name="autostart" value="$(var autostart)"/>
-            </composable_node>
+            <remap from="/tf" to="tf"/>
+            <remap from="/tf_static" to="tf_static"/>
+        </composable_node>
 
-            <composable_node pkg="nav2_velocity_smoother" plugin="nav2_velocity_smoother::VelocitySmoother" name="velocity_smoother" namespace="$(var namespace)">
-                <param from="$(var params_file)"/>
-                <param name="use_sim_time" value="$(var use_sim_time)"/>
-                <param name="autostart" value="$(var autostart)"/>
-                <remap from="cmd_vel" to="cmd_vel_nav"/>
-                <remap from="cmd_vel_smoothed" to="cmd_vel"/>
-            </composable_node>
+        <composable_node pkg="nav2_behaviors" plugin="behavior_server::BehaviorServer" name="behavior_server">
+            <param from="$(var params_file)"/>
+            <param name="use_sim_time" value="$(var use_sim_time)"/>
+            <param name="autostart" value="$(var autostart)"/>
 
-            <composable_node pkg="nav2_lifecycle_manager" plugin="nav2_lifecycle_manager::LifecycleManager" name="lifecycle_manager_navigation" namespace="$(var namespace)">
-                <param name='use_sim_time' value="$(var use_sim_time)"/>
-                <param name='autostart' value="$(var autostart)"/>
-                <param name='node_names' value="$(var lifecycle_nodes)"/>
-            </composable_node>
-        </load_composable_node>
-    </group>
+            <remap from="/tf" to="tf"/>
+            <remap from="/tf_static" to="tf_static"/>
+        </composable_node>
+
+        <composable_node pkg="nav2_bt_navigator" plugin="nav2_bt_navigator::BtNavigator" name="bt_navigator">
+            <param from="$(var params_file)"/>
+            <param name="use_sim_time" value="$(var use_sim_time)"/>
+            <param name="autostart" value="$(var autostart)"/>
+
+            <remap from="/tf" to="tf"/>
+            <remap from="/tf_static" to="tf_static"/>
+            <remap from="cmd_vel" to="cmd_vel_nav"/>
+        </composable_node>
+
+        <composable_node pkg="opennav_docking" plugin="opennav_docking::DockingServer" name="docking_server">
+            <param from="$(var params_file)"/>
+            <param name="use_sim_time" value="$(var use_sim_time)"/>
+            <param name="autostart" value="$(var autostart)"/>
+
+            <remap from="/tf" to="tf"/>
+            <remap from="/tf_static" to="tf_static"/>
+            <remap from="cmd_vel" to="cmd_vel_nav"/>
+        </composable_node>
+
+        <composable_node pkg="nav2_waypoint_follower" plugin="nav2_waypoint_follower::WaypointFollower" name="waypoint_follower">
+            <param from="$(var params_file)"/>
+            <param name="use_sim_time" value="$(var use_sim_time)"/>
+            <param name="autostart" value="$(var autostart)"/>
+
+            <remap from="/tf" to="tf"/>
+            <remap from="/tf_static" to="tf_static"/>
+        </composable_node>
+
+        <composable_node pkg="nav2_velocity_smoother" plugin="nav2_velocity_smoother::VelocitySmoother" name="velocity_smoother">
+            <param from="$(var params_file)"/>
+            <param name="use_sim_time" value="$(var use_sim_time)"/>
+            <param name="autostart" value="$(var autostart)"/>
+
+            <remap from="/tf" to="tf"/>
+            <remap from="/tf_static" to="tf_static"/>
+            <remap from="cmd_vel" to="cmd_vel_nav"/>
+            <remap from="cmd_vel_smoothed" to="cmd_vel"/>
+        </composable_node>
+
+        <composable_node pkg="nav2_lifecycle_manager" plugin="nav2_lifecycle_manager::LifecycleManager" name="lifecycle_manager_navigation">
+            <param name='use_sim_time' value="$(var use_sim_time)"/>
+            <param name='autostart' value="$(var autostart)"/>
+            <param name='node_names' value="$(var lifecycle_nodes)"/>
+        </composable_node>
+    </load_composable_node>
 
     <group unless="$(var use_composition)">
         <push-ros-namespace namespace="$(var namespace)"/>
@@ -93,6 +111,9 @@
             <param name='respawn_delay' value="2.0"/>
             <param name='log_level' value="$(var log_level)"/>
             <param from="$(var params_file)"/>
+
+            <remap from="/tf" to="tf"/>
+            <remap from="/tf_static" to="tf_static"/>
             <remap from="cmd_vel" to="cmd_vel_nav"/>
         </node>
 
@@ -101,6 +122,9 @@
             <param name='respawn_delay' value="2.0"/>
             <param name='log_level' value="$(var log_level)"/>
             <param from="$(var params_file)"/>
+
+            <remap from="/tf" to="tf"/>
+            <remap from="/tf_static" to="tf_static"/>
         </node>
 
         <node pkg="nav2_planner" exec="planner_server" name="planner_server" output="screen">
@@ -108,6 +132,9 @@
             <param name='respawn_delay' value="2.0"/>
             <param name='log_level' value="$(var log_level)"/>
             <param from="$(var params_file)"/>
+
+            <remap from="/tf" to="tf"/>
+            <remap from="/tf_static" to="tf_static"/>
         </node>
 
         <node pkg="nav2_behaviors" exec="behavior_server" name="behavior_server" output="screen">
@@ -115,6 +142,9 @@
             <param name='respawn_delay' value="2.0"/>
             <param name='log_level' value="$(var log_level)"/>
             <param from="$(var params_file)"/>
+
+            <remap from="/tf" to="tf"/>
+            <remap from="/tf_static" to="tf_static"/>
         </node>
 
         <node pkg="nav2_bt_navigator" exec="bt_navigator" name="bt_navigator" output="screen">
@@ -122,6 +152,9 @@
             <param name='respawn_delay' value="2.0"/>
             <param name='log_level' value="$(var log_level)"/>
             <param from="$(var params_file)"/>
+
+            <remap from="/tf" to="tf"/>
+            <remap from="/tf_static" to="tf_static"/>
         </node>
 
         <node pkg="opennav_docking" exec="opennav_docking" name="docking_server" output="screen">
@@ -129,6 +162,9 @@
             <param name='respawn_delay' value="2.0"/>
             <param name='log_level' value="$(var log_level)"/>
             <param from="$(var params_file)"/>
+
+            <remap from="/tf" to="tf"/>
+            <remap from="/tf_static" to="tf_static"/>
             <remap from="cmd_vel" to="cmd_vel_nav"/>
         </node>
 
@@ -137,6 +173,9 @@
             <param name='respawn_delay' value="2.0"/>
             <param name='log_level' value="$(var log_level)"/>
             <param from="$(var params_file)"/>
+
+            <remap from="/tf" to="tf"/>
+            <remap from="/tf_static" to="tf_static"/>
         </node>
 
         <node pkg="nav2_velocity_smoother" exec="velocity_smoother" name="velocity_smoother" output="screen">
@@ -144,6 +183,9 @@
             <param name='respawn_delay' value="2.0"/>
             <param name='log_level' value="$(var log_level)"/>
             <param from="$(var params_file)"/>
+
+            <remap from="/tf" to="tf"/>
+            <remap from="/tf_static" to="tf_static"/>
             <remap from="cmd_vel" to="cmd_vel_nav"/>
             <remap from="cmd_vel_smoothed" to="cmd_vel"/>
         </node>
