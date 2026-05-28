@@ -26,11 +26,11 @@ class GetJointsServer(Node):
         self._action_server = ActionServer(
             self,
             Fibonacci,
-            '/pat/get_joints',
+            'get_joints',
             self.execute_callback
         )
 
-        self.get_logger().info('GetJoints Action Server started: /pat/get_joints')
+        self.get_logger().info('GetJoints Action Server started: get_joints')
 
     def read_joints(self):
         angles = self.mc.get_angles()

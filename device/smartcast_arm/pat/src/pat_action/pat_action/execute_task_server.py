@@ -29,11 +29,11 @@ class ExecuteTaskServer(Node):
         self._action_server = ActionServer(
             self,
             Fibonacci,
-            '/pat/execute_task',
+            'execute_task',
             self.execute_callback
         )
 
-        self.get_logger().info("ExecuteTask Action Server started: /pat/execute_task")
+        self.get_logger().info("ExecuteTask Action Server started: execute_task")
 
     # ==============================
     # 기본 동작 함수
