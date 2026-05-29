@@ -165,7 +165,7 @@ class FieldEventRpcMixin:
 
         from smart_cast_db.database import SessionLocal
 
-        res_id = request.res_id or "CONV-01"
+        res_id = request.res_id or "CONV1"
         event = (request.event_type or "").strip().lower()
         rfid_payload = request.rfid_payload or None
         item_id = int(request.item_id) if request.item_id else None

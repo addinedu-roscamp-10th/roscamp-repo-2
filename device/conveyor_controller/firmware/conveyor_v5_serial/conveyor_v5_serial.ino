@@ -10,7 +10,7 @@
  *     · sim_exit 명령 + simExitUntilMs sticky 삭제
  *     · status snapshot / boot JSON 의 tof2 필드 삭제
  *   - 시작 트리거 = PyQt 후처리 작업자 페이지 "후처리 완료" 버튼 → 3 초 후 `start` 명령
- *     (POST /api/management/conveyor/CONV-01/start → ExecuteCommand → CommandSubscriber
+ *     (POST /api/management/conveyor/CONV1/start → ExecuteCommand → CommandSubscriber
  *      → Serial "start\n" → handleCommand("start") → motorOn + ST_RUNNING).
  *   - 정지 트리거 = TOF1 (카메라 앞) 감지 → motorOff + ST_STOPPED + "STOPPED\n" 토큰.
  *     RUN_DURATION_MS=12000ms 는 *safety fallback* — TOF1 미감지 시 자동 정지로 cast 누락/
@@ -521,7 +521,7 @@ void update() {
   switch (state) {
     case ST_IDLE:
       // 2026-05-08: TOF1 입구 진입 트리거 폐기. ST_IDLE 에서는 외부 "start" 명령만 대기.
-      // PyQt "후처리 완료" 버튼 → 3 초 카운트다운 → POST /api/management/conveyor/CONV-01/start
+      // PyQt "후처리 완료" 버튼 → 3 초 카운트다운 → POST /api/management/conveyor/CONV1/start
       // → ExecuteCommand → CommandSubscriber → "start\n" Serial → handleCommand("start") →
       // motorOn() + setState(ST_RUNNING).
       break;

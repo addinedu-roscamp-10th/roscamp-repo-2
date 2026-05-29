@@ -560,7 +560,7 @@ message WatchConveyorCommandsRequest {
 }
 
 message ConveyorCommand {
-  string    robot_id   = 1;      // "CONV-01", "ESP-BTN-01"
+  string    robot_id   = 1;      // "CONV1", "ESP-BTN-01"
   string    command    = 2;      // "RUN" | "STOP" | "PING" | "STATUS" | ...
   bytes     payload    = 3;      // 명령 부가 JSON (옵션)
   int32     item_id    = 4;      // 관련 item (없으면 0)
@@ -602,11 +602,11 @@ message HandoffAckResponse {
 // -----------------------------------------------------------------------------
 
 message RfidScanEvent {
-  string    reader_id       = 1;   // "ESP-CONV-01" 등
+  string    reader_id       = 1;   // "ESP-CONV1" 등
   string    zone            = 2;   // "conveyor_in" | "postprocessing" | ...
   string    raw_payload     = 3;   // "order_1_item_20260417_1"
   Timestamp scanned_at      = 4;
-  string    idempotency_key = 5;   // "ESP-CONV-01:1713600000000" 권장
+  string    idempotency_key = 5;   // "ESP-CONV1:1713600000000" 권장
 }
 
 message RfidScanAck {
@@ -636,7 +636,7 @@ message PpOptionView {
 // -----------------------------------------------------------------------------
 
 message ConveyorEvent {
-  string    res_id          = 1;   // "CONV-01"
+  string    res_id          = 1;   // "CONV1"
   string    event_type      = 2;   // "tof1_entry" | "tof2_exit"
   string    rfid_payload    = 3;   // 동반 RFID payload (있으면 페어링)
   int32     item_id         = 4;   // 명시적 item (없으면 0 → 자동 픽업)

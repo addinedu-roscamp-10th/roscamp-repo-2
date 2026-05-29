@@ -349,7 +349,7 @@ class Container:
                 # OFF edge 는 무시 — apply_tof1 은 ON edge 에서만 호출
                 return
 
-            res_id = event.res_id or payload.get("res_id") or "CONV-01"
+            res_id = event.res_id or payload.get("res_id") or "CONV1"
             rfid_payload = payload.get("rfid_payload") or None
             item_id_raw = event.item_id or payload.get("item_id")
 
@@ -493,7 +493,7 @@ class Container:
         흐름:
             PyQt ③ 후처리 완료 버튼
               → EventGateway PublishEvent(PP_DONE_REQUESTED)
-              → 본 핸들러 → command_queue.enqueue("start", "CONV-01")
+              → 본 핸들러 → command_queue.enqueue("start", "CONV1")
               → backend WatchConveyorCommands stream (hardware_rpc.py:151)
               → Jetson CommandSubscriber (command_subscriber.py:164)
               → EspBridge.send_command("start") (펌웨어 IDLE → RUNNING)
@@ -513,7 +513,7 @@ class Container:
             item_id = event.item_id or int((event.payload or {}).get("item_id") or 0)
             command_queue.enqueue(
                 ConveyorCmd(
-                    robot_id="CONV-01",
+                    robot_id="CONV1",
                     command="start",
                     item_id=item_id,
                     issued_at_iso=datetime.now(timezone.utc).isoformat(),

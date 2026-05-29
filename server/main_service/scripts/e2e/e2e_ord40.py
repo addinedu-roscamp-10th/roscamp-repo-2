@@ -92,14 +92,14 @@ print(f"  → matched={rfid.get('matched')} item_id={rfid.get('item',{}).get('it
 # PHASE 7: TOF1
 print("\n[7] TOF1 진입 (PP → ToINSP)")
 tof1 = J("POST", "/api/debug/sim/conveyor-tof1", json={
-    "res_id":"CONV-01","item_id":ITEM_ID,"rfid_payload":payload})
+    "res_id":"CONV1","item_id":ITEM_ID,"rfid_payload":payload})
 print(f"  → tof1: {tof1}")
 print(f"  → item: {DB('SELECT cur_stat, equip_task_type, cur_res FROM public.item WHERE item_id=:p', p=ITEM_ID)}")
 print(f"  → pp_task_txn: {DB('SELECT pp_nm, txn_stat FROM public.pp_task_txn WHERE item_id=:p', p=ITEM_ID)}")
 
 # PHASE 8: TOF2
 print("\n[8] TOF2 도달 (ToINSP → INSP)")
-tof2 = J("POST", "/api/debug/sim/conveyor-tof2", json={"res_id":"CONV-01","item_id":ITEM_ID})
+tof2 = J("POST", "/api/debug/sim/conveyor-tof2", json={"res_id":"CONV1","item_id":ITEM_ID})
 print(f"  → tof2: {tof2}")
 insp = DB("SELECT txn_id, txn_stat FROM public.insp_task_txn WHERE item_id=:p", p=ITEM_ID)
 print(f"  → insp_task_txn: {insp}")

@@ -220,7 +220,7 @@ class Tof1ApplyResult:
 def apply_tof1(
     db: Session,
     *,
-    res_id: str = "CONV-01",
+    res_id: str = "CONV1",
     rfid_payload: str | None = None,
     item_id: int | None = None,
     operator_id: int | None = None,
@@ -361,7 +361,7 @@ class Tof2ApplyResult:
 def apply_tof2(
     db: Session,
     *,
-    res_id: str = "CONV-01",
+    res_id: str = "CONV1",
     item_id: int | None = None,
 ) -> Tof2ApplyResult:
     """TOF2 도달 — ToINSP equip_task_txn 종결만 처리.

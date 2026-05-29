@@ -95,7 +95,7 @@ def _envelope_to_event(envelope: "eg_pb.EventEnvelope") -> Event | None:
     kwargs: dict[str, Any] = {"event_type": et, "payload": payload_dict}
     if envelope.resource_id:
         # Event.res_id 는 smartcast.res.res_id (VARCHAR(10)) 제약. 초과 식별자
-        # (예: reader_id "RFID-CONV-01" 12자) 는 payload 에 보존하고 res_id 미설정.
+        # (예: reader_id "RFID-CONV1" 12자) 는 payload 에 보존하고 res_id 미설정.
         rid = envelope.resource_id
         if len(rid) <= 10:
             kwargs["res_id"] = rid

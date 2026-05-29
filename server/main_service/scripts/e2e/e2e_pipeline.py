@@ -134,7 +134,7 @@ print(f"  → rfid_scan_log: {DB('SELECT id, item_id, raw_payload, parse_status 
 print("\n[PHASE 7] TOF1 진입 — pp_task_txn SUCC + item PP→ToINSP + ToINSP equip_task PROC")
 print("-"*82)
 tof1 = J("POST", "/api/debug/sim/conveyor-tof1", json={
-    "res_id":"CONV-01","item_id":item_id,"rfid_payload":payload})
+    "res_id":"CONV1","item_id":item_id,"rfid_payload":payload})
 print(f"  → tof1 response: {tof1}")
 print(f"  → item: {DB('SELECT cur_stat, equip_task_type, cur_res FROM public.item WHERE item_id=:p', p=item_id)}")
 print(f"  → pp_task_txn: {DB('SELECT txn_id, pp_nm, txn_stat FROM public.pp_task_txn WHERE item_id=:p', p=item_id)}")
@@ -144,7 +144,7 @@ print(f"  → ToINSP equip: {DB(toinsp_q, p=item_id)}")
 # PHASE 8: TOF2
 print("\n[PHASE 8] TOF2 도달 — ToINSP SUCC + item INSP + insp_task_txn PROC")
 print("-"*82)
-tof2 = J("POST", "/api/debug/sim/conveyor-tof2", json={"res_id":"CONV-01","item_id":item_id})
+tof2 = J("POST", "/api/debug/sim/conveyor-tof2", json={"res_id":"CONV1","item_id":item_id})
 print(f"  → tof2 response: {tof2}")
 print(f"  → item: {DB('SELECT cur_stat, equip_task_type, cur_res FROM public.item WHERE item_id=:p', p=item_id)}")
 insp = DB("SELECT txn_id, txn_stat, result FROM public.insp_task_txn WHERE item_id=:p", p=item_id)

@@ -10,7 +10,7 @@
          item_id / cur_stat / 후처리 옵션 표시 (상태 변경 X)
   3. 후처리 작업 완료 + RFID 부착 후 작업자가 "③ 후처리 완료" 버튼을 누르면
      3 초 카운트다운 후 컨베이어 모터 구동 + PP→ToINSP 전이 동시 수행
-     (POST /api/management/conveyor/CONV-01/start?item_id=N →
+     (POST /api/management/conveyor/CONV1/start?item_id=N →
        backend ESP32 dispatch (motor on) → _apply_pp_done_transition
        (PP→WAIT_INSP + ToINSP equip_task_txn PROC + equip_stat ON))
   4. 카메라 앞 TOF1 이 주물을 감지 → 펌웨어 motorOff + ST_STOPPED → Jetson 캡처 +
@@ -76,7 +76,7 @@ class PpWorkerPage(QWidget):
 
     # 후처리 완료 → 컨베이어 구동 카운트다운 (2026-05-08).
     PP_DONE_COUNTDOWN_S: int = 3
-    PP_DONE_RES_ID: str = "CONV-01"  # ESP32 식별자 — Mgmt ExecuteCommand robot_id
+    PP_DONE_RES_ID: str = "CONV1"  # ESP32 식별자 — Mgmt ExecuteCommand robot_id
     # 1.7.0: sensor state 는 publisher 가 ESP_BRIDGE_CONVEYOR_RES_ID="CONV1" (DB schema)
     # 로 push 하므로 PyQt poll 도 동일 키 사용.
     SENSOR_DB_RES_ID: str = "CONV1"
@@ -89,7 +89,7 @@ class PpWorkerPage(QWidget):
     # /api/rfid/<reader_id>/latest in-memory 갱신 → 본 timer 가 다음 tick 에 가져와
     # _payload_edit 자동 채움. RFID 빈도 낮으므로 1 초로 충분.
     RFID_POLL_INTERVAL_MS: int = 1000
-    RFID_READER_ID: str = "RFID-CONV-01"  # Jetson env ESP_BRIDGE_RFID_READER_ID 와 일치
+    RFID_READER_ID: str = "RFID-CONV1"  # Jetson env ESP_BRIDGE_RFID_READER_ID 와 일치
 
     def __init__(self, api: ApiClient, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -207,7 +207,7 @@ class PpWorkerPage(QWidget):
         self._btn_pp_done.setProperty("tone", "primary")
         self._btn_pp_done.setToolTip(
             "후처리 작업이 끝났음을 알리고 컨베이어 모터를 구동합니다.\n"
-            "버튼 클릭 → 3 초 카운트다운 → POST /api/management/conveyor/CONV-01/start "
+            "버튼 클릭 → 3 초 카운트다운 → POST /api/management/conveyor/CONV1/start "
             "→ ESP32 firmware motor ON."
         )
         self._btn_pp_done.clicked.connect(self._on_pp_done)

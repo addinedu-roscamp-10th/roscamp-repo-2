@@ -43,7 +43,7 @@ class DebugMixin:
         )
 
     def get_latest_rfid_for_reader(
-        self, reader_id: str = "RFID-CONV-01"
+        self, reader_id: str = "RFID-CONV1"
     ) -> dict[str, Any] | None:
         """가장 최근 RFID 스캔 payload 조회 — PyQt _payload_edit 자동 채움.
 
@@ -58,7 +58,7 @@ class DebugMixin:
         return self._get(f"/api/rfid/{quote(reader_id)}/latest")
 
     def post_conveyor_start(
-        self, res_id: str = "CONV-01", item_id: int = 0
+        self, res_id: str = "CONV1", item_id: int = 0
     ) -> dict[str, Any] | None:
         """실 ESP32 컨베이어 모터 ON — `start` 명령 dispatch.
 
@@ -71,7 +71,7 @@ class DebugMixin:
         디버그 환경 (`APP_ENV=development`) 외에서도 동작.
 
         반환 (mock_only 모드에서는 None):
-          {"res_id": "CONV-01", "action": "start", "command": "start",
+          {"res_id": "CONV1", "action": "start", "command": "start",
            "accepted": bool, "reason": str}
         """
         return self._post(

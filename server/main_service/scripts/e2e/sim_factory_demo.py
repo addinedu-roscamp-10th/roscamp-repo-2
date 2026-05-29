@@ -408,7 +408,7 @@ def phase6_rfid_scan(args, ord_id: int, item_id: int) -> None:
         try:
             resp = http_post(
                 f"{args.backend}/api/debug/sim/rfid-scan",
-                json_body={"raw_payload": payload, "reader_id": "RFID-CONV-01"},
+                json_body={"raw_payload": payload, "reader_id": "RFID-CONV1"},
             )
             ok(f"RFID 스캔 응답: item_id={resp.get('item', {}).get('item_id')} "
                f"options={len(resp.get('pp_options', []))}")

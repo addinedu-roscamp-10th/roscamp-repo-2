@@ -16,7 +16,7 @@
              도착 후 ① 하차완료 버튼 (또는 ESP32 GPIO33) → handoff_acks INSERT
              + pp_task_txn (QUE) 생성
   Phase 6  : ② RFID 스캔 (RC522 또는 PyQt 버튼) → log_action_operator_rfid_scan INSERT
-  Phase 7  : ③ 후처리 완료 버튼 → 3 초 카운트다운 → POST /api/management/conveyor/CONV-01/start
+  Phase 7  : ③ 후처리 완료 버튼 → 3 초 카운트다운 → POST /api/management/conveyor/CONV1/start
              → ESP32 모터 ON → pp_task_txn 전체 SUCC + ToINSP equip_task_txn(PROC) 생성
   Phase 8  : 컨베이어 진행 → TOF2 자동 캡처 → UploadInspectionImage RPC →
              insp_task_txn(PROC→SUCC) + ai_inference_txn(YOLO/PatchCore) + insp_stat
@@ -459,7 +459,7 @@ def phase6_rfid(item_id: int, timeout: float) -> bool:
 def phase7_pp_done(item_id: int, timeout: float) -> bool:
     hdr("Phase 7 / PyQt ③ 후처리 완료 → CONV1 모터 ON")
     prompt("PyQt pp_worker 화면에서 '③ 후처리 완료' 버튼을 눌러주세요.")
-    prompt("3 초 카운트다운 후 POST /api/management/conveyor/CONV-01/start 가 발사되고")
+    prompt("3 초 카운트다운 후 POST /api/management/conveyor/CONV1/start 가 발사되고")
     prompt("ESP32 모터가 ON 되어 부품이 검사 위치로 이송됩니다.")
     prompt("(2026-05 부터 구 TOF1 진입 트리거는 이 버튼으로 대체됨)")
 

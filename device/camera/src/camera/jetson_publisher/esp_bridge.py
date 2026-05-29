@@ -98,7 +98,7 @@ class EspBridge:
         device_id: str = "ESP-CONVEYOR-01",
         grpc_target: str = "localhost:50051",
         grpc_disabled: bool = False,
-        rfid_reader_id: str = "RFID-CONV-01",
+        rfid_reader_id: str = "RFID-CONV1",
         rfid_zone: str = "CONV-IN",
     ) -> None:
         self._shutdown = shutdown_event
@@ -115,8 +115,8 @@ class EspBridge:
         # 2026-04-26: 컨베이어 TOF 이벤트 큐 (handoff 와 동일 패턴)
         self._conveyor_queue: deque[PendingConveyorEvent] = deque(maxlen=HANDOFF_BUFFER_MAX)
         self._conveyor_lock = threading.Lock()
-        # 환경변수 ESP_BRIDGE_CONVEYOR_RES_ID (default CONV-01) — STATE → res_id 매핑
-        self._conveyor_res_id = os.environ.get("ESP_BRIDGE_CONVEYOR_RES_ID", "CONV-01")
+        # 환경변수 ESP_BRIDGE_CONVEYOR_RES_ID (default CONV1) — STATE → res_id 매핑
+        self._conveyor_res_id = os.environ.get("ESP_BRIDGE_CONVEYOR_RES_ID", "CONV1")
         # 2026-05-07 (SPEC-RFID-001): RFID 스캔 이벤트 큐 (handoff/conveyor 와 동일 패턴)
         self._rfid_queue: deque[PendingRfidScan] = deque(maxlen=HANDOFF_BUFFER_MAX)
         self._rfid_lock = threading.Lock()
@@ -161,7 +161,7 @@ class EspBridge:
             device_id=os.environ.get("ESP_BRIDGE_DEVICE_ID", "ESP-CONVEYOR-01"),
             grpc_target=os.environ.get("MANAGEMENT_GRPC_TARGET", "localhost:50051"),
             grpc_disabled=os.environ.get("MANAGEMENT_GRPC_DISABLED", "0") in ("1", "true", "yes"),
-            rfid_reader_id=os.environ.get("ESP_BRIDGE_RFID_READER_ID", "RFID-CONV-01"),
+            rfid_reader_id=os.environ.get("ESP_BRIDGE_RFID_READER_ID", "RFID-CONV1"),
             rfid_zone=os.environ.get("ESP_BRIDGE_RFID_ZONE", "CONV-IN"),
         )
 
