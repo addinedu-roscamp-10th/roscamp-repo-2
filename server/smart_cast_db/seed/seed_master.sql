@@ -205,8 +205,8 @@ ON CONFLICT (zone_id) DO UPDATE SET
 -- MAT: Manufacturing Arm Tool (CAST zone)
 -- TAT: Transport AMR
 INSERT INTO res (res_id, res_type, model_nm) VALUES
-('PAT',   'PAT',  'JetCobot 280 STRG'),
-('MAT',   'MAT',  'JetCobot 280 CAST'),
+('PAT1',  'PAT',  'JetCobot 280 STRG'),
+('MAT1',  'MAT',  'JetCobot 280 CAST'),
 ('CONV1', 'CONV', 'ESP32 Conveyor v5 INSP'),
 ('TAT1',  'TAT',  'PinkyPro'),
 ('TAT2',  'TAT',  'PinkyPro'),
@@ -216,8 +216,8 @@ ON CONFLICT (res_id) DO UPDATE SET
     model_nm = EXCLUDED.model_nm;
 
 INSERT INTO equip (res_id, zone_id) VALUES
-('PAT',   4),
-('MAT',   1),
+('PAT1',  4),
+('MAT1',  1),
 ('CONV1', 3)
 ON CONFLICT (res_id) DO UPDATE SET
     zone_id = EXCLUDED.zone_id;

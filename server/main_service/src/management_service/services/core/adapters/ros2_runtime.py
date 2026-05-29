@@ -4,81 +4,121 @@ import threading
 from typing import Any
 
 
-class Ros2Runtime:
-    """ROS2 action client들이 사용할 멀티스레드 실행환경"""
+RESOURCE_DOMAIN_MAP: dict[str, int] = {
+    "TAT1": 11,
+    "TAT2": 12,
+    "TAT3": 13,
+    "TAT4": 14,
+    "TAT5": 15,
+    "MAT1": 41,
+    "PAT1": 71,
+}
 
-    def __init__(self, *, node_name: str = "management_ros2_runtime") -> None:
+
+class _Ros2Runtime:
+    """domain id 하나의 ROS2 runtime."""
+    def __init__(self, *, domain_id: int, node_name: str) -> None:
+        self.domain_id = int(domain_id)
         self.node_name = node_name
         self._lock = threading.Lock()
-        self._thread: threading.Thread | None = None
-        self._executor: Any | None = None
-        self._rclpy: Any | None = None
-        self._owns_context = False
-        self._started = False
-
-    @property
-    def started(self) -> bool:
-        return self._started
+        self.thread: threading.Thread | None = None
+        self.executor: Any | None = None
+        self.context: Any | None = None
+        self.nodes: list[Any] = []
+        self.started = False
 
     def start(self) -> None:
-        """thread 시작."""
         with self._lock:
-            if self._started:
+            if self.started:
                 return
 
             try:
                 import rclpy
-                from rclpy.executors import MultiThreadedExecutor
+                from rclpy.context import Context
+                from rclpy.executors import SingleThreadedExecutor
             except ImportError:
                 return
 
-            self._rclpy = rclpy
-            if not rclpy.ok():
-                rclpy.init(args=None)
-                self._owns_context = True
-
-            self._executor = MultiThreadedExecutor()
-            self._thread = threading.Thread(
-                target=self._executor.spin,
+            context = Context()
+            rclpy.init(args=None, context=context, domain_id=self.domain_id)
+            executor = SingleThreadedExecutor(context=context)
+            thread = threading.Thread(
+                target=executor.spin,
                 name=self.node_name,
                 daemon=True,
             )
-            self._thread.start()
-            self._started = True
+            thread.start()
+
+            self.context = context
+            self.executor = executor
+            self.thread = thread
+            self.started = True
 
     def add_node(self, node: Any) -> None:
-        """ROS2 노드 추가."""
-        if not self._started:
+        if not self.started:
             self.start()
-        if self._executor is None:
-            raise RuntimeError("ROS2 runtime is not available.")
-        self._executor.add_node(node)
+        if self.executor is None:
+            raise RuntimeError(f"ROS2 runtime is not available for domain {self.domain_id}.")
+        self.executor.add_node(node)
+        self.nodes.append(node)
 
     def remove_node(self, node: Any) -> None:
-        """종료 시 노드 제거."""
-        if self._executor is None:
+        if self.executor is None:
             return
-        self._executor.remove_node(node)
+        self.executor.remove_node(node)
+        try:
+            self.nodes.remove(node)
+        except ValueError:
+            pass
 
     def shutdown(self) -> None:
-        """executor 멈추고 종료."""
         with self._lock:
-            if not self._started:
+            if not self.started:
                 return
 
-            if self._executor is not None:
-                self._executor.shutdown()
-            if self._thread is not None:
-                self._thread.join(timeout=5.0)
-
-            if self._owns_context and self._rclpy is not None:
+            if self.executor is not None:
+                self.executor.shutdown()
+            if self.thread is not None:
+                self.thread.join(timeout=5.0)
+            for node in self.nodes:
                 try:
-                    self._rclpy.try_shutdown()
+                    node.destroy_node()
+                except Exception:
+                    pass
+            self.nodes.clear()
+            if self.context is not None:
+                try:
+                    self.context.try_shutdown()
                 except Exception:
                     pass
 
-            self._executor = None
-            self._thread = None
-            self._rclpy = None
-            self._owns_context = False
-            self._started = False
+            self.thread = None
+            self.executor = None
+            self.context = None
+            self.started = False
+
+
+class Ros2RuntimePool:
+    """adapter에서 사용해야 하는 ros2 runtime 반환, 없으면 생성."""
+    def __init__(self, *, resource_domain_map: dict[str, int] | None = None) -> None:
+        self.resource_domain_map = dict(resource_domain_map or RESOURCE_DOMAIN_MAP)
+        self._lock = threading.Lock()
+        self.runtimes: dict[int, _Ros2Runtime] = {}
+
+    def get_runtime(self, res_id: str) -> _Ros2Runtime:
+        domain_id = self.resource_domain_map[res_id]
+        with self._lock:
+            runtime = self.runtimes.get(domain_id)
+            if runtime is None:
+                runtime = _Ros2Runtime(
+                    domain_id=domain_id,
+                    node_name=f"ros2_runtime_domain_{domain_id}",
+                )
+                self.runtimes[domain_id] = runtime
+        runtime.start()
+        return runtime
+
+    def shutdown(self) -> None:
+        for runtime in self.runtimes.values():
+            runtime.shutdown()
+        self.runtimes.clear()

@@ -217,7 +217,7 @@ def _approve_order(*, cur, ord_id: int, admin_id: int) -> None:
 def _start_production(*, cur, ord_id: int, operator_id: int, qty: int) -> None:
     for _ in range(qty):
         cur.execute(
-            "INSERT INTO item (ord_id, cur_stat, cur_res) VALUES (%s, 'CREATED', 'PAT')",
+            "INSERT INTO item (ord_id, cur_stat, cur_res) VALUES (%s, 'CREATED', 'PAT1')",
             (ord_id,),
         )
     cur.execute(
@@ -347,7 +347,7 @@ def _print_report(scenario: Scenario, rows: dict[str, object]) -> None:
             "item",
             len(item_rows) == scenario.qty
             and all(r["cur_stat"] == "CREATED" for r in item_rows)
-            and all(r["cur_res"] == "PAT" for r in item_rows),
+            and all(r["cur_res"] == "PAT1" for r in item_rows),
             f"count={len(item_rows)}, states={[(r['cur_stat'], r['cur_res']) for r in item_rows]}",
         ),
     ]

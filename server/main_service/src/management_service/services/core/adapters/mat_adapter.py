@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import json
-import threading
 from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
+from services.contracts.models import AdapterResult
+from services.core.adapters.ros2_adapter_base import BaseRos2Adapter
+
 if TYPE_CHECKING:
-    from services.core.adapters.ros2_runtime import Ros2Runtime
+    from services.core.adapters.ros2_runtime import Ros2RuntimePool
 
 
 @dataclass(frozen=True)
@@ -15,7 +16,7 @@ class _MatActionSpec:
     requires_pattern_id: bool = False
 
 
-class MatAdapter:
+class MatAdapter(BaseRos2Adapter):
     """MAT(생산) ROS2 action client."""
 
     _ACTIONS: dict[str, _MatActionSpec] = {
@@ -30,27 +31,14 @@ class MatAdapter:
         "return_to_base_action": _MatActionSpec("ReturnToBase"),
     }
 
-    def __init__(self, ros2_runtime: Ros2Runtime | None = None) -> None:
-        self._ros2_runtime = ros2_runtime
-        self._node: Any | None = None
-        self._callback_group: Any | None = None
-        self._action_client_cls: Any | None = None
+    def __init__(self, runtime_pool: Ros2RuntimePool | None = None) -> None:
+        super().__init__(runtime_pool=runtime_pool)
         self._action_types: dict[str, Any] = {}
-        self._clients: dict[str, Any] = {}
-        self._started = False
-
-    @classmethod
-    def supports(cls, action: str) -> bool:
-        return action in cls._ACTIONS
 
     def start(self) -> None:
         if self._started:
             return
-        if self._ros2_runtime is None:
-            return
-
-        self._ros2_runtime.start()
-        if not self._ros2_runtime.started:
+        if self._runtime_pool is None:
             return
 
         try:
@@ -66,14 +54,12 @@ class MatAdapter:
                 TatLoad,
             )
             from rclpy.action import ActionClient
-            from rclpy.callback_groups import ReentrantCallbackGroup
             from rclpy.node import Node
         except ImportError:
             return
 
         self._action_client_cls = ActionClient
-        self._callback_group = ReentrantCallbackGroup()
-        self._node = Node("mat_adapter")
+        self._node_cls = Node
         self._action_types = {
             "CastingPick": CastingPick,
             "CruciblePick": CruciblePick,
@@ -85,99 +71,65 @@ class MatAdapter:
             "ReturnToBase": ReturnToBase,
             "TatLoad": TatLoad,
         }
-        self._ros2_runtime.add_node(self._node)
         self._started = True
 
-    def execute(
+    async def send_command(
         self,
-        _item_id: int,
-        _robot_id: str,
-        command: str,
-        payload: bytes,
-    ) -> tuple[bool, str]:
-        if command not in self._ACTIONS:
-            return (False, f"unsupported_mat_command:{command}")
+        res_id: str,
+        action: str,
+        params: dict[str, Any],
+    ) -> AdapterResult:
+        return AdapterResult(success=True, message=action)
 
-        try:
-            params = json.loads(payload.decode("utf-8")) if payload else {}
-        except json.JSONDecodeError:
-            return (False, "invalid_json_payload")
+    async def send_command(
+        self,
+        res_id: str,
+        action: str,
+        params: dict[str, Any],
+    ) -> AdapterResult:
+        if action not in self._ACTIONS:
+            return AdapterResult(success=False, message=f"unsupported_mat_command:{action}")
+        if not res_id:
+            return AdapterResult(success=False, message="mat_robot_id_required")
 
         self.start()
-        if not self._started or self._node is None:
-            return (False, "mat_adapter_unavailable")
+        if not self._started:
+            return AdapterResult(success=False, message="mat_adapter_unavailable")
 
-        spec = self._ACTIONS[command]
+        spec = self._ACTIONS[action]
         action_type = self._action_types[spec.action_type_name]
         goal = action_type.Goal()
         if spec.requires_pattern_id:
             pattern_id = self._pattern_id(params)
             if pattern_id is None:
-                return (False, f"{command}_requires_pattern_id")
+                return AdapterResult(success=False, message=f"{action}_requires_pattern_id")
             goal.pattern_id = pattern_id
 
-        wait_server_sec = float(params.get("wait_server_sec", 5.0))
-        result_timeout_sec = float(params.get("result_timeout_sec", 300.0))
-        return self._send_goal(command, action_type, goal, wait_server_sec, result_timeout_sec)
+        session = self._session_for(res_id)
+        if session is None:
+            return AdapterResult(success=False, message="mat_adapter_unavailable")
 
-    def _send_goal(
-        self,
-        action_name: str,
-        action_type: Any,
-        goal: Any,
-        wait_server_sec: float,
-        result_timeout_sec: float,
-    ) -> tuple[bool, str]:
-        client = self._client(action_name, action_type)
-        if not client.wait_for_server(timeout_sec=wait_server_sec):
-            return (False, f"mat_action_server_unavailable:{action_name}")
+        client = self._get_or_create_client(session, action, action_type)
 
-        done = threading.Event()
-        state: dict[str, Any] = {"success": False, "message": f"{action_name}_not_completed"}
+        wait_sec = float(params.get("wait_server_sec", 5.0))
+        timeout_sec = float(params.get("result_timeout_sec", 300.0))
 
-        def result_callback(future: Any) -> None:
-            try:
-                wrapped = future.result()
-                result = wrapped.result
-                state["success"] = bool(getattr(result, "success", False))
-                state["message"] = getattr(result, "message", "") or action_name
-            except Exception as exc:
-                state["success"] = False
-                state["message"] = f"mat_result_exception:{exc}"
-            finally:
-                done.set()
+        def parse_result(wrapped: Any) -> tuple[bool, str]:
+            result = wrapped.result
+            success = bool(getattr(result, "success", False))
+            message = getattr(result, "message", "") or action
+            return (success, message)
 
-        def goal_response_callback(future: Any) -> None:
-            try:
-                goal_handle = future.result()
-            except Exception as exc:
-                state["success"] = False
-                state["message"] = f"mat_goal_exception:{exc}"
-                done.set()
-                return
-
-            if goal_handle is None or not goal_handle.accepted:
-                state["success"] = False
-                state["message"] = f"mat_goal_rejected:{action_name}"
-                done.set()
-                return
-
-            goal_handle.get_result_async().add_done_callback(result_callback)
-
-        client.send_goal_async(goal).add_done_callback(goal_response_callback)
-        if not done.wait(timeout=result_timeout_sec):
-            return (False, f"mat_action_timeout:{action_name}")
-        return (bool(state["success"]), str(state["message"]))
-
-    def _client(self, action_name: str, action_type: Any) -> Any:
-        if action_name not in self._clients:
-            self._clients[action_name] = self._action_client_cls(
-                self._node,
-                action_type,
-                action_name,
-                callback_group=self._callback_group,
-            )
-        return self._clients[action_name]
+        ok, msg = await self._send_single_goal_async(
+            client,
+            goal,
+            parse_result,
+            prefix="mat",
+            action_name=action,
+            wait_sec=wait_sec,
+            timeout_sec=timeout_sec,
+        )
+        return AdapterResult(success=ok, message=msg)
 
     @staticmethod
     def _pattern_id(params: dict[str, Any]) -> int | None:
@@ -191,13 +143,3 @@ class MatAdapter:
         if pattern_id not in {1, 2, 3}:
             return None
         return pattern_id
-
-    def close(self) -> None:
-        if self._node is None:
-            return
-        if self._ros2_runtime is not None:
-            self._ros2_runtime.remove_node(self._node)
-        self._node.destroy_node()
-        self._node = None
-        self._clients.clear()
-        self._started = False

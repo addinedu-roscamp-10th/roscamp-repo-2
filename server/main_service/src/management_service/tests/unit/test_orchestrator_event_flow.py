@@ -388,7 +388,7 @@ def test_start_shipping_collects_item_locations_and_executes_ship_task() -> None
             batch=[(1001, 2, 4)],
         )
         allocator = _SequencedAllocator(
-            [AllocateTaskResult(success=True, req_res_type="PAT", res_id="PAT")]
+            [AllocateTaskResult(success=True, req_res_type="PAT", res_id="PAT1")]
         )
         executor = _RecordingExecutor()
         state_manager = _RecordingStateManager(
@@ -424,7 +424,7 @@ def test_start_shipping_collects_item_locations_and_executes_ship_task() -> None
         execute_input = executor.execute_calls[0]
         assert execute_input.task_id == "9301"
         assert execute_input.task_type == TaskType.PICK
-        assert execute_input.res_id == "PAT"
+        assert execute_input.res_id == "PAT1"
         assert execute_input.payload == {
             "item_id": 1001,
             "strg_loc": (2, 4),
@@ -447,7 +447,7 @@ def test_toship_arrival_event_creates_single_pick_with_full_batch_payload() -> N
             batch=[(1001, 2, 4), (1002, 1, 2), (1003, 3, 1)],
         )
         allocator = _SequencedAllocator(
-            [AllocateTaskResult(success=True, req_res_type="PAT", res_id="PAT")]
+            [AllocateTaskResult(success=True, req_res_type="PAT", res_id="PAT1")]
         )
         executor = _RecordingExecutor()
         state_manager = _RecordingStateManager(

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import json
+import asyncio
 
 from services.core.adapters.pat_adapter import PatAdapter
+from services.core.adapters.ros2_adapter_base import _DomainSession
 
 
 class _RecordingPatAdapter(PatAdapter):
@@ -12,12 +13,15 @@ class _RecordingPatAdapter(PatAdapter):
 
     def start(self) -> None:
         self._started = True
-        self._client = object()
-        self._goal_cls = object()
 
-    def _send_goal(self, order: int) -> tuple[bool, str]:
+    def _session_for(self, res_id: str) -> _DomainSession | None:
+        return _DomainSession(runtime=object(), node=object())
+
+    async def _send_pat_goal(
+        self, session: _DomainSession, order: int, wait_sec: float, timeout_sec: float
+    ) -> tuple[bool, str]:
         self.sent_orders.append(order)
-        return (True, f"sent:{order}")
+        return (True, f"pat_order_{order}_succeeded")
 
 
 def test_build_goal_accepts_strg_loc_without_strg_loc_id_for_place_action() -> None:
@@ -38,11 +42,10 @@ def test_retrieve_action_sends_one_goal_per_batch_item() -> None:
 
     adapter = _RecordingPatAdapter()
 
-    ok, message = adapter.execute(
-        _item_id=1001,
-        _robot_id="PAT",
-        command=PatAdapter.RETRIEVE_ACTION,
-        payload=json.dumps(
+    result = asyncio.run(
+        adapter.send_command(
+            "PAT1",
+            PatAdapter.RETRIEVE_ACTION,
             {
                 "item_id": 1001,
                 "strg_loc": [2, 4],
@@ -51,12 +54,12 @@ def test_retrieve_action_sends_one_goal_per_batch_item() -> None:
                     [1002, 1, 2],
                     [1003, 3, 1],
                 ],
-            }
-        ).encode("utf-8"),
+            },
+        )
     )
 
-    assert ok is True
-    assert message == "batch_retrieve_succeeded"
+    assert result.success is True
+    assert result.message == "batch_retrieve_succeeded"
     assert adapter.sent_orders == [224, 212, 231]
 
 
@@ -65,21 +68,20 @@ def test_retrieve_action_rejects_invalid_batch_payload() -> None:
 
     adapter = _RecordingPatAdapter()
 
-    ok, message = adapter.execute(
-        _item_id=1001,
-        _robot_id="PAT",
-        command=PatAdapter.RETRIEVE_ACTION,
-        payload=json.dumps(
+    result = asyncio.run(
+        adapter.send_command(
+            "PAT1",
+            PatAdapter.RETRIEVE_ACTION,
             {
                 "item_id": 1001,
                 "strg_loc": [2, 4],
                 "batch": [[1001, 9, 4]],
-            }
-        ).encode("utf-8"),
+            },
+        )
     )
 
-    assert ok is False
-    assert message == "pat_retrieve_action_requires_valid_batch"
+    assert result.success is False
+    assert result.message == "pat_retrieve_action_requires_valid_batch"
     assert adapter.sent_orders == []
 
 

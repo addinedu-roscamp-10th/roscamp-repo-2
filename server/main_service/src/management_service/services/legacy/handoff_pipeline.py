@@ -136,7 +136,7 @@ def apply_handoff(
     item: Item | None = db.get(Item, item_id) if item_id else None
     if item is not None:
         item.flow_stat = "PP"
-        # item.zone_nm = "PP"  # ORM synonym=cur_res 는 res.res_id FK (CONV1/PAT/MAT/TAT*) —
+        # item.zone_nm = "PP"  # ORM synonym=cur_res 는 res.res_id FK (CONV1/PAT1/MAT1/TAT*) —
         # zone 명 "PP" 는 res_id 가 아니므로 FK violation. zone 정보는 별도 컬럼이 없으므로
         # 기록하지 않음 (cur_stat 가 flow_stat synonym 으로 zone 의미 일부 표현).
         item.updated_at = now

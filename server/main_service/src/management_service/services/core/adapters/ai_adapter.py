@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import json
+import asyncio
 import logging
 from pathlib import Path
+from typing import Any
 
 from services.command.ai_inference_command import AiInferenceCommand, AiInferenceResult
 from services.contracts.models import AdapterResult
@@ -25,20 +26,20 @@ class AIAdapter:
     ) -> None:
         self._ai_command = ai_command or AiInferenceCommand()
 
-    def execute(
+    async def send_command(
         self,
-        item_id: int,
-        _robot_id: str,
-        _command: str,
-        payload: bytes,
+        res_id: str,
+        action: str,
+        params: dict[str, Any],
     ) -> AdapterResult:
-        try:
-            payload_dict = json.loads(payload.decode("utf-8")) if payload else {}
-        except json.JSONDecodeError:
-            return AdapterResult(success=False, message="invalid_json_payload")
+        # 내부 _execute_sync 가 blocking HTTP + DB 조회를 수행하므로 to_thread 로 offload.
+        item_id = int(params.get("item_id", 0) or 0)
+        return await asyncio.to_thread(self._execute_sync, item_id, params)
 
-        image_path = payload_dict.get("image_path")
-        image_url = payload_dict.get("image_url")
+    # ---------- internal ----------------------------------------------------
+    def _execute_sync(self, item_id: int, params: dict[str, Any]) -> AdapterResult:
+        image_path = params.get("image_path")
+        image_url = params.get("image_url")
         if not image_path and not image_url:
             return AdapterResult(success=False, message="image_path_or_url_required")
         if not image_path:
@@ -61,7 +62,7 @@ class AIAdapter:
             )
             return self._handle_inference_failure(
                 item_id,
-                payload_dict,
+                params,
                 AiInferenceResult(
                     ok=False,
                     item_id=item_id,
@@ -71,7 +72,7 @@ class AIAdapter:
         if cate_cd not in _VALID_CATE_CDS:
             return self._handle_inference_failure(
                 item_id,
-                payload_dict,
+                params,
                 AiInferenceResult(
                     ok=False,
                     item_id=item_id,
@@ -86,10 +87,10 @@ class AIAdapter:
             model=cate_cd,
         )
         if not inference.ok or inference.is_defective is None:
-            return self._handle_inference_failure(item_id, payload_dict, inference)
+            return self._handle_inference_failure(item_id, params, inference)
 
         response_payload = {
-            **payload_dict,
+            **params,
             "inference": _inference_to_dict(inference),
         }
         return AdapterResult(
@@ -98,10 +99,6 @@ class AIAdapter:
             payload=response_payload,
         )
 
-    def close(self) -> None:
-        pass
-
-    # ---------- internal ----------------------------------------------------
     def _resolve_cate_cd(self, item_id: int) -> str | None:
         """item_id → ord_detail → product.cate_cd 단일 조회 (smartcast 스키마).
 
@@ -129,7 +126,7 @@ class AIAdapter:
     def _handle_inference_failure(
         self,
         item_id: int,
-        payload_dict: dict,
+        params: dict[str, Any],
         inference: AiInferenceResult,
     ) -> AdapterResult:
         reason = inference.error_reason or "ai_inference_failed"
@@ -141,7 +138,7 @@ class AIAdapter:
             success=False,
             message=reason,
             payload={
-                **payload_dict,
+                **params,
                 "item_id": item_id,
                 "inference": {
                     "ok": False,

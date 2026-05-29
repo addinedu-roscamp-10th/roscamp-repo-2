@@ -86,7 +86,7 @@ _MOCK_ALERTS = [
     },
     {
         "id":           "ALERT-2026-002",
-        "res_id":       "PAT",
+        "res_id":       "PAT1",
         "type":         "equipment_error",
         "severity":     "info",
         "error_code":   "",
@@ -108,7 +108,7 @@ _MOCK_ALERTS = [
     },
     {
         "id":           "ALERT-2026-004",
-        "res_id":       "MAT",
+        "res_id":       "MAT1",
         "type":         "equipment_error",
         "severity":     "critical",
         "error_code":   "E9001",

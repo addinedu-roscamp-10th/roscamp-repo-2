@@ -1,20 +1,20 @@
 from __future__ import annotations
 
-import json
-import threading
 from typing import Any, TYPE_CHECKING
 
+from services.contracts.models import AdapterResult
+from services.core.adapters.ros2_adapter_base import BaseRos2Adapter, _DomainSession
+
 if TYPE_CHECKING:
-    from services.core.adapters.ros2_runtime import Ros2Runtime
+    from services.core.adapters.ros2_runtime import Ros2RuntimePool
 
 
-class PatAdapter:
+class PatAdapter(BaseRos2Adapter):
     """Pat(적재&출고) Ros2 action client."""
-    _ACTION_NAME = "/pat/execute_task"
+
+    _ACTION_NAME = "execute_task"
     _STRG_COLUMNS = 6
     _STRG_SLOT_COUNT = 18
-    _WAIT_SERVER_SEC = 5.0
-    _RESULT_TIMEOUT_SEC = 300.0
 
     PICK_ACTION = "pat_pick_action"
     PLACE_ACTION = "pat_place_storage_action"
@@ -23,154 +23,137 @@ class PatAdapter:
 
     _ACTIONS = {PICK_ACTION, PLACE_ACTION, RETRIEVE_ACTION, DEFECT_ACTION}
 
-    def __init__(self, ros2_runtime: Ros2Runtime | None = None) -> None:
-        self._ros2_runtime = ros2_runtime
-        self._node: Any | None = None
-        self._client: Any | None = None
-        self._goal_cls: Any | None = None
-        self._started = False
-
-    @classmethod
-    def supports(cls, action: str) -> bool:
-        return action in cls._ACTIONS
+    def __init__(self, runtime_pool: Ros2RuntimePool | None = None) -> None:
+        super().__init__(runtime_pool=runtime_pool)
+        self._action_type: Any | None = None
 
     def start(self) -> None:
         if self._started:
             return
-        if self._ros2_runtime is None:
-            return
-
-        self._ros2_runtime.start()
-        if not self._ros2_runtime.started:
+        if self._runtime_pool is None:
             return
 
         try:
             from example_interfaces.action import Fibonacci
             from rclpy.action import ActionClient
-            from rclpy.callback_groups import ReentrantCallbackGroup
             from rclpy.node import Node
         except ImportError:
             return
 
-        self._node = Node("pat_adapter")
-        self._goal_cls = Fibonacci.Goal
-        self._client = ActionClient(
-            self._node,
-            Fibonacci,
-            self._ACTION_NAME,
-            callback_group=ReentrantCallbackGroup(),
-        )
-        self._ros2_runtime.add_node(self._node)
+        self._node_cls = Node
+        self._action_client_cls = ActionClient
+        self._action_type = Fibonacci
         self._started = True
 
-    def execute(
+    async def send_command(
         self,
-        _item_id: int,
-        _robot_id: str,
-        command: str,
-        payload: bytes,
-    ) -> tuple[bool, str]:
-        if command not in self._ACTIONS:
-            return (False, f"unsupported_pat_command:{command}")
+        res_id: str,
+        action: str,
+        params: dict[str, Any],
+    ) -> AdapterResult:
+        if action not in self._ACTIONS:
+            return AdapterResult(success=False, message=f"unsupported_pat_command:{action}")
+        if not res_id:
+            return AdapterResult(success=False, message="pat_robot_id_required")
 
-        try:
-            params = json.loads(payload.decode("utf-8")) if payload else {}
-        except json.JSONDecodeError:
-            return (False, "invalid_json_payload")
+        wait_sec = float(params.get("wait_server_sec", 5.0))
+        timeout_sec = float(params.get("result_timeout_sec", 300.0))
 
-        # 출고는 여러 item을 옮겨야할 때가 있어서, batch로 받기
-        if command == self.RETRIEVE_ACTION and params.get("batch"):
+        if action == self.RETRIEVE_ACTION and params.get("batch"):
             batch = self._storage_batch(params.get("batch"))
             if batch is None:
-                return (False, f"{command}_requires_valid_batch")
+                return AdapterResult(success=False, message=f"{action}_requires_valid_batch")
 
             orders = [200 + row * 10 + col for _, row, col in batch]
-            return self._send_goals(orders, success_message="batch_retrieve_succeeded")
+            return await self._send_goals(
+                res_id, orders,
+                wait_sec=wait_sec,
+                timeout_sec=timeout_sec,
+                success_message="batch_retrieve_succeeded",
+            )
 
-        order = self._build_goal(command, params)
+        order = self._build_goal(action, params)
         if order is None:
-            return (False, f"{command}_requires_strg_loc")
+            return AdapterResult(success=False, message=f"{action}_requires_strg_loc")
 
-        return self._send_goals([order])
+        return await self._send_goals(res_id, [order], wait_sec=wait_sec, timeout_sec=timeout_sec)
 
-    def _send_goals(
+    async def _send_goals(
         self,
+        res_id: str,
         orders: list[int],
+        *,
+        wait_sec: float,
+        timeout_sec: float,
         success_message: str | None = None,
-    ) -> tuple[bool, str]:
-        """PAT action goal들을 순서대로 전송한다."""
+    ) -> AdapterResult:
         self.start()
-        if not self._started or self._client is None or self._goal_cls is None:
-            return (False, "pat_adapter_unavailable")
+        if not self._started:
+            return AdapterResult(success=False, message="pat_adapter_unavailable")
+
+        session = self._session_for(res_id)
+        if session is None:
+            return AdapterResult(success=False, message="pat_adapter_unavailable")
 
         for order in orders:
-            ok, message = self._send_goal(order)
+            ok, message = await self._send_pat_goal(session, order, wait_sec, timeout_sec)
             if not ok:
-                return (False, message)
-        return (True, success_message or f"pat_order_{orders[-1]}_succeeded")
+                return AdapterResult(success=False, message=message)
+        return AdapterResult(
+            success=True,
+            message=success_message or f"pat_order_{orders[-1]}_succeeded",
+        )
 
-    def _send_goal(self, order: int) -> tuple[bool, str]:
-        """PAT action goal을 전송한다."""
-        if not self._client.wait_for_server(timeout_sec=self._WAIT_SERVER_SEC):
-            return (False, f"pat_action_server_unavailable:{self._ACTION_NAME}")
+    async def _send_pat_goal(
+        self,
+        session: _DomainSession,
+        order: int,
+        wait_sec: float,
+        timeout_sec: float,
+    ) -> tuple[bool, str]:
+        # 호출자(_send_goals)가 _started 를 보장하므로 _action_type 는 non-None.
+        action_type = self._action_type
+        client = self._get_or_create_client(session, self._ACTION_NAME, action_type)
 
-        goal = self._goal_cls()
+        goal = action_type.Goal()
         goal.order = order
-        done = threading.Event()
-        state: dict[str, Any] = {"success": False, "message": f"pat_order_{order}_not_completed"}
 
-        def result_callback(future: Any) -> None:
-            try:
-                wrapped = future.result()
-                sequence = list(getattr(wrapped.result, "sequence", []))
-                state["success"] = bool(sequence and int(sequence[0]) == 1)
-                state["message"] = f"pat_order_{order}_{'succeeded' if state['success'] else 'failed'}"
-            except Exception as exc:
-                state["success"] = False
-                state["message"] = f"pat_result_exception:{exc}"
-            finally:
-                done.set()
+        def parse_result(wrapped: Any) -> tuple[bool, str]:
+            sequence = list(getattr(wrapped.result, "sequence", []))
+            success = bool(sequence and int(sequence[0]) == 1)
+            return (
+                success,
+                f"pat_order_{order}_{'succeeded' if success else 'failed'}",
+            )
 
-        def goal_response_callback(future: Any) -> None:
-            try:
-                goal_handle = future.result()
-            except Exception as exc:
-                state["success"] = False
-                state["message"] = f"pat_goal_exception:{exc}"
-                done.set()
-                return
+        return await self._send_single_goal_async(
+            client,
+            goal,
+            parse_result,
+            prefix="pat",
+            action_name=self._ACTION_NAME,
+            rejected_tag=str(order),
+            timeout_tag=str(order),
+            wait_sec=wait_sec,
+            timeout_sec=timeout_sec,
+        )
 
-            if goal_handle is None or not goal_handle.accepted:
-                state["success"] = False
-                state["message"] = f"pat_goal_rejected:{order}"
-                done.set()
-                return
-
-            goal_handle.get_result_async().add_done_callback(result_callback)
-
-        self._client.send_goal_async(goal).add_done_callback(goal_response_callback)
-        if not done.wait(timeout=self._RESULT_TIMEOUT_SEC):
-            return (False, f"pat_action_timeout:{order}")
-        return (bool(state["success"]), str(state["message"]))
-
-    def _build_goal(self, command: str, params: dict[str, Any]) -> int | None:
-        """명령을 action request에 맞춰서 수정"""
-        if command == self.PICK_ACTION:
+    def _build_goal(self, action: str, params: dict[str, Any]) -> int | None:
+        if action == self.PICK_ACTION:
             return 400
-        if command == self.DEFECT_ACTION:
+        if action == self.DEFECT_ACTION:
             return 300
 
         location = self._storage_location(params.get("strg_loc"))
         if location is None:
             return None
         row, col = location
-        if command == self.PLACE_ACTION:
+        if action == self.PLACE_ACTION:
             return 100 + row * 10 + col
-        if command == self.RETRIEVE_ACTION:
+        if action == self.RETRIEVE_ACTION:
             return 200 + row * 10 + col
         return None
 
-    # 타입 검증
     @classmethod
     def _storage_location(cls, raw: Any | None) -> tuple[int, int] | None:
         if raw is None:
@@ -188,7 +171,6 @@ class PatAdapter:
             return (row, col)
         return None
 
-    # 배치 타입 검증
     @classmethod
     def _storage_batch(cls, raw: Any | None) -> list[tuple[int, int, int]] | None:
         if raw is None or not isinstance(raw, (tuple, list)) or len(raw) == 0:
@@ -210,14 +192,3 @@ class PatAdapter:
             batch.append((item_id, row, col))
 
         return batch
-
-    def close(self) -> None:
-        if self._node is None:
-            return
-        if self._ros2_runtime is not None:
-            self._ros2_runtime.remove_node(self._node)
-        self._node.destroy_node()
-        self._node = None
-        self._client = None
-        self._goal_cls = None
-        self._started = False

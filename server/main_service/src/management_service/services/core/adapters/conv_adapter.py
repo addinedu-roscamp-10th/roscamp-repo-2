@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
+from typing import Any
 
+from services.contracts.models import AdapterResult
 from services.legacy.command_queue import ConveyorCmd, queue as command_queue
 
 logger = logging.getLogger(__name__)
@@ -18,37 +20,33 @@ class ConvAdapter:
     def __init__(self) -> None:
         pass
 
-    def execute(
+    async def send_command(
         self,
-        item_id: int,
-        robot_id: str,
-        command: str,
-        payload: bytes,
-    ) -> tuple[bool, str]:
-        if not robot_id:
-            return (False, "conv_robot_id_required")
-        if command != CONV_ACTION:
-            return (False, f"unsupported_conv_command:{command}")
+        res_id: str,
+        action: str,
+        params: dict[str, Any],
+    ) -> AdapterResult:
+        if not res_id:
+            return AdapterResult(success=False, message="conv_robot_id_required")
+        if action != CONV_ACTION:
+            return AdapterResult(success=False, message=f"unsupported_conv_command:{action}")
 
-        try:
-            payload_dict = json.loads(payload.decode("utf-8")) if payload else {}
-        except json.JSONDecodeError:
-            return (False, "invalid_json_payload")
+        item_id = int(params.get("item_id", 0) or 0)
 
         duration_sec: float | None = None
-        raw_duration = payload_dict.get("duration_sec")
+        raw_duration = params.get("duration_sec")
         if raw_duration is not None:
             try:
                 duration_sec = float(raw_duration)
             except (TypeError, ValueError):
-                return (False, "invalid_duration_sec")
+                return AdapterResult(success=False, message="invalid_duration_sec")
             if duration_sec < 0:
-                return (False, "invalid_duration_sec")
+                return AdapterResult(success=False, message="invalid_duration_sec")
 
         self._enqueue_run_command(
-            item_id=item_id, robot_id=robot_id, duration_sec=duration_sec,
+            item_id=item_id, robot_id=res_id, duration_sec=duration_sec,
         )
-        return (True, "conv_allow_move_accepted")
+        return AdapterResult(success=True, message="conv_allow_move_accepted")
 
     def close(self) -> None:
         pass
