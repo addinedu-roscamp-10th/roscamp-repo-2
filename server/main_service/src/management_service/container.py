@@ -48,7 +48,6 @@ class Container:
         self.ros2_runtime_pool = Ros2RuntimePool()
         self.adapter = AdapterRouter(
             runtime_pool=self.ros2_runtime_pool,
-            state_manager=self.state_manager,
         )
         self.task_executor = TaskExecutor(
             adapter=self.adapter,
