@@ -481,6 +481,13 @@ class StateManager:
         return item_id
 
     async def get_available_resources(self, req_res_type: str) -> list[str]:
+        # CONV쪽은 사람이 관리하기 때문에 항상 available
+        if req_res_type == "CONV":
+            return sorted(
+                res_id
+                for res_id, res_meta in self._res_list.items()
+                if res_meta.get("res_type") == "CONV"
+            )
         available = [
             res_id
             for res_id, res_meta in sorted(self._res_list.items())
@@ -506,6 +513,9 @@ class StateManager:
         res_meta = self._res_list.get(res_id)
         if res_meta is None:
             return False
+        # CONV쪽은 사람이 관리하기 때문에 항상 available
+        if res_meta.get("res_type") == "CONV":
+            return True
         return res_meta.get("status") in {"IDLE", "TO_IDLE"} and res_meta.get("item_id") is None
 
     def get_res_type(self, res_id: str) -> str | None:
