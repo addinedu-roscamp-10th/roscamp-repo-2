@@ -143,7 +143,7 @@ def test_execute_step_injects_charger_pose_for_charge_return_steps_without_pose_
             {
                 "res_id": "TAT2",
                 "action": "dock_robot",
-                "params": {"pose_name": "ToCHG2"},
+                "params": {"pose_name": "ToCHG2", "aruco_num": 1},
             }
         ]
 
@@ -232,7 +232,7 @@ def test_execute_task_runs_tochg_sequence_with_injected_charge_pose(
             {
                 "res_id": "TAT2",
                 "action": "dock_robot",
-                "params": {"pose_name": "ToCHG2"},
+                "params": {"pose_name": "ToCHG2", "aruco_num": 1},
             }
         ]
 

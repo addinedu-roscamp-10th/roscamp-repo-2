@@ -132,7 +132,7 @@ def test_return_amr_to_charger_marks_toidle_until_arrival() -> None:
             {
                 "res_id": "TAT2",
                 "action": "dock_robot",
-                "params": {"pose_name": "ToCHG2"},
+                "params": {"pose_name": "ToCHG2", "aruco_num": 1},
             }
         ]
 

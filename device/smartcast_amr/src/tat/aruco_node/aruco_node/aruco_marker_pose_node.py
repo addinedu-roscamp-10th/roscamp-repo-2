@@ -7,6 +7,7 @@ from geometry_msgs.msg import PoseStamped
 from picamera2 import Picamera2
 from rclpy.node import Node
 from tf_transformations import quaternion_from_matrix
+from rcl_interfaces.msg import SetParametersResult
 
 
 ARUCO_DICT = {
@@ -83,6 +84,8 @@ class ArucoMarkerPoseNode(Node):
 
         period = 1.0 / self.fps if self.fps > 0.0 else 0.1
         self.timer = self.create_timer(period, self.detect_and_publish)
+
+        self.add_on_set_parameters_callback(self.parameter_callback)
 
     def load_matrix(self, path):
         if not path:
@@ -204,6 +207,13 @@ class ArucoMarkerPoseNode(Node):
             ],
             dtype=np.float64,
         )
+
+    def parameter_callback(self, params):
+        for param in params:
+            if param.name == 'target_marker_id':
+                self.target_marker_id = int(param.value)
+                self.get_logger().info(f'target_marker_id dynamically updated to: {self.target_marker_id}')
+        return SetParametersResult(successful=True)
 
     def destroy_node(self):
         try:

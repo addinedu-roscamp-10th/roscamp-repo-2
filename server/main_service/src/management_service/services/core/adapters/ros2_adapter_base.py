@@ -120,6 +120,37 @@ class BaseRos2Adapter:
         except asyncio.TimeoutError:
             return (False, f"{prefix}_action_timeout:{timeout_tag}")
 
+    async def _call_service_async(
+        self,
+        service_name: str,
+        service_type: Any,
+        request: Any,
+        timeout_sec: float = 5.0,
+    ) -> Any:
+        node = self._get_node()
+        if node is None:
+            raise RuntimeError("node not started")
+
+        client = node.create_client(service_type, service_name)
+        try:
+            if not await asyncio.to_thread(client.wait_for_service, timeout_sec):
+                raise RuntimeError(f"Service {service_name} not available")
+
+            loop = asyncio.get_running_loop()
+            asyncio_future = loop.create_future()
+
+            def done_callback(rclpy_future: Any) -> None:
+                try:
+                    res = rclpy_future.result()
+                    loop.call_soon_threadsafe(asyncio_future.set_result, res)
+                except Exception as exc:
+                    loop.call_soon_threadsafe(asyncio_future.set_exception, exc)
+
+            client.call_async(request).add_done_callback(done_callback)
+            return await asyncio.wait_for(asyncio_future, timeout=timeout_sec)
+        finally:
+            node.destroy_client(client)
+
     def close(self) -> None:
         self._clients.clear()
         if self._node is not None and self._runtime is not None:

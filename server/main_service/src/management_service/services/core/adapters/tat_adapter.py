@@ -119,6 +119,28 @@ class TATAdapter(BaseRos2Adapter):
             return AdapterResult(success=False, message="tat_adapter_unavailable")
         succeeded_status = self._goal_status_cls.STATUS_SUCCEEDED
 
+        if action == TAT_DOCK_ACTION and "aruco_num" in params:
+            aruco_num = params["aruco_num"]
+            try:
+                from rcl_interfaces.srv import SetParameters
+                from rcl_interfaces.msg import Parameter, ParameterValue, ParameterType
+
+                req = SetParameters.Request()
+                param = Parameter()
+                param.name = "target_marker_id"
+                param.value = ParameterValue(
+                    type=ParameterType.PARAMETER_INTEGER,
+                    integer_value=int(aruco_num)
+                )
+                req.parameters.append(param)
+
+                srv_name = f"/{res_id}/aruco_marker_pose_node/set_parameters"
+                await self._call_service_async(srv_name, SetParameters, req)
+            except Exception as exc:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(f"Failed to set Aruco target marker ID on {res_id}: {exc}")
+
         action_cls = getattr(self, spec.action_attr)
         try:
             goal = spec.goal_builder(action_cls, params)

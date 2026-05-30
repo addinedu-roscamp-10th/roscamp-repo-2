@@ -463,12 +463,22 @@ class TaskExecutor:
             return AdapterResult(success=True, message="noop")
         params = {**step.params, **input_data.payload}
 
-        if step.action == "dock_robot" and "pose_name" not in params:
-            charger_slot = await self.state_manager.get_empty_charger(input_data.res_id)
-            pose_name = self._resolve_charger_pose(charger_slot)
-            if pose_name is None:
-                return AdapterResult(success=False, message="no_available_charger")
-            params["pose_name"] = pose_name
+        if step.action == "dock_robot":
+            if "pose_name" not in params:
+                charger_slot = await self.state_manager.get_empty_charger(input_data.res_id)
+                pose_name = self._resolve_charger_pose(charger_slot)
+                if pose_name is None:
+                    return AdapterResult(success=False, message="no_available_charger")
+                params["pose_name"] = pose_name
+
+            pose_name = params.get("pose_name")
+            if pose_name == "ToCHG1":
+                params["aruco_num"] = 0
+            elif pose_name == "ToCHG2":
+                params["aruco_num"] = 1
+            elif pose_name == "ToCHG3":
+                params["aruco_num"] = 2
+
         return await self.adapter.send_command(
             res_id=input_data.res_id,
             action=step.action,
@@ -580,10 +590,18 @@ class TaskExecutor:
             "TO_IDLE",
             source=source,
         )
+        params = {"pose_name": pose_name}
+        if pose_name == "ToCHG1":
+            params["aruco_num"] = 0
+        elif pose_name == "ToCHG2":
+            params["aruco_num"] = 1
+        elif pose_name == "ToCHG3":
+            params["aruco_num"] = 2
+
         result = await self.adapter.send_command(
             res_id=res_id,
             action="dock_robot",
-            params={"pose_name": pose_name},
+            params=params,
         )
         if result.success:
             self.logger.info(
