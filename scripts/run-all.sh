@@ -79,23 +79,43 @@ if [ "${#MANAGEMENT_ARGS[@]}" -gt 0 ]; then
   management_command+=" ${MANAGEMENT_ARGS[*]}"
 fi
 
+ROS_ENABLED=0
+if [ "${#MANAGEMENT_ARGS[@]}" -gt 0 ]; then
+  ROS_ENABLED=1
+fi
+
 if open_terminal "smartcast-backend" "$ROOT/scripts/run-backend.sh"; then
+  if [ "$ROS_ENABLED" = "1" ]; then
+    open_terminal "smartcast-zenoh" "$ROOT/zenoh/run-zenoh-bridge.sh"
+  fi
   open_terminal "smartcast-management" "$management_command"
   open_terminal "smartcast-pyqt" "$ROOT/scripts/run-pyqt.sh"
   open_terminal "smartcast-web" "$ROOT/scripts/run-web.sh"
-  echo "→ GUI 터미널 창 4개 시작 (backend / management / pyqt / web, management ROS2=$([ "${#MANAGEMENT_ARGS[@]}" -gt 0 ] && echo enabled || echo disabled))"
+  if [ "$ROS_ENABLED" = "1" ]; then
+    echo "→ GUI 터미널 창 5개 시작 (backend / zenoh / management / pyqt / web, management ROS2=enabled)"
+  else
+    echo "→ GUI 터미널 창 4개 시작 (backend / management / pyqt / web, management ROS2=disabled)"
+  fi
   echo "  중단:    ./scripts/stop-all.sh"
 else
   mkdir -p "$ROOT/logs"
   echo "→ GUI 터미널 없음 — 백그라운드 + logs/*.log 로 출력"
   nohup "$ROOT/scripts/run-backend.sh" > "$ROOT/logs/backend.log" 2>&1 &
-  echo "  backend  PID=$!"
+  echo "  backend    PID=$!"
+  if [ "$ROS_ENABLED" = "1" ]; then
+    nohup "$ROOT/zenoh/run-zenoh-bridge.sh" > "$ROOT/logs/zenoh.log" 2>&1 &
+    echo "  zenoh      PID=$!"
+  fi
   nohup "$ROOT/scripts/run-management.sh" > "$ROOT/logs/management.log" 2>&1 &
   echo "  management PID=$!"
   nohup "$ROOT/scripts/run-pyqt.sh"    > "$ROOT/logs/pyqt.log"    2>&1 &
-  echo "  pyqt     PID=$!"
+  echo "  pyqt       PID=$!"
   nohup "$ROOT/scripts/run-web.sh"     > "$ROOT/logs/web.log"     2>&1 &
-  echo "  web      PID=$!"
-  echo "  로그:    tail -f logs/{backend,management,pyqt,web}.log"
+  echo "  web        PID=$!"
+  if [ "$ROS_ENABLED" = "1" ]; then
+    echo "  로그:    tail -f logs/{backend,zenoh,management,pyqt,web}.log"
+  else
+    echo "  로그:    tail -f logs/{backend,management,pyqt,web}.log"
+  fi
   echo "  중단:    ./scripts/stop-all.sh"
 fi

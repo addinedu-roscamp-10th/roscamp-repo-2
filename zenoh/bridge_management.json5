@@ -1,0 +1,14 @@
+// management server zenoh bridge
+{
+    plugins: {
+        ros2dds: {
+            domain: 100,
+            namespace: "/",
+        },
+    },
+
+    mode: "peer",
+    listen: {
+        endpoints: ["tcp/0.0.0.0:7447"],
+    },
+}

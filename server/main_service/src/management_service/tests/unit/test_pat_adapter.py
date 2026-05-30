@@ -3,24 +3,23 @@ from __future__ import annotations
 import asyncio
 
 from services.core.adapters.pat_adapter import PatAdapter
-from services.core.adapters.ros2_adapter_base import _DomainSession
 
 
 class _RecordingPatAdapter(PatAdapter):
+
     def __init__(self) -> None:
         super().__init__()
         self.sent_orders: list[int] = []
+        self.sent_action_names: list[str] = []
 
     def start(self) -> None:
         self._started = True
 
-    def _session_for(self, res_id: str) -> _DomainSession | None:
-        return _DomainSession(runtime=object(), node=object())
-
     async def _send_pat_goal(
-        self, session: _DomainSession, order: int, wait_sec: float, timeout_sec: float
+        self, action_name: str, order: int, wait_sec: float, timeout_sec: float
     ) -> tuple[bool, str]:
         self.sent_orders.append(order)
+        self.sent_action_names.append(action_name)
         return (True, f"pat_order_{order}_succeeded")
 
 

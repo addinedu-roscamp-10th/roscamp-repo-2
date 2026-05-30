@@ -10,7 +10,7 @@ from services.core.adapters.ai_adapter import AIAdapter
 from services.core.adapters.conv_adapter import ConvAdapter
 from services.core.adapters.mat_adapter import MatAdapter
 from services.core.adapters.pat_adapter import PatAdapter
-from services.core.adapters.ros2_runtime import Ros2RuntimePool
+from services.core.adapters.ros2_runtime import Ros2Runtime
 from services.core.adapters.tat_adapter import TATAdapter
 
 logger = logging.getLogger(__name__)
@@ -21,12 +21,12 @@ class AdapterRouter(IAdapter):
 
     def __init__(
         self,
-        runtime_pool: Ros2RuntimePool | None = None,
+        runtime: Ros2Runtime | None = None,
     ) -> None:
-        self._runtime_pool = runtime_pool
-        self._mat_adapter = MatAdapter(runtime_pool=runtime_pool)
-        self._pat_adapter = PatAdapter(runtime_pool=runtime_pool)
-        self._tat_adapter = TATAdapter(runtime_pool=runtime_pool)
+        self._runtime = runtime
+        self._mat_adapter = MatAdapter(runtime=runtime)
+        self._pat_adapter = PatAdapter(runtime=runtime)
+        self._tat_adapter = TATAdapter(runtime=runtime)
         self._conv_adapter = ConvAdapter()
         self._ai_adapter = AIAdapter()
         self._adapters: dict[str, IAdapter] = {

@@ -1,72 +1,68 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
 from typing import Any, Callable, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from services.core.adapters.ros2_runtime import Ros2RuntimePool
-
-
-@dataclass
-class _DomainSession:
-    runtime: Any
-    node: Any
-    clients: dict[str, Any] = field(default_factory=dict)
+    from services.core.adapters.ros2_runtime import Ros2Runtime
 
 
 class BaseRos2Adapter:
     """ros2 adapter base"""
 
-    _runtime_pool: Ros2RuntimePool | None
+    _runtime: Ros2Runtime | None
     _node_cls: Any | None
     _action_client_cls: Any | None
-    _sessions: dict[str, _DomainSession]
+    _node: Any | None
+    _clients: dict[str, Any]
     _started: bool
 
-    def __init__(self, runtime_pool: Ros2RuntimePool | None = None) -> None:
-        self._runtime_pool = runtime_pool
+    def __init__(self, runtime: Ros2Runtime | None = None) -> None:
+        self._runtime = runtime
         self._node_cls = None
         self._action_client_cls = None
-        self._sessions = {}
+        self._node = None
+        self._clients = {}
         self._started = False
 
-    def _session_for(self, res_id: str) -> _DomainSession | None:
-        session = self._sessions.get(res_id)
-        if session is not None:
-            return session
-        if self._runtime_pool is None or self._node_cls is None:
+    @property
+    def _adapter_node_name(self) -> str:
+        return f"{type(self).__name__.lower()}_node"
+
+    def _get_node(self) -> Any | None:
+        if self._node is not None:
+            return self._node
+        if self._runtime is None or self._node_cls is None:
             return None
 
-        try:
-            runtime = self._runtime_pool.get_runtime(res_id)
-        except KeyError:
-            return None
-        if not runtime.started or runtime.context is None:
+        if not self._runtime.started:
+            self._runtime.start()
+        if not self._runtime.started or self._runtime.context is None:
             return None
 
-        node = self._node_cls(f"{res_id.lower()}_adapter", context=runtime.context)
-        runtime.add_node(node)
-        session = _DomainSession(runtime=runtime, node=node)
-        self._sessions[res_id] = session
-        return session
+        node = self._node_cls(
+            self._adapter_node_name,
+            context=self._runtime.context,
+        )
+        self._runtime.add_node(node)
+        self._node = node
+        return node
 
     def _get_or_create_client(
         self,
-        session: _DomainSession,
         action_name: str,
         action_type: Any,
     ) -> Any | None:
-        if action_name in session.clients:
-            return session.clients[action_name]
+        if action_name in self._clients:
+            return self._clients[action_name]
         if self._action_client_cls is None:
             return None
-        client = self._action_client_cls(
-            session.node,
-            action_type,
-            action_name,
-        )
-        session.clients[action_name] = client
+
+        node = self._get_node()
+        if node is None:
+            return None
+        client = self._action_client_cls(node, action_type, action_name)
+        self._clients[action_name] = client
         return client
 
     async def _send_single_goal_async(
@@ -125,12 +121,12 @@ class BaseRos2Adapter:
             return (False, f"{prefix}_action_timeout:{timeout_tag}")
 
     def close(self) -> None:
-        for session in self._sessions.values():
+        self._clients.clear()
+        if self._node is not None and self._runtime is not None:
             try:
-                session.runtime.remove_node(session.node)
-                session.node.destroy_node()
+                self._runtime.remove_node(self._node)
+                self._node.destroy_node()
             except Exception:
                 pass
-            session.clients.clear()
-        self._sessions.clear()
+        self._node = None
         self._started = False

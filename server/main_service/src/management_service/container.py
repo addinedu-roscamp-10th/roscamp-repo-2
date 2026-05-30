@@ -10,7 +10,7 @@ from services.core.adapter_router import AdapterRouter
 from services.core.traffic_manager import TrafficManager
 from services.core.state_manager import StateManager
 from services.core.event_bridge import EventBridge
-from services.core.adapters.ros2_runtime import Ros2RuntimePool
+from services.core.adapters.ros2_runtime import Ros2Runtime
 from services.core.adapters.amr_state_monitor import AmrStateMonitorService
 from services.http_image_server import HttpImageServer
 
@@ -45,9 +45,9 @@ class Container:
         self.state_manager = StateManager(event_bridge=self.event_bridge, enable_persistence=True)
         self.task_manager = TaskManager(sm=self.state_manager)
         self.task_allocator = TaskAllocator(state_manager=self.state_manager)
-        self.ros2_runtime_pool = Ros2RuntimePool()
+        self.ros2_runtime = Ros2Runtime()
         self.adapter = AdapterRouter(
-            runtime_pool=self.ros2_runtime_pool,
+            runtime=self.ros2_runtime,
         )
         self.task_executor = TaskExecutor(
             adapter=self.adapter,
@@ -555,8 +555,10 @@ class Container:
                 try:
                     self.adapter.close()
                 finally:
-                    self.ros2_runtime_pool.shutdown()
-                    self._started = False
+                    try:
+                        self.ros2_runtime.shutdown()
+                    finally:
+                        self._started = False
 
 # Singleton Container Instance
 container = Container()

@@ -7,7 +7,7 @@ from services.contracts.models import AdapterResult
 from services.core.adapters.ros2_adapter_base import BaseRos2Adapter
 
 if TYPE_CHECKING:
-    from services.core.adapters.ros2_runtime import Ros2RuntimePool
+    from services.core.adapters.ros2_runtime import Ros2Runtime
 
 
 # router 호환성: router 가 직접 import 하여 action 비교에 사용한다.
@@ -63,19 +63,19 @@ class TATAdapter(BaseRos2Adapter):
 
     _ACTIONS: Dict[str, ActionSpec] = {
         TAT_DOCK_ACTION: ActionSpec(
-            name_fmt="/dock_robot",
+            name_fmt="/{robot_id}/dock_robot",
             action_attr="_dock_action",
             goal_builder=_build_dock_goal,
         ),
         TAT_UNDOCK_ACTION: ActionSpec(
-            name_fmt="/undock_robot",
+            name_fmt="/{robot_id}/undock_robot",
             action_attr="_undock_action",
             goal_builder=_build_undock_goal,
         ),
     }
 
-    def __init__(self, runtime_pool: Ros2RuntimePool | None = None) -> None:
-        super().__init__(runtime_pool=runtime_pool)
+    def __init__(self, runtime: Ros2Runtime | None = None) -> None:
+        super().__init__(runtime=runtime)
         self._goal_status_cls: Any | None = None
         self._dock_action: Any | None = None
         self._undock_action: Any | None = None
@@ -83,7 +83,7 @@ class TATAdapter(BaseRos2Adapter):
     def start(self) -> None:
         if self._started:
             return
-        if self._runtime_pool is None:
+        if self._runtime is None:
             return
 
         try:
@@ -125,12 +125,10 @@ class TATAdapter(BaseRos2Adapter):
         except ValueError as exc:
             return AdapterResult(success=False, message=str(exc))
 
-        session = self._session_for(res_id)
-        if session is None:
-            return AdapterResult(success=False, message="tat_adapter_unavailable")
-
         action_name = spec.name_fmt.format(robot_id=res_id)
-        client = self._get_or_create_client(session, action_name, action_cls)
+        client = self._get_or_create_client(action_name, action_cls)
+        if client is None:
+            return AdapterResult(success=False, message="tat_adapter_unavailable")
 
         wait_sec = float(params.get("wait_server_sec", 5.0))
         timeout_sec = float(params.get("result_timeout_sec", 300.0))

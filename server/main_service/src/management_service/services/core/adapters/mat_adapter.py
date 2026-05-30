@@ -7,7 +7,7 @@ from services.contracts.models import AdapterResult
 from services.core.adapters.ros2_adapter_base import BaseRos2Adapter
 
 if TYPE_CHECKING:
-    from services.core.adapters.ros2_runtime import Ros2RuntimePool
+    from services.core.adapters.ros2_runtime import Ros2Runtime
 
 
 @dataclass(frozen=True)
@@ -18,6 +18,8 @@ class _MatActionSpec:
 
 class MatAdapter(BaseRos2Adapter):
     """MAT(생산) ROS2 action client."""
+
+    _ACTION_NAME_FMT = "/{robot_id}/{action}"
 
     _ACTIONS: dict[str, _MatActionSpec] = {
         "pattern_pick_action": _MatActionSpec("PatternPick", requires_pattern_id=True),
@@ -31,14 +33,14 @@ class MatAdapter(BaseRos2Adapter):
         "return_to_base_action": _MatActionSpec("ReturnToBase"),
     }
 
-    def __init__(self, runtime_pool: Ros2RuntimePool | None = None) -> None:
-        super().__init__(runtime_pool=runtime_pool)
+    def __init__(self, runtime: Ros2Runtime | None = None) -> None:
+        super().__init__(runtime=runtime)
         self._action_types: dict[str, Any] = {}
 
     def start(self) -> None:
         if self._started:
             return
-        if self._runtime_pool is None:
+        if self._runtime is None:
             return
 
         try:
@@ -105,11 +107,10 @@ class MatAdapter(BaseRos2Adapter):
                 return AdapterResult(success=False, message=f"{action}_requires_pattern_id")
             goal.pattern_id = pattern_id
 
-        session = self._session_for(res_id)
-        if session is None:
+        action_name = self._ACTION_NAME_FMT.format(robot_id=res_id, action=action)
+        client = self._get_or_create_client(action_name, action_type)
+        if client is None:
             return AdapterResult(success=False, message="mat_adapter_unavailable")
-
-        client = self._get_or_create_client(session, action, action_type)
 
         wait_sec = float(params.get("wait_server_sec", 5.0))
         timeout_sec = float(params.get("result_timeout_sec", 300.0))
@@ -125,7 +126,7 @@ class MatAdapter(BaseRos2Adapter):
             goal,
             parse_result,
             prefix="mat",
-            action_name=action,
+            action_name=action_name,
             wait_sec=wait_sec,
             timeout_sec=timeout_sec,
         )

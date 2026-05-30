@@ -3,16 +3,16 @@ from __future__ import annotations
 from typing import Any, TYPE_CHECKING
 
 from services.contracts.models import AdapterResult
-from services.core.adapters.ros2_adapter_base import BaseRos2Adapter, _DomainSession
+from services.core.adapters.ros2_adapter_base import BaseRos2Adapter
 
 if TYPE_CHECKING:
-    from services.core.adapters.ros2_runtime import Ros2RuntimePool
+    from services.core.adapters.ros2_runtime import Ros2Runtime
 
 
 class PatAdapter(BaseRos2Adapter):
     """Pat(적재&출고) Ros2 action client."""
 
-    _ACTION_NAME = "execute_task"
+    _ACTION_NAME_FMT = "/{robot_id}/execute_task"
     _STRG_COLUMNS = 6
     _STRG_SLOT_COUNT = 18
 
@@ -23,14 +23,14 @@ class PatAdapter(BaseRos2Adapter):
 
     _ACTIONS = {PICK_ACTION, PLACE_ACTION, RETRIEVE_ACTION, DEFECT_ACTION}
 
-    def __init__(self, runtime_pool: Ros2RuntimePool | None = None) -> None:
-        super().__init__(runtime_pool=runtime_pool)
+    def __init__(self, runtime: Ros2Runtime | None = None) -> None:
+        super().__init__(runtime=runtime)
         self._action_type: Any | None = None
 
     def start(self) -> None:
         if self._started:
             return
-        if self._runtime_pool is None:
+        if self._runtime is None:
             return
 
         try:
@@ -91,12 +91,12 @@ class PatAdapter(BaseRos2Adapter):
         if not self._started:
             return AdapterResult(success=False, message="pat_adapter_unavailable")
 
-        session = self._session_for(res_id)
-        if session is None:
-            return AdapterResult(success=False, message="pat_adapter_unavailable")
+        action_name = self._ACTION_NAME_FMT.format(robot_id=res_id)
 
         for order in orders:
-            ok, message = await self._send_pat_goal(session, order, wait_sec, timeout_sec)
+            ok, message = await self._send_pat_goal(
+                action_name, order, wait_sec, timeout_sec,
+            )
             if not ok:
                 return AdapterResult(success=False, message=message)
         return AdapterResult(
@@ -106,14 +106,16 @@ class PatAdapter(BaseRos2Adapter):
 
     async def _send_pat_goal(
         self,
-        session: _DomainSession,
+        action_name: str,
         order: int,
         wait_sec: float,
         timeout_sec: float,
     ) -> tuple[bool, str]:
-        # 호출자(_send_goals)가 _started 를 보장하므로 _action_type 는 non-None.
+        # 호출자(_send_goals)가 _started를 보장하므로 _action_type은 non-None이다.
         action_type = self._action_type
-        client = self._get_or_create_client(session, self._ACTION_NAME, action_type)
+        client = self._get_or_create_client(action_name, action_type)
+        if client is None:
+            return (False, "pat_adapter_unavailable")
 
         goal = action_type.Goal()
         goal.order = order
@@ -131,7 +133,7 @@ class PatAdapter(BaseRos2Adapter):
             goal,
             parse_result,
             prefix="pat",
-            action_name=self._ACTION_NAME,
+            action_name=action_name,
             rejected_tag=str(order),
             timeout_tag=str(order),
             wait_sec=wait_sec,
