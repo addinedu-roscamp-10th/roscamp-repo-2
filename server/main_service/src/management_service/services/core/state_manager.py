@@ -867,7 +867,6 @@ class StateManager:
                     self.task_manager.log_slot_table()
 
                     if self.task_manager is not None:  
-                        self.task_manager.remove_order_reserve(ord_id)  
                         self.task_manager.release_order_slots(ord_id)  
                         #self.task_manager.log_slot_table()
                     else:  
@@ -884,7 +883,6 @@ class StateManager:
                 logger.info("[StateManager] ord_id=%s 생산완료", ord_id)
 
                 if self.task_manager is not None:  
-                    self.task_manager.remove_order_reserve(ord_id) 
                     self.task_manager.release_order_slots(ord_id)
                     #self.task_manager.log_slot_table()  
                 else:  
@@ -913,7 +911,6 @@ class StateManager:
             )
 
             if self.task_manager is not None:  
-                self.task_manager.remove_order_reserve(ord_id)  
                 self.task_manager.release_order_slots(ord_id)
                 #self.task_manager.log_slot_table()  
             else: 
