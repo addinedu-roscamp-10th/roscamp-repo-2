@@ -157,7 +157,7 @@ class TaskExecutor:
                 ),
                 CommandStep(step_id=3, action="undock_robot", params={}),  # undock
                 CommandStep(step_id=4, action="dock_robot", params={"pose_name": "ToSHIP"}),   # SHIP Zone 하차 대기 장소
-                CommandStep(step_id=5, action="WAIT_TIME", params={"duration_sec": 5}),  # 7초 대기로 하차 신호
+                CommandStep(step_id=5, action="WAIT_TIME", params={"duration_sec": 5}),  # 5초 대기로 하차 신호
                 CommandStep(step_id=6, action="undock_robot", params={}),  # undock
             ],
             TaskType.ToCHG: [
