@@ -92,8 +92,7 @@ class CreateTaskInput(BaseModel): #tm -> sm TASK 정보 중 디비에 기록할�
     task_type: TaskType
     txn_stat: TxnStat = TxnStat.QUE
     res_id : Optional[int] = None
-    chg_loc: Optional[tuple[int, int]] = None,
-
+    chg_loc: Optional[tuple[int, int]] = None
 
 class NextTaskResult(BaseModel): # tm -> ok
     item_id: int
