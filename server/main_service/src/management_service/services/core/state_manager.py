@@ -100,7 +100,6 @@ class StateManager:
         self._items: dict[int, dict[str, Any]] = {}
         self._tasks: dict[str, dict[str, Any]] = {}
         self._res_list: dict[str, dict[str, Any]] = {}
-        self.adapter_results: list[dict[str, Any]] = []
         self.items = self._items
         self.orders: dict[int, dict[str, Any]] = {}
 
@@ -667,7 +666,6 @@ class StateManager:
         record = req.model_dump()
         record["txn_id"] = task_meta.get("txn_id")
         record["ord_id"] = task_meta.get("ord_id")
-        self.adapter_results.append(record)
         self._safe_repo_call("record_adapter_result", record)
         logger.info(
             "[StateManager] record_adapter_result: task=%s step=%s action=%s success=%s",

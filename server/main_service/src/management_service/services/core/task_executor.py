@@ -46,7 +46,7 @@ class TaskExecutor:
         self._waiters_lock = threading.Lock()
         self._task_waiters: dict[tuple[int, TaskType], list[asyncio.Future[str]]] = defaultdict(list)
         self._subtask_waiters: dict[tuple[int, str], list[asyncio.Future[None]]] = defaultdict(list)
-        self._completed_subtasks: set[tuple[int, str]] = set()
+        self._completed_subtasks: dict[tuple[int, str], bool] = {}
         # 진행 중인 execute_task 코루틴을 task_id로 저장한다
         # 비상 시 abort_task(task_id) 가 여기서 찾아서 정지시킨다
         self._active_executions: dict[str, asyncio.Task] = {}
@@ -686,6 +686,7 @@ class TaskExecutor:
                 item_id,
                 key[1],
             )
+            self._completed_subtasks.pop(key, None)
             return True
 
         loop = asyncio.get_running_loop()
@@ -708,6 +709,7 @@ class TaskExecutor:
                 item_id,
                 key[1],
             )
+            self._completed_subtasks.pop(key, None)
             return True
         except asyncio.TimeoutError as exc:
             raise RuntimeError(
@@ -849,7 +851,7 @@ class TaskExecutor:
             return
 
         key = (item_id, str(payload_subtask_type))
-        self._completed_subtasks.add(key)
+        self._record_completed_subtask(key)
         with self._waiters_lock:
             futures = self._subtask_waiters.pop(key, [])
 
@@ -863,7 +865,7 @@ class TaskExecutor:
         if event.item_id is None:
             return
         key = (event.item_id, event.event_type.value)
-        self._completed_subtasks.add(key)
+        self._record_completed_subtask(key)
         with self._waiters_lock:
             futures = self._subtask_waiters.pop(key, [])
 
@@ -871,6 +873,12 @@ class TaskExecutor:
             if future.done():
                 continue
             future.get_loop().call_soon_threadsafe(self._resolve_subtask_waiter, future)
+
+    def _record_completed_subtask(self, key: tuple[int, str]) -> None:
+        self._completed_subtasks[key] = True
+        if len(self._completed_subtasks) > 1000:
+            oldest_key = next(iter(self._completed_subtasks))
+            self._completed_subtasks.pop(oldest_key, None)
 
     def _resolve_task_waiter(self, future: asyncio.Future[str], status: str) -> None:
         """task waiter의 future를 완료시키고 upstream task status를 전달한다."""
