@@ -42,9 +42,6 @@ class ITaskManager(Protocol):
     def release_order_slots(self, order_id: int) -> None:
         ...
 
-    def release_order_slots( self, order_id: int, ) -> None:
-        ...
-
 class ITaskAllocator(Protocol):
     async def allocate(self, input_data)  :
         ...
