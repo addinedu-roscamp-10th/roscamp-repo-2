@@ -862,8 +862,6 @@ class StateManager:
                         ord_id,
                         target_qty,
                     )
-                    self.task_manager.log_slot_table()
-
                     if self.task_manager is not None:  
                         self.task_manager.release_order_slots(ord_id)  
                         #self.task_manager.log_slot_table()
