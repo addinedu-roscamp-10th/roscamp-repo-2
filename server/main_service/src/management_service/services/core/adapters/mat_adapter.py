@@ -81,14 +81,6 @@ class MatAdapter(BaseRos2Adapter):
         action: str,
         params: dict[str, Any],
     ) -> AdapterResult:
-        return AdapterResult(success=True, message=action)
-
-    async def send_command(
-        self,
-        res_id: str,
-        action: str,
-        params: dict[str, Any],
-    ) -> AdapterResult:
         if action not in self._ACTIONS:
             return AdapterResult(success=False, message=f"unsupported_mat_command:{action}")
         if not res_id:
