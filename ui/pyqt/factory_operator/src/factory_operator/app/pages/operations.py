@@ -388,7 +388,6 @@ class OperationsPage(QWidget):
         root.addWidget(title)
 
         # ---- 상단: 생산 중인 주문 선택 + 패턴 위치 표시 ----
-        # 2026-05-14: "라인 투입" 버튼 제거 (사이드 워크플로우 변경). 핸들러 _on_start_production 는 보존.
         ctrl_box = QGroupBox("발주 운영 (패턴 자동 매핑)")
         grid = QGridLayout(ctrl_box)
         grid.setSpacing(8)
@@ -827,34 +826,6 @@ class OperationsPage(QWidget):
         if not opts:
             return "후처리 없음"
         return ", ".join(f"{o['pp_nm']}[{statuses.get(o['pp_nm'], 'QUE')}]" for o in opts)
-
-    @pyqtSlot()
-    def _on_start_production(self) -> None:
-        """단건 라인 투입 — Item + EquipTaskTxn 즉시 생성 (RA1/MM QUE).
-
-        2026-04-27: '생산 시작' → '라인 투입' 으로 변경.
-        큐 등록은 [생산 계획] 페이지에서 별도 진행.
-        """
-        ord_id = self._current_ord_id()
-        if ord_id is None:
-            return
-        try:
-            from app.management_client import ManagementClient
-
-            client = ManagementClient()
-            try:
-                result = client.start_production_one(ord_id)
-            finally:
-                client.close()
-        except Exception as exc:  # noqa: BLE001
-            QMessageBox.critical(self, "라인 투입 실패", str(exc))
-            return
-        msg = result.reason or "Started."
-        if result.accepted:
-            QMessageBox.information(self, "라인 투입 완료", f"발주 {ord_id}\n{msg}")
-        else:
-            QMessageBox.warning(self, "라인 투입 거절", f"발주 {ord_id}\n{msg}")
-        self.refresh()
 
     @pyqtSlot()
     def _on_handoff_ack(self) -> None:

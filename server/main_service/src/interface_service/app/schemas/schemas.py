@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # =====================
 # Common
@@ -166,28 +166,6 @@ class TransOut(_ORM):
 
 
 # =====================
-# ORD PATTERN (핑크 GUI #3)
-# =====================
-
-
-class OrdPatternIn(BaseModel):
-    """발주↔패턴 1:1 등록 요청."""
-
-    ord_id: int
-    ptn_loc_id: int = Field(
-        ge=1,
-        le=3,
-        validation_alias=AliasChoices("ptn_loc_id", "ptn_id"),
-    )
-
-
-class OrdPatternOut(_ORM):
-    ord_id: int
-    pattern_id: int | None = None
-    ptn_loc_id: int | None = None
-
-
-# =====================
 # ITEM
 # =====================
 
@@ -319,17 +297,6 @@ class ItemPpRequirements(BaseModel):
     ord_id: int
     pp_options: list[PpOptionOut] = Field(default_factory=list)
     pp_task_status: list[PpTaskTxnOut] = Field(default_factory=list)
-
-
-# =====================
-# 핑크 GUI #5 — 생산 시작 요청
-# =====================
-
-
-class ProductionStartRequest(BaseModel):
-    """발주 생산 시작 — 패턴 등록 후에만 호출 가능."""
-
-    ord_id: int
 
 
 class ShippingStartRequest(BaseModel):

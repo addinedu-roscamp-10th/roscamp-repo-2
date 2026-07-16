@@ -14,9 +14,6 @@ import type {
   WarehouseRack,
   OutboundOrder,
   OrderStatus,
-  PriorityResult,
-  ProductionJob,
-  PriorityChangeLog,
 } from "./types";
 
 const API_BASE =
@@ -328,28 +325,6 @@ export function updateOrder(
   return apiPatch<Order>(`/api/orders/${orderId}`, data);
 }
 
-// ── 생산 스케줄링 ──
-
-export function calculatePriority(
-  orderIds: string[],
-): Promise<{ results: PriorityResult[] }> {
-  return apiFetch("/api/production/schedule/calculate", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ order_ids: orderIds }),
-  });
-}
-
-export function startProduction(
-  orderIds: string[],
-): Promise<ProductionJob[]> {
-  return apiFetch("/api/production/schedule/start", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ order_ids: orderIds }),
-  });
-}
-
 /** "출하 시작" — 적재 완료 (shipping_ready) 상태인 주문에 대해 TAT 운반 task 를 trigger.
  *  orderId: "ord_{n}" 형태 → 숫자 ord_id 추출 후 백엔드 호출.
  *  반환: { ordId, itemIds, accepted, message }. itemIds 가 비면 적재 위치가 없어 운반 task 가
@@ -376,21 +351,4 @@ export async function startShipping(
     throw new Error(`출하 시작 실패: ${detail}`);
   }
   return convertKeys(await res.json());
-}
-
-export function fetchProductionJobs(): Promise<ProductionJob[]> {
-  return apiFetch<ProductionJob[]>("/api/production/schedule/jobs");
-}
-
-export function createPriorityLog(data: {
-  order_id: string;
-  old_rank: number;
-  new_rank: number;
-  reason: string;
-}): Promise<PriorityChangeLog> {
-  return apiFetch("/api/production/schedule/priority-log", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-  });
 }

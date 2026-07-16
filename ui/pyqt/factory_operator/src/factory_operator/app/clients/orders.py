@@ -1,4 +1,4 @@
-"""Orders 도메인 mixin — 발주/패턴 위치/최근주문/승인주문."""
+"""Orders 도메인 mixin — 발주/최근주문 조회."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from app import mock_data
 
 
 class OrdersMixin:
-    """발주 및 패턴 등록 endpoints."""
+    """발주 조회 endpoints."""
 
     # ===== smartcast schema =====
     def get_smartcast_orders(self) -> list[dict[str, Any]] | None:
@@ -20,13 +20,6 @@ class OrdersMixin:
         from urllib.parse import quote
 
         return self._get(f"/api/orders/lookup?email={quote(email)}", mock_value=[])
-
-    def register_pattern(self, ord_id: int, ptn_loc_id: int) -> dict[str, Any] | None:
-        """Pink GUI #3 — 발주↔패턴 위치 등록 (1-3)."""
-        return self._post("/api/production/patterns", {"ord_id": ord_id, "ptn_loc_id": ptn_loc_id})
-
-    def get_patterns(self) -> list[dict[str, Any]] | None:
-        return self._get("/api/production/patterns", mock_value=[])
 
     def get_recent_orders(self) -> list[dict[str, Any]]:
         data = self._get("/api/orders", mock_value=mock_data.RECENT_ORDERS)
@@ -44,34 +37,3 @@ class OrdersMixin:
                 )
             return normalized
         return mock_data.RECENT_ORDERS
-
-    def get_approved_and_running_orders(self) -> list[dict[str, Any]]:
-        """생산 계획 화면에서 볼 주문 목록.
-
-        backend `/api/production/schedule/jobs` 가 이미 다음 조건으로 필터링한다.
-        - ord_stat == MFG
-        - 아직 item_stat / equip_task_txn 이 없는 큐 후보만
-
-        Returns: 정규화된 주문 리스트 (id, company_name, total_amount,
-                 requested_delivery, status 등).
-        """
-        data = self._get("/api/production/schedule/jobs", mock_value=[])
-        if not isinstance(data, list):
-            return []
-
-        result: list[dict[str, Any]] = []
-        for item in data:
-            ord_id = item.get("order_id", item.get("orderId", item.get("id", "")))
-            result.append(
-                {
-                    "id": str(ord_id).replace("ord_", ""),
-                    "company_name": item.get("company_name") or item.get("companyName") or "-",
-                    "customer_name": item.get("customer_name") or item.get("customerName") or "-",
-                    "total_amount": item.get("total_amount") or item.get("totalAmount") or 0,
-                    "requested_delivery": item.get("requested_delivery") or item.get("requestedDelivery") or "",
-                    "confirmed_delivery": item.get("confirmed_delivery") or item.get("confirmedDelivery") or "",
-                    "created_at": item.get("created_at") or item.get("createdAt") or "",
-                    "status": "in_production",
-                }
-            )
-        return result

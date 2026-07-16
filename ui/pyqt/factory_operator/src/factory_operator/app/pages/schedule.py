@@ -1,14 +1,10 @@
-"""생산 계획 페이지 — 우선순위 계산 + 순서 확정.
-
-웹의 "생산 승인" 버튼으로 주문이 in_production 상태로 전환되면
-ProductionJob 레코드가 생성되어 이 페이지의 풀에 들어온다.
+"""생산 계획 페이지 — 우선순위 계산 + Management 생산 시작.
 
 워크플로:
-    1. 승인 주문 풀(approved + in_production) 조회
+    1. Management Service에서 생산 대기 주문 조회
     2. 다중 선택 → "우선순위 계산" 버튼
-    3. 7요소 가중 점수 결과 표시 (상단 테이블)
-    4. (향후) 수동 순서 조정 + 사유 입력 + PriorityLog 기록
-    5. (향후) 생산 개시 확정 → 자원 배정
+    3. 6요소 가중 점수 결과 표시
+    4. 선택 주문 → Management StartProduction gRPC 호출
 
 @MX:NOTE: 2026-04-08 웹에서 이관된 기능. 기존 src/app/production/schedule 페이지 삭제.
 @MX:NOTE: 2026-04-26 디자인 시스템 v2 마이그레이션 — 인라인 setStyleSheet 제거,
@@ -125,7 +121,7 @@ class SchedulePage(QWidget):
         root.addWidget(title)
 
         subtitle = QLabel(
-            "웹에서 '생산 승인'된 주문의 우선순위를 7요소 가중 점수제(100점 만점)로 계산합니다. "
+            "Management Service의 생산 대기 주문을 6요소 가중 점수제로 계산합니다. "
             "좌측에서 주문을 선택하고 '우선순위 계산' 버튼을 누르세요."
         )
         subtitle.setWordWrap(True)
@@ -244,7 +240,7 @@ class SchedulePage(QWidget):
         layout.addWidget(header)
 
         hint = QLabel(
-            "7요소 가중 점수 (납기 25 · 착수 20 · 체류 15 · 지연 15 · 고객 10 · 수량 10 · 세팅 5)"
+            "6요소 가중 점수 (납기 25 · 착수 20 · 체류 15 · 지연 15 · 주문금액 10 · 수량 10)"
         )
         hint.setWordWrap(True)
         hint.setProperty("tone", "muted")
@@ -280,26 +276,21 @@ class SchedulePage(QWidget):
         self._reason_label.setMinimumHeight(60)
         layout.addWidget(self._reason_label)
 
-        # 결과 테이블 바로 아래: 선택 주문 일괄 큐 등록 버튼 (큰 success)
-        # 2026-04-27 라벨 명확화 — '생산 시작' → '생산 큐 등록' (ord_stat MFG transition).
-        # 실제 라인 투입(Item + EquipTaskTxn 생성)은 [실시간 운영 모니터링] 페이지의
-        # '라인 투입' 버튼이 별도로 호출.
-        self._start_selected_btn = QPushButton("▶  선택 주문 생산 큐 등록  ▶")
+        # 결과 테이블 바로 아래: Management gRPC 생산 시작 버튼
+        self._start_selected_btn = QPushButton("▶  선택 주문 생산 시작  ▶")
         self._start_selected_btn.setMinimumHeight(50)
         self._start_selected_btn.setCursor(Qt.PointingHandCursor)
         self._start_selected_btn.setToolTip(
-            "선택 주문(들)을 MFG 큐에 등록합니다 (ord_stat APPR→MFG transition).\n"
-            "이 단계는 큐 등록만 하며, 실제 공정 라인 투입은 [실시간 운영 모니터링] 페이지의 '라인 투입' 버튼에서 진행."
+            "Management StartProduction gRPC를 호출해 선택 주문의 item과 후속 task를 생성합니다."
         )
         self._start_selected_btn.clicked.connect(self._on_start_selected)
         self._start_selected_btn.setProperty("variant", "success")
         self._start_selected_btn.setProperty("size", "lg")
         layout.addWidget(self._start_selected_btn)
 
-        # 두 endpoint 차이 안내 (운영자 혼동 방지)
         flow_hint = QLabel(
-            "📋 운영 흐름: ① 여기서 우선순위 계산·다건 큐 등록 → "
-            "② [실시간 운영 모니터링] 페이지에서 단건씩 라인 투입 (Item + MM task 생성)"
+            "📋 운영 흐름: 우선순위 계산 → 선택 주문 생산 시작 → "
+            "Management Service가 item 생성과 후속 task scheduling 수행"
         )
         flow_hint.setProperty("tone", "muted")
         flow_hint.setWordWrap(True)
@@ -493,7 +484,7 @@ class SchedulePage(QWidget):
             )
 
             score = result.get("total_score", 0)
-            score_item = QTableWidgetItem(f"{score:.1f} / 100")
+            score_item = QTableWidgetItem(f"{score:.1f} / 95")
             score_item.setTextAlignment(Qt.AlignCenter | Qt.AlignVCenter)
             self._results_table.setItem(idx, 3, score_item)
 
@@ -503,10 +494,10 @@ class SchedulePage(QWidget):
             delay_item.setForeground(QColor(DELAY_RISK_COLOR.get(delay, "#9ca3af")))
             self._results_table.setItem(idx, 4, delay_item)
 
-            # 착수 컬럼: 큐 등록 버튼 (행별 단건)
+            # 착수 컬럼: Management 생산 시작 버튼 (행별 단건)
             ready = str(result.get("ready_status", ""))
             order_id = str(result.get("order_id", ""))
-            start_btn = QPushButton("▶ 큐 등록")
+            start_btn = QPushButton("▶ 생산 시작")
             start_btn.setEnabled(ready == "ready")
             start_btn.setCursor(Qt.PointingHandCursor)
             start_btn.setProperty("size", "sm")
@@ -566,7 +557,7 @@ class SchedulePage(QWidget):
             self,
             "생산 개시 확인",
             f"주문 {order_id} 의 생산을 개시합니다.\n"
-            "ProductionJob 이 생성되고 주문 상태가 'in_production' 으로 전환됩니다.\n\n"
+            "Management Service가 item을 생성하고 후속 task를 예약합니다.\n\n"
             "계속하시겠습니까?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.Yes,
@@ -646,7 +637,7 @@ class SchedulePage(QWidget):
             return
         self._start_thread_active = True
         self._start_selected_btn.setEnabled(False)
-        self._start_selected_btn.setText("⏳ 큐 등록 중...")
+        self._start_selected_btn.setText("⏳ 생산 시작 중...")
 
         worker = StartProductionWorker(order_ids)
         worker.succeeded.connect(self._on_start_succeeded)
@@ -706,7 +697,7 @@ class SchedulePage(QWidget):
     def _on_start_finished(self) -> None:
         self._start_thread_active = False
         self._start_selected_btn.setEnabled(True)
-        self._start_selected_btn.setText("▶  선택 주문 생산 큐 등록  ▶")
+        self._start_selected_btn.setText("▶  선택 주문 생산 시작  ▶")
         self._priority_results = []
         self._render_results_table()
 

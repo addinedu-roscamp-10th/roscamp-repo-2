@@ -1,9 +1,7 @@
-"""Production 도메인 mixin — 라인 투입/items/equip/stages/metrics/equipment/schedule.
+"""Production 도메인 mixin — items/equip/stages/metrics/equipment.
 
-Pink GUI #5 (생산 시작), #4 (item별 후처리), 운영자 페이지의 스케줄러.
-
-2026-04-27: 동명 메서드 critical 픽스 — start_production_one (단건 라인 투입) +
-start_production_batch (배치 큐 등록) 로 분리. ApiClient.start_production 사라짐.
+생산 시작은 `app.management_client.ManagementClient`가 Management gRPC를 직접 호출한다.
+이 HTTP mixin은 생산 모니터링 조회 API만 담당한다.
 """
 
 from __future__ import annotations
@@ -14,21 +12,7 @@ from app import mock_data
 
 
 class ProductionMixin:
-    """생산 lifecycle + item + equip + scheduling endpoints."""
-
-    # ===== Lifecycle =====
-    def start_production_one(self, ord_id: int) -> dict[str, Any] | None:
-        """단건 라인 투입 — POST /api/production/start.
-
-        2026-04-27: 이전 'start_production' 동명 메서드 버그 픽스. 두 endpoint
-        의미가 완전히 다르므로 메서드명 분리:
-          - start_production_one(ord_id: int)   → /api/production/start (Item + EquipTaskTxn 생성)
-          - start_production_batch(order_ids)    → /api/production/schedule/start (ord_stat MFG 큐 등록만)
-
-        backend 동작: ord_stat=MFG + Item(QUE, RA1, MM) + EquipTaskTxn(RA1, MM, QUE) 생성.
-        선행 조건: pattern 등록 (자동 매핑됨).
-        """
-        return self._post("/api/production/start", {"ord_id": ord_id})
+    """생산 모니터링 조회 endpoints."""
 
     # ===== Items =====
     def get_smartcast_items(self, ord_id: int | None = None) -> list[dict[str, Any]] | None:
@@ -256,73 +240,3 @@ class ProductionMixin:
                 )
             return normalized
         return []
-
-    # ===== Production Scheduling (생산 계획) =====
-    # Web에서 "생산 승인" 버튼을 누르면 in_production 상태 + ProductionJob 레코드 생성됨.
-    # 그 이후 PyQt5 생산 계획 페이지에서 우선순위 계산/순서 조정/실제 착수를 수행한다.
-
-    def get_production_jobs(self) -> list[dict[str, Any]]:
-        """생산 작업 목록 조회 (웹에서 승인된 order로부터 생성된 ProductionJob들).
-
-        Returns: ProductionJob 딕셔너리 리스트 (id, order_id, priority_score,
-                 priority_rank, status, estimated_completion 등).
-        """
-        data = self._get("/api/production/schedule/jobs", mock_value=[])
-        return data if isinstance(data, list) else []
-
-    def calculate_priority(self, order_ids: list[str]) -> dict[str, Any]:
-        """선택 주문들의 우선순위를 계산 (dry-run, DB 상태 변경 없음).
-
-        Returns:
-            {"results": [PriorityResult, ...]} 형식. 각 PriorityResult는
-            order_id, total_score, rank, factors, recommendation_reason,
-            delay_risk, ready_status, blocking_reasons 등 포함.
-
-        Raises:
-            requests.RequestException: 네트워크/서버 에러 (UI에서 잡아서 표시)
-        """
-        result = self._post(
-            "/api/production/schedule/calculate",
-            {"order_ids": order_ids},
-        )
-        return result if isinstance(result, dict) else {"results": []}
-
-    def start_production_batch(self, order_ids: list[str]) -> list[dict[str, Any]]:
-        """배치 큐 등록 — POST /api/production/schedule/start.
-
-        2026-04-27: 이전 'start_production' 동명 메서드 버그 픽스. 의미상 라인
-        투입(Item 생성)과 다르므로 메서드명 분리. 자세한 비교는 start_production_one 참조.
-
-        backend 동작: ord_stat=MFG transition 만. Item/EquipTaskTxn 생성 안 함.
-        실제 라인 투입은 운영 모니터링 페이지의 라인 투입 버튼이 별도로 호출.
-
-        Returns:
-            가상 ProductionJob shape 리스트 (id, order_id, started_at, ...).
-            백엔드가 리스트가 아닌 응답을 주면 빈 리스트 반환.
-
-        Raises:
-            requests.RequestException: 네트워크/서버 에러.
-        """
-        result = self._post(
-            "/api/production/schedule/start",
-            {"order_ids": order_ids},
-        )
-        return result if isinstance(result, list) else []
-
-    def create_priority_log(
-        self,
-        order_id: str,
-        old_rank: int,
-        new_rank: int,
-        reason: str,
-    ) -> dict[str, Any] | None:
-        """우선순위 수동 변경 이력 기록."""
-        return self._post(
-            "/api/production/schedule/priority-log",
-            {
-                "order_id": order_id,
-                "old_rank": old_rank,
-                "new_rank": new_rank,
-                "reason": reason,
-            },
-        )

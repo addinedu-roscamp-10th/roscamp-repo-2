@@ -5,7 +5,7 @@ Management Service(gRPC, :50051) 를 호출할 때 사용하는 싱글톤 stub.
 
 현재 범위:
   - Health RPC proxy
-  - StartProduction write proxy
+  - StartShipping write proxy
   - Graceful degradation: Management 미가동 시 ManagementUnavailable 예외 → 503 응답
 
 환경변수:
@@ -41,11 +41,7 @@ try:
 
     _PROTO_AVAILABLE = True
 except ImportError as exc:
-    # 2026-05-14: WARNING → ERROR 승격.
     # proto stubs 로딩 실패는 Management 미가동(런타임 장애)이 아니라 빌드/배포 구성 오류다.
-    # 이전엔 WARNING 으로만 남고 모든 RPC 가 ManagementUnavailable 로 폴백되며,
-    # /api/production/start 같이 local fallback 이 있는 라우트는 정상 동작처럼 보여
-    # 운영 중에도 발견이 늦어질 수 있었다.
     logger.error(
         "Management proto stubs import FAILED (CONFIG ERROR, not a service outage): %s. "
         "Regenerate via 'python -m grpc_tools.protoc -I rpc/proto --python_out=. --grpc_python_out=. "
@@ -145,55 +141,6 @@ class ManagementClient:
                 f"Management {self.endpoint} unreachable: {exc.code()}"
             ) from exc
 
-    def start_production(self, ord_id: int):
-        """SPEC-C2 Iteration 3: smartcast v2 단건 생산 개시 proxy.
-
-        Returns: proto StartProductionResult (ord_id, item_id, equip_task_txn_id, message)
-        Raises:
-            ValueError — ord_id 무효 / 존재하지 않음 / 패턴 미등록 (gRPC INVALID_ARGUMENT)
-            ManagementUnavailable — Mgmt 미가동 또는 timeout
-        """
-        try:
-            self._ensure_channel()
-            assert self._stub is not None
-            resp = self._stub.StartProduction(
-                management_pb2.StartProductionRequest(ord_id=int(ord_id)),
-                timeout=self._timeout,
-            )
-        except grpc.RpcError as exc:
-            code = exc.code() if hasattr(exc, "code") else None
-            if code == grpc.StatusCode.INVALID_ARGUMENT:
-                raise ValueError(exc.details() or "invalid argument") from exc
-            raise ManagementUnavailable(
-                f"StartProduction failed ({code}): {exc.details() if hasattr(exc, 'details') else exc}"
-            ) from exc
-        # Legacy result field may be empty while canonical ack is populated.
-        result = getattr(resp, "result", None)
-        if (
-            result is not None
-            and (
-                getattr(result, "ord_id", 0)
-                or getattr(result, "item_id", 0)
-                or getattr(result, "equip_task_txn_id", 0)
-                or getattr(result, "message", "")
-            )
-        ):
-            return result
-
-        ack = getattr(resp, "ack", None)
-        if ack is not None and getattr(ack, "orders", None):
-            first = ack.orders[0]
-
-            class _Result:
-                ord_id = first.ord_id
-                item_id = first.item_id
-                equip_task_txn_id = first.equip_task_txn_id
-                message = first.reason or ack.message or ""
-
-            return _Result()
-
-        raise ManagementUnavailable("StartProduction returned no result payload")
-
     def start_shipping(self, ord_id: int) -> dict:
         """출하 트리거 — Management.StartShipping RPC proxy.
 
@@ -221,33 +168,6 @@ class ManagementClient:
             "item_ids": [int(x) for x in resp.item_ids],
             "accepted": bool(resp.accepted),
             "message": resp.message or "",
-        }
-
-    def register_pattern(self, ord_id: int, ptn_loc_id: int):
-        """발주↔패턴 위치 등록 proxy."""
-        try:
-            self._ensure_channel()
-            assert self._stub is not None
-            resp = self._stub.RegisterPattern(
-                management_pb2.RegisterPatternRequest(
-                    ord_id=int(ord_id),
-                    ptn_loc_id=int(ptn_loc_id),
-                ),
-                timeout=self._timeout,
-            )
-        except grpc.RpcError as exc:
-            code = exc.code() if hasattr(exc, "code") else None
-            if code == grpc.StatusCode.INVALID_ARGUMENT:
-                raise ValueError(exc.details() or "invalid argument") from exc
-            if code == grpc.StatusCode.NOT_FOUND:
-                raise LookupError(exc.details() or "not found") from exc
-            raise ManagementUnavailable(
-                f"RegisterPattern failed ({code}): {exc.details() if hasattr(exc, 'details') else exc}"
-            ) from exc
-        return {
-            "ord_id": resp.ord_id,
-            "pattern_id": resp.pattern_id if resp.HasField("pattern_id") else None,
-            "ptn_loc_id": resp.ptn_loc_id if resp.HasField("ptn_loc_id") else None,
         }
 
     def close(self) -> None:
