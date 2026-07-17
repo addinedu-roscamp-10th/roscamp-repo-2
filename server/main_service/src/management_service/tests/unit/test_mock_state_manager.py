@@ -3,7 +3,12 @@ from __future__ import annotations
 import asyncio
 
 from services.contracts.enums import EventType, TaskType, TxnStat
-from services.contracts.models import AllocateTaskResInput, CreateTaskInput, UpdateTaskStatusInput
+from services.contracts.models import (
+    AllocateTaskResInput,
+    CreateTaskInput,
+    ItemStatusRecord,
+    UpdateTaskStatusInput,
+)
 from services.core.event_bridge import EventBridgeImpl
 from services.core.state_manager import StateManager
 from services.core.task_manager import TaskManager
@@ -26,6 +31,23 @@ def test_get_empty_start_slot_falls_back_to_memory_slots_when_repo_is_unavailabl
 
         start_slot = await state_manager.get_empty_start_slot(target_qty=2)
 
+        assert start_slot == (1, 1)
+
+    asyncio.run(scenario())
+
+
+def test_get_empty_start_slot_skips_occupied_prefix() -> None:
+    """앞 슬롯이 점유돼 있으면 그 다음 연속 빈 구간을 시작 위치로 선택한다."""
+
+    async def scenario() -> None:
+        state_manager = StateManager(enable_persistence=False)
+        task_manager = TaskManager(sm=state_manager)
+        state_manager.task_manager = task_manager
+        for col in range(1, 4):
+            task_manager.slot_table[(1, col)]["status"] = "occupied"
+
+        start_slot = await state_manager.get_empty_start_slot(target_qty=2)
+
         assert start_slot == (1, 4)
 
     asyncio.run(scenario())
@@ -39,8 +61,8 @@ def test_get_empty_start_slot_requires_contiguous_slots() -> None:
         task_manager = TaskManager(sm=state_manager)
         state_manager.task_manager = task_manager
 
-        task_manager.slot_table[(1, 5)]["status"] = "Used"
-        task_manager.slot_table[(2, 4)]["status"] = "Used"
+        task_manager.slot_table[(1, 5)]["status"] = "occupied"
+        task_manager.slot_table[(2, 4)]["status"] = "occupied"
 
         start_slot = await state_manager.get_empty_start_slot(target_qty=9)
 
@@ -137,29 +159,183 @@ def test_reserve_storage_slots_passes_start_position_and_quantity_to_repository(
     assert repo.calls == [(1, 2, 3)]
 
 
-def test_task_manager_reservation_syncs_reserved_slots_to_state_manager() -> None:
-    """메모리 랙 예약이 성공하면 같은 구간을 state manager에 DB sync 요청한다."""
+def test_task_manager_reserves_db_before_updating_memory_slots() -> None:
+    """DB 슬롯을 먼저 예약한 뒤 같은 구간의 메모리 슬롯을 reserved로 바꾼다."""
 
     class _StateManager:
         def __init__(self) -> None:
             self.calls: list[tuple[tuple[int, int], int]] = []
+            self.task_manager: TaskManager | None = None
+            self.statuses_at_db_call: list[str] = []
 
         def reserve_storage_slots(
             self,
             start_pos: tuple[int, int],
             target_qty: int,
         ) -> int:
+            assert self.task_manager is not None
+            self.statuses_at_db_call = [
+                self.task_manager.slot_table[(1, col)]["status"]
+                for col in range(1, target_qty + 1)
+            ]
             self.calls.append((start_pos, target_qty))
             return target_qty
 
     state_manager = _StateManager()
     task_manager = TaskManager(sm=state_manager)
+    state_manager.task_manager = task_manager
 
-    task_manager.reserve_rack_slots(order_id=4, start_pos=(1, 1), target_qty=2)
+    task_manager.reserve_rack_slots(
+        order_id=4,
+        start_pos=(1, 1),
+        target_qty=2,
+    )
 
     assert task_manager.slot_table[(1, 1)]["status"] == "reserved"
     assert task_manager.slot_table[(1, 2)]["status"] == "reserved"
     assert state_manager.calls == [((1, 1), 2)]
+    assert state_manager.statuses_at_db_call == ["empty", "empty"]
+
+
+def test_task_manager_keeps_memory_empty_when_db_reservation_is_incomplete() -> None:
+    """DB 예약 수량이 부족하면 메모리 슬롯을 reserved로 바꾸지 않는다."""
+
+    class _StateManager:
+        def reserve_storage_slots(
+            self,
+            start_pos: tuple[int, int],
+            target_qty: int,
+        ) -> int:
+            assert start_pos == (1, 1)
+            assert target_qty == 2
+            return 0
+
+    task_manager = TaskManager(sm=_StateManager())
+
+    reserved_count = task_manager.reserve_rack_slots(
+        order_id=4,
+        start_pos=(1, 1),
+        target_qty=2,
+    )
+
+    assert reserved_count == 0
+    assert task_manager.slot_table[(1, 1)] == {
+        "status": "empty",
+        "order_id": None,
+    }
+    assert task_manager.slot_table[(1, 2)] == {
+        "status": "empty",
+        "order_id": None,
+    }
+
+
+def test_task_manager_marks_slot_occupied_after_location_update() -> None:
+    """양품 item의 적재 위치를 기록한 뒤 해당 메모리 슬롯을 점유 처리한다."""
+
+    class _StateManager:
+        def __init__(self) -> None:
+            self.task_manager: TaskManager | None = None
+            self.status_at_location_update: str | None = None
+
+        async def update_item_storage_location(
+            self,
+            item_id: int,
+            strg_loc: tuple[int, int],
+        ) -> None:
+            assert item_id == 1001
+            assert strg_loc == (1, 1)
+            assert self.task_manager is not None
+            self.status_at_location_update = self.task_manager.slot_table[(1, 1)]["status"]
+
+    async def scenario() -> None:
+        state_manager = _StateManager()
+        task_manager = TaskManager(sm=state_manager)
+        state_manager.task_manager = task_manager
+        task_manager.slot_table[(1, 1)] = {
+            "status": "reserved",
+            "order_id": 7,
+        }
+
+        strg_loc = await task_manager._calculate_strg_loc(
+            TaskType.ToPAWait,
+            ItemStatusRecord(item_id=1001, order_id=7),
+        )
+
+        assert strg_loc == (1, 1)
+        assert state_manager.status_at_location_update == "reserved"
+        assert task_manager.slot_table[(1, 1)]["status"] == "occupied"
+
+    asyncio.run(scenario())
+
+
+def test_complete_ship_batch_persists_before_memory_update() -> None:
+    """출고 item과 storage 해제를 DB에 반영한 뒤 메모리 item을 갱신한다."""
+
+    class _Repo:
+        def __init__(self) -> None:
+            self.state_manager: StateManager | None = None
+            self.trace: list[str] = []
+
+        def _assert_memory_not_updated(self) -> None:
+            assert self.state_manager is not None
+            assert self.state_manager._items[1001]["strg_loc"] == (1, 1)
+
+        def sync_item_snapshot(self, item: dict) -> None:
+            self._assert_memory_not_updated()
+            assert item["strg_loc"] is None
+            self.trace.append("db:item")
+
+        def release_storage_slot_for_item(self, item_id: int) -> bool:
+            self._assert_memory_not_updated()
+            assert item_id == 1001
+            self.trace.append("db:slot")
+            return True
+
+    async def scenario() -> None:
+        repo = _Repo()
+        state_manager = StateManager(repository=repo)
+        repo.state_manager = state_manager
+        state_manager._items[1001] = {
+            "item_id": 1001,
+            "flow_stat": "STORED",
+            "strg_loc": (1, 1),
+        }
+
+        await state_manager.complete_ship_batch([(1001, 1, 1)])
+
+        assert repo.trace == ["db:item", "db:slot"]
+        assert state_manager._items[1001]["flow_stat"] == "READY_TO_SHIP"
+        assert state_manager._items[1001]["strg_loc"] is None
+
+    asyncio.run(scenario())
+
+
+def test_task_manager_releases_shipped_slots_for_reuse() -> None:
+    """출고가 끝난 슬롯은 다음 주문이 같은 위치를 즉시 예약할 수 있다."""
+
+    class _StateManager:
+        def reserve_storage_slots(
+            self,
+            start_pos: tuple[int, int],
+            target_qty: int,
+        ) -> int:
+            return target_qty
+
+    task_manager = TaskManager(sm=_StateManager())
+    task_manager.reserve_rack_slots(2, (1, 1), 3)
+    for col in range(1, 4):
+        task_manager.slot_table[(1, col)]["status"] = "occupied"
+
+    task_manager.release_shipped_slots(
+        [(1, 1, 1), (2, 1, 2), (3, 1, 3)]
+    )
+    task_manager.reserve_rack_slots(1, (1, 1), 3)
+
+    assert all(
+        task_manager.slot_table[(1, col)]
+        == {"status": "reserved", "order_id": 1}
+        for col in range(1, 4)
+    )
 
 
 def test_tochg_keeps_amr_unavailable_until_charged() -> None:

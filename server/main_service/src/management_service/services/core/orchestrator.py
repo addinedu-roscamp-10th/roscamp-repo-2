@@ -140,15 +140,25 @@ class Orchestrator(IOrchestrator):
                     results.append(result)
                     continue
 
-                # 주문 시작 위치 저장
-                self.state_manager.orders.setdefault(ord_id, {})["rack_start_pos"] = start_pos
-
                 # 슬롯 예약
-                self.task_manager.reserve_rack_slots(
+                reserved_count = self.task_manager.reserve_rack_slots(
                     order_id=ord_id,
                     start_pos=start_pos,
                     target_qty=target_qty,
                 )
+                if reserved_count != target_qty:
+                    result = self._build_rejected_ack(
+                        ord_id,
+                        f"Rack slot reservation incomplete. target_qty={target_qty} reserved_count={reserved_count}",
+                    )
+                    logger.warning(
+                        "start production rejected: ord_id=%s reason=%s",
+                        ord_id,
+                        result.reason,
+                    )
+                    rejected += 1
+                    results.append(result)
+                    continue
 
                 # 로그 출력 추천
                 #self.task_manager.log_slot_table()
@@ -230,7 +240,9 @@ class Orchestrator(IOrchestrator):
                 await self.state_manager.complete_ship_batch(
                     finished_batch
                 )
-            # 다음 batch 출고 계속
+                self.task_manager.release_shipped_slots(finished_batch)  # 출고 완료된 슬롯 해제
+
+            # 다음 batch 출고
             if self.task_manager.has_ship_plan(item_info.order_id):
                 await self._schedule_ship_task(item_info.order_id, event="pick_done")
             return

@@ -313,7 +313,6 @@ class StateManager:
         order_meta = self.orders.get(ord_id, {})
         target_qty = max(int(order_meta.get("target", 1) or 1), 1)
         ptn_id = order_meta.get("ptn_loc_id") or order_meta.get("ptn_id")
-        rack_start_pos = order_meta.get("rack_start_pos")
 
         item_ids: list[int] = []
         equip_task_txn_ids: list[int] = []
@@ -862,30 +861,9 @@ class StateManager:
                         ord_id,
                         target_qty,
                     )
-                    if self.task_manager is not None:  
-                        self.task_manager.release_order_slots(ord_id)  
-                        #self.task_manager.log_slot_table()
-                    else:  
-                        logger.warning("task_manager is not configured; order cleanup skipped")  
 
                 return complete
 
-            logger.info(
-                "[StateManager] PA_GP completion: ord_id=%s complete=%s",
-                ord_id,
-                db_complete,
-            )
-            if db_complete:
-                logger.info("[StateManager] ord_id=%s 생산완료", ord_id)
-
-                if self.task_manager is not None:  
-                    self.task_manager.release_order_slots(ord_id)
-                    #self.task_manager.log_slot_table()  
-                else:  
-                    logger.warning("task_manager is not configured; order cleanup skipped")  
-
-
-            return bool(db_complete)
 
         order_state = self.orders.setdefault(ord_id, {})
         gp_qty = int(order_state.get("gp_qty", 0)) + 1
@@ -905,13 +883,6 @@ class StateManager:
                 ord_id,
                 target_qty,
             )
-
-            if self.task_manager is not None:  
-                self.task_manager.release_order_slots(ord_id)
-                #self.task_manager.log_slot_table()  
-            else: 
-                logger.warning("task_manager is not configured; order cleanup skipped")  
-
 
         return is_complete
 
@@ -1245,12 +1216,15 @@ class StateManager:
             item["strg_loc"],
         )
 
-    #주문 수량만큼 공간이 충분하면 가장 작은 위치를 반환
+    # 연속 빈 슬롯의 시작 위치 반환
     async def get_empty_start_slot(self, target_qty: int) -> tuple[int, int] | None:
         """
         DB 기준으로 빈 적재 슬롯을 조회하고,
-        주문 수량만큼 공간이 충분하면 가장 작은 위치를 반환한다.
+        주문 수량만큼 row-major 순서로 연속된 공간이 있으면 가장 작은 위치를 반환한다.
         """
+        if target_qty <= 0:
+            return None
+
         db_slots = self._safe_repo_call("get_storage_slots")
 
         # DB 조회 실패 시 메모리로
@@ -1279,18 +1253,41 @@ class StateManager:
         if len(empty_slots) < target_qty:
             return None
 
-        row, col = empty_slots[0]
-        return (row, col)
+        # row-major 연속 빈 구간 탐색
+        max_col = int(getattr(self.task_manager, "MAX_COL", 0) or 0)
+        if max_col <= 0 and db_slots is not None:
+            max_col = max((int(slot["col"]) for slot in db_slots), default=0)
+        if max_col <= 0:
+            max_col = max((col for _, col in empty_slots), default=0)
+        if max_col <= 0:
+            return None
+
+        empty_slot_set = set(empty_slots)
+        for start_row, start_col in empty_slots:
+            start_idx = (start_row - 1) * max_col + (start_col - 1)
+            required_positions = {
+                ((start_idx + offset) // max_col + 1, (start_idx + offset) % max_col + 1)
+                for offset in range(target_qty)
+            }
+            if required_positions.issubset(empty_slot_set):
+                return (start_row, start_col)
+
+        return None
     #item 상태 출고 완료 /보관 위치 제거 /rack slot 해제
     async def complete_ship_batch(self, batch: list[tuple[int, int, int]]) -> None:
         for item_id, row, col in batch:
             item = self._items.setdefault(item_id, {"item_id": item_id})
-            item["flow_stat"] = "READY_TO_SHIP"
-            item["cur_stat"] = "READY_TO_SHIP"
-            item["strg_loc"] = None
-            item["last_task_type"] = "PICK"
+            completed_item = dict(item)
+            completed_item["flow_stat"] = "READY_TO_SHIP"
+            completed_item["cur_stat"] = "READY_TO_SHIP"
+            completed_item["strg_loc"] = None
+            completed_item["last_task_type"] = "PICK"
 
-            self._safe_repo_call("sync_item_snapshot", item)
+            # DB 출고 처리 후 메모리 반영
+            self._safe_repo_call("sync_item_snapshot", completed_item)
+            released = self._safe_repo_call("release_storage_slot_for_item", item_id)
+
+            item.update(completed_item)
 
             logger.info(
                 "[SHIP DEBUG] complete item: item_id=%s loc=(%s,%s)",
@@ -1299,8 +1296,6 @@ class StateManager:
                 col,
             )
 
-            self._safe_repo_call("mark_item_shipped", item_id)
-            released = self._safe_repo_call("release_storage_slot_for_item", item_id)
             logger.info(
                 "[StateManager] complete_ship_batch: item=%s loc=(%s,%s) released=%s",
                 item_id,

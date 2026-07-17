@@ -24,7 +24,7 @@ class IOrchestrator(Protocol):
 class ITaskManager(Protocol):
 
     ##orchestrator가 사용하는 인터페이스
-    def reserve_rack_slots(self, order_id: int, start_pos: tuple[int, int], target_qty:int): 
+    def reserve_rack_slots(self, order_id: int, start_pos: tuple[int, int], target_qty:int) -> int:
         ...
     
     async def create_next_task(self, item_info: ItemStatusRecord ,eventMsg: Optional[str] = None) -> List[NextTaskResult]: 
@@ -39,7 +39,7 @@ class ITaskManager(Protocol):
     def has_ship_plan(self, order_id: int) -> bool:
         ...
 
-    def release_order_slots(self, order_id: int) -> None:
+    def release_shipped_slots(self, batch: list[tuple[int, int, int]]) -> None:
         ...
 
 class ITaskAllocator(Protocol):

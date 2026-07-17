@@ -51,11 +51,12 @@ class TaskManager(ITaskManager):
 
 
     #오더 투입시 해당 오더가 사용할 적재 공간 예약
-    def reserve_rack_slots(self, order_id: int, start_pos: tuple[int, int], target_qty: int):
+    def reserve_rack_slots(self, order_id: int, start_pos: tuple[int, int], target_qty: int) -> int:
         """주문 투입 시 해당 오더가 사용할 슬롯들을 가상 랙에 예약한다."""
         row, col = start_pos
 
         assigned = 0
+        candidate_positions: list[tuple[int, int]] = []
         current_abs_idx = (row - 1) * self.MAX_COL + (col - 1)
 
         while assigned < target_qty:
@@ -74,25 +75,38 @@ class TaskManager(ITaskManager):
                 logger.warning("예약 불가 슬롯: %s-%s slot=%s", curr_row, curr_col, slot)
                 break
 
-            slot["order_id"] = order_id
-            slot["status"] = "reserved"
-
             assigned += 1
+            candidate_positions.append(pos_key)
             current_abs_idx += 1
 
         logger.info("주문 %s 구역 예약 완료: start=%s target=%s assigned=%s",
                     order_id, start_pos, target_qty, assigned)
 
-        if assigned > 0:
-            reserved_count = self.sm.reserve_storage_slots(start_pos, assigned)
-            if reserved_count is not None and reserved_count != assigned:
-                logger.warning(
-                    "DB 적재 슬롯 예약 불일치: order_id=%s start=%s memory_assigned=%s db_reserved=%s",
-                    order_id,
-                    start_pos,
-                    assigned,
-                    reserved_count,
-                )
+        if assigned != target_qty:
+            return assigned
+
+        if assigned == 0:
+            return 0
+
+        reserved_count = self.sm.reserve_storage_slots(start_pos, assigned)
+        if reserved_count != assigned:
+            logger.warning(
+                "DB 적재 슬롯 예약 불일치: order_id=%s start=%s requested=%s reserved=%s",
+                order_id,
+                start_pos,
+                assigned,
+                reserved_count,
+            )
+            return int(reserved_count or 0)
+
+        # DB 예약 성공 시 메모리 반영
+        for position in candidate_positions:
+            self.slot_table[position] = {
+                "status": "reserved",
+                "order_id": order_id,
+            }
+
+        return assigned
 
     def log_slot_table(self):
         """현재 slot_table 상태를 로그 출력"""
@@ -119,15 +133,18 @@ class TaskManager(ITaskManager):
 
         logger.info("======================================")
 
-    
-    #오더 종료 시 Empty 슬롯의 소유권 해제 (Occupied는 유지 - 출고용)
-    def release_order_slots(self, order_id: int):
-       
-        for (f, c), data in self.slot_table.items():
-            if data["order_id"] == order_id:
-                if data["status"] in ["empty", "reserved"]:
-                    data["order_id"] = None
-                    data["status"] = "empty"
+    def release_shipped_slots(self, batch: list[tuple[int, int, int]]) -> None:
+        """출고된 slot을 메모리에서도 해제."""
+        for _item_id, row, col in batch:
+            position = (int(row), int(col))
+            if position not in self.slot_table:
+                logger.warning("출고 슬롯이 slot_table에 없음: position=%s", position)
+                continue
+            self.slot_table[position] = {
+                "status": "empty",
+                "order_id": None,
+            }
+        logger.info("출고 슬롯 메모리 해제 완료: batch=%s", batch)
 
     #작업 객체 생성 to orchestrator
     async def create_next_task(self, item_info: ItemStatusRecord, event: str = None) -> List[NextTaskResult]:
@@ -271,8 +288,9 @@ class TaskManager(ITaskManager):
     
         return NextTaskResult(item_id=item_info.item_id, txn_id=curr_txn_id, task_type=task_type ) #proority = 0 
     
-        #적재위치계산 
+    # 적재위치계산
     async def _calculate_strg_loc(self, task_type: TaskType, item_info: ItemStatusRecord) -> str | None:
+        """불량품은 불량 구역을, 양품은 주문에 예약된 슬롯을 적재 위치로 선택한다."""
         if item_info.is_defective:
             return "DEFECTIVE_ZONE"
         
@@ -285,6 +303,9 @@ class TaskManager(ITaskManager):
                         item_info.item_id,
                         strg_loc,
                     )
+
+                    # 양품으로 할당된 슬롯을 메모리에서 점유 처리
+                    data["status"] = "occupied"
 
                     return strg_loc
 

@@ -24,7 +24,10 @@ class _RecordingTaskManager:
         self.responses: dict[str | None, list[NextTaskResult]] = {}
         self.ship_calls: list[dict[str, object]] = []
         self.ship_result: ShipTaskResult | None = None
+        self.ship_batches: dict[int, list[list[tuple[int, int, int]]]] = {}
         self.reserve_calls: list[dict[str, object]] = []
+        self.released_ship_batches: list[list[tuple[int, int, int]]] = []
+        self.reserved_count: int | None = None
 
     async def create_next_task(
         self,
@@ -59,6 +62,19 @@ class _RecordingTaskManager:
         )
         return self.ship_result
 
+    def pop_finished_ship_batch(self, order_id: int) -> list[tuple[int, int, int]]:
+        batches = self.ship_batches.get(order_id)
+        if not batches:
+            self.ship_batches.pop(order_id, None)
+            return []
+        finished_batch = batches.pop(0)
+        if not batches:
+            self.ship_batches.pop(order_id, None)
+        return finished_batch
+
+    def has_ship_plan(self, order_id: int) -> bool:
+        return bool(self.ship_batches.get(order_id))
+
     def log_slot_table(self) -> None:
         return None
 
@@ -67,7 +83,7 @@ class _RecordingTaskManager:
         order_id: int,
         start_pos: tuple[int, int],
         target_qty: int,
-    ) -> None:
+    ) -> int:
         self.reserve_calls.append(
             {
                 "order_id": order_id,
@@ -75,6 +91,10 @@ class _RecordingTaskManager:
                 "target_qty": target_qty,
             }
         )
+        return target_qty if self.reserved_count is None else self.reserved_count
+
+    def release_shipped_slots(self, batch: list[tuple[int, int, int]]) -> None:
+        self.released_ship_batches.append(list(batch))
 
 
 class _SequencedAllocator:
@@ -133,6 +153,8 @@ class _RecordingStateManager:
         self.available_resources: dict[str, bool] = {}
         self.orders: dict[int, dict[str, object]] = {}
         self.start_slots: list[int] = []
+        self.completed_ship_batches: list[list[tuple[int, int, int]]] = []
+        self.start_production_calls: list[int] = []
 
     async def get_item(self, item_id: int) -> ItemStatusRecord:
         self.get_item_calls.append(item_id)
@@ -145,6 +167,21 @@ class _RecordingStateManager:
             for item in self.items.values()
             if item.order_id == ord_id
         ]
+
+    async def load_ship_item_locations(self, ord_id: int) -> list[tuple[int, int, int]]:
+        return sorted(
+            (item.item_id, item.strg_loc[0], item.strg_loc[1])
+            for item in self.items.values()
+            if item.order_id == ord_id and item.strg_loc is not None
+        )
+
+    async def complete_ship_batch(self, batch: list[tuple[int, int, int]]) -> None:
+        self.completed_ship_batches.append(list(batch))
+        for item_id, _, _ in batch:
+            item = self.items[item_id]
+            self.items[item_id] = item.model_copy(
+                update={"flow_stat": "READY_TO_SHIP", "strg_loc": None}
+            )
 
     def is_res_available(self, res_id: str) -> bool:
         return self.available_resources.get(res_id, False)
@@ -161,6 +198,7 @@ class _RecordingStateManager:
     async def start_production(self, ord_id: int):
         from services.contracts.models import StartProductionOrderAckModel
 
+        self.start_production_calls.append(ord_id)
         return StartProductionOrderAckModel(
             ord_id=ord_id,
             accepted=True,
@@ -279,6 +317,31 @@ def test_start_production_uses_state_manager_target_qty_for_rack_reservation() -
                 "target_qty": 10,
             }
         ]
+
+    asyncio.run(scenario())
+
+
+def test_start_production_rejects_incomplete_slot_reservation() -> None:
+    """DB 슬롯 예약 수량이 부족하면 item 생성을 시작하지 않는다."""
+
+    async def scenario() -> None:
+        event_bridge = EventBridgeImpl()
+        task_manager = _RecordingTaskManager()
+        task_manager.reserved_count = 0
+        allocator = _SequencedAllocator([])
+        executor = _RecordingExecutor()
+        state_manager = _RecordingStateManager({})
+        state_manager.orders[3] = {"target": 10}
+        orchestrator = Orchestrator(task_manager, allocator, state_manager, event_bridge, executor)
+
+        result = await orchestrator.start_production([3])
+
+        assert result.accepted_count == 0
+        assert result.rejected_count == 1
+        assert state_manager.start_production_calls == []
+        assert result.orders[0].reason == (
+            "Rack slot reservation incomplete. target_qty=10 reserved_count=0"
+        )
 
     asyncio.run(scenario())
 
@@ -500,6 +563,10 @@ def test_pick_completed_event_creates_next_shipping_task() -> None:
             task_type=TaskType.ToSHIP,
             batch=[(1004, 2, 5)],
         )
+        task_manager.ship_batches[501] = [
+            [(1001, 2, 4)],
+            [(1004, 2, 5)],
+        ]
         allocator = _SequencedAllocator(
             [AllocateTaskResult(success=True, req_res_type="TAT", res_id="TAT1")]
         )
@@ -525,10 +592,12 @@ def test_pick_completed_event_creates_next_shipping_task() -> None:
         assert task_manager.ship_calls == [
             {
                 "order_id": 501,
-                "item_locations": [(1001, 2, 4), (1004, 2, 5)],
+                "item_locations": [(1004, 2, 5)],
                 "event": "pick_done",
             }
         ]
+        assert state_manager.completed_ship_batches == [[(1001, 2, 4)]]
+        assert task_manager.released_ship_batches == [[(1001, 2, 4)]]
         assert len(executor.execute_calls) == 1
         execute_input = executor.execute_calls[0]
         assert execute_input.task_type == TaskType.ToSHIP
