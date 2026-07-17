@@ -26,7 +26,7 @@ class MonitorRpcMixin:
     def ListAlerts(self, request, context):
         """alerts_stat 테이블에서 최근 알림 목록 반환."""
         from smart_cast_db.models import Alert
-        from db_session import SessionLocal
+        from smart_cast_db.database import SessionLocal
 
         sev = (request.severity_filter or "").strip().lower() or None
         limit = request.limit if request.limit > 0 else 20
@@ -56,4 +56,3 @@ class MonitorRpcMixin:
             context.set_code(grpc.StatusCode.INTERNAL)
             context.set_details(str(exc))
             return management_pb2.ListAlertsResponse()
-

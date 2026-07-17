@@ -15,18 +15,21 @@ _DEFAULT_PEM = _DB_ROOT.parent.parent / "global-bundle.pem"
 def load_env() -> None:
     try:
         from dotenv import load_dotenv  # type: ignore[import-untyped]
-
-        load_dotenv(_DB_ROOT / ".env")
+        load_dotenv(_DB_ROOT.parent / "main_service" / ".env.local")
     except ImportError:
         pass
-
 
 def connect(**extra_params) -> psycopg.Connection:
     url = os.environ.get("DATABASE_URL")
     if not url:
         print("ERROR: DATABASE_URL is not set.", file=sys.stderr)
-        print("  Copy server/smart_cast_db/.env.example to server/smart_cast_db/.env and fill in the values.", file=sys.stderr)
+        print("  Copy server/main_service/.env.example to server/main_service/.env.local and fill in the values.", file=sys.stderr)
         sys.exit(1)
+
+    # SQLAlchemy 접두사 psycopg Native 규격으로 변환
+    if "://" in url:
+        _, remain = url.split("://", 1)
+        url = f"postgresql://{remain}"
 
     params: dict = {"row_factory": dict_row}
 

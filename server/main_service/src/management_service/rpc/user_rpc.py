@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import management_pb2  # type: ignore
-from db_session import SessionLocal
+from smart_cast_db.database import SessionLocal
 from smart_cast_db.models import UserAccount
 
 

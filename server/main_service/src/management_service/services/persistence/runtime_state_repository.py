@@ -173,7 +173,7 @@ class RuntimeStateRepository:
 
     @classmethod
     def from_default_db(cls) -> "RuntimeStateRepository":
-        from db_session import SessionLocal
+        from smart_cast_db.database import SessionLocal
         from smart_cast_db.models import (
             ChgLocationStat,
             EquipStat,

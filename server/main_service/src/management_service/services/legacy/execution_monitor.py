@@ -25,9 +25,9 @@ from collections.abc import Iterator
 from datetime import datetime, timezone
 
 import management_pb2  # type: ignore
-from db_session import SessionLocal
 from sqlalchemy import select
 
+from smart_cast_db.database import SessionLocal
 from smart_cast_db.models import Item
 
 logger = logging.getLogger(__name__)

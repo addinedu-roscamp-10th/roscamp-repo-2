@@ -10,7 +10,6 @@ numpy>=1.26,<2.0
 # 운영 DB: PostgreSQL 16 + TimescaleDB extension
 # pip install 후 DATABASE_URL 환경변수를 postgresql+psycopg://... 로 설정
 psycopg[binary]==3.2.3
-asyncpg==0.29.0
 alembic==1.13.3
 
 # MQTT bridge (Phase 1+)

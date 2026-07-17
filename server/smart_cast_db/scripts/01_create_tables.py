@@ -25,8 +25,13 @@ def main() -> int:
 
         url = os.environ.get("DATABASE_URL")
         if not url:
-            print("ERROR: DATABASE_URL is not set.", file=sys.stderr)
+            print("ERROR: DATABASE_URL is not set.\\n  Copy server/main_service/.env.example to server/main_service/.env.local and fill in the values.", file=sys.stderr)
             return 1
+
+        # SQLAlchemy 접두사 psycopg Native 규격으로 변환
+        if "://" in url:
+            _, remain = url.split("://", 1)
+            url = f"postgresql://{remain}"
 
         ssl_cert = os.environ.get("SSL_CERT", "").strip()
         _pem = pathlib.Path(__file__).parent.parent.parent.parent / "global-bundle.pem"
