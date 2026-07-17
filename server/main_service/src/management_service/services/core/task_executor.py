@@ -216,7 +216,16 @@ class TaskExecutor:
 
         # abort_task(task_id)로 이 코루틴을 찾을 수 있도록 자기 자신을 등록한다.
         # finally 에서 반드시 제거되도록 try 블록으로 lifecycle 을 감싼다.
-        self._active_executions[input_data.task_id] = asyncio.current_task()
+        # 예: ToSTRG task_id=42 -> {"ToSTRG:42": 현재 asyncio.Task}
+        task_id = str(input_data.task_id)
+        execution_key = (
+            task_id
+            if task_id.startswith(f"{input_data.task_type.value}:")
+            else f"{input_data.task_type.value}:{task_id}"
+        )
+        current_task = asyncio.current_task()
+        if current_task is not None:
+            self._active_executions[execution_key] = current_task
         try:
             # 1. 전처리: 실행 가능 여부 확인 (Mock)
             # 실제 구현 시에는 res_stat 확인 등 수행
@@ -324,7 +333,7 @@ class TaskExecutor:
             raise
 
         finally:
-            self._active_executions.pop(input_data.task_id, None)
+            self._active_executions.pop(execution_key, None)
 
     async def abort_task(self, task_id: str, reason: str = "aborted") -> None:
         """진행 중인 execute_task 코루틴을 강제 종료한다."""

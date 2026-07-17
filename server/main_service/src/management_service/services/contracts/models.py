@@ -188,7 +188,7 @@ class AdapterStepResultInput(BaseModel):
 class UpdateTaskStatusInput(BaseModel):
     """State Manager 로 보낼 Task 진행 상태 업데이트 요청 ([동사][명사]Input 규칙)"""
     task_id: str
-    task_type: Optional[TaskType] = None
+    task_type: TaskType
     new_stat: TxnStat
     error_code: Optional[str] = None
 
@@ -196,20 +196,19 @@ class UpdateTaskStatusInput(BaseModel):
 class AllocateTaskInput(BaseModel):
     task_id: str
     item_id: int
-    req_res_type: str | None = None
     req_res_id: str | None = None
     zone_nm: str | None = None
-    task_type: TaskType | None = None
+    task_type: TaskType
 
 class AllocateTaskResInput(BaseModel):
     task_id: str
-    task_type: Optional[TaskType] = None
+    task_type: TaskType
     item_id: int
     res_id: str
 
 class AllocateTaskResult(BaseModel):
     success: bool
-    req_res_type: str | None = None
+    req_res_type: str
     res_id: str | None = None
     reason: str | None = None
 

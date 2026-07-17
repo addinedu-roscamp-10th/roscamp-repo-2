@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from management_service.services.contracts.enums import TaskType
+from management_service.services.contracts.enums import TaskType, get_required_resource_type
 from management_service.services.contracts.models import AmrRuntimeState
 from management_service.services.core.task_allocator import TaskAllocator
 
@@ -28,6 +28,11 @@ class _DummyStateManager:
 def _allocator() -> TaskAllocator:
     # _select_resource 단위 테스트만 하므로 실제 state_manager 동작은 필요 없다.
     return TaskAllocator(state_manager=_DummyStateManager())
+
+
+def test_every_task_type_has_required_resource_type() -> None:
+    for task_type in TaskType:
+        get_required_resource_type(task_type)
 
 
 def test_select_resource_returns_none_when_no_amr_meets_battery_threshold() -> None:

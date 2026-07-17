@@ -301,7 +301,8 @@ class Orchestrator(IOrchestrator):
             event.res_id,
             req_res_type,
         )
-        await self._process_pending_bucket(req_res_type)
+        if req_res_type is not None:
+            await self._process_pending_bucket(req_res_type)
         # 작업에 할당되지 않은 가용 가능한 AMR은 충전소로 이동
         if req_res_type == "TAT" and event.res_id is not None:
             await self._return_idle_amr_to_charger_if_needed(
@@ -333,6 +334,8 @@ class Orchestrator(IOrchestrator):
             amr_id = event.res_id
             if amr_id is None:
                 raise ValueError("ARM_RETURN_COMPLETED requires res_id")
+            if item_id is None:
+                raise ValueError("ARM_RETURN_COMPLETED requires item_id")
 
             logger.info("[ OK ] arm_return_completed 이벤트 : 복구 완료 확인.")
 

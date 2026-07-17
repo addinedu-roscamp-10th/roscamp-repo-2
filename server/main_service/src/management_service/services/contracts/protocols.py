@@ -43,7 +43,7 @@ class ITaskManager(Protocol):
         ...
 
 class ITaskAllocator(Protocol):
-    async def allocate(self, input_data)  :
+    async def allocate(self, task: AllocateTaskInput) -> AllocateTaskResult:
         ...
 
 class ITaskExecutor(Protocol):
@@ -87,7 +87,13 @@ class IStateManager(Protocol):
     def update_task_status(self, task_id: str, status: str, is_trans: bool) -> None:
         ...
 
-    def mark_task_started(self, task_id: str, res_id: str, is_trans: bool) -> None:
+    def mark_task_started(
+        self,
+        task_id: str,
+        task_type: TaskType,
+        res_id: str,
+        is_trans: bool,
+    ) -> None:
         ...
         
     def update_item_status(
@@ -112,7 +118,13 @@ class IStateManager(Protocol):
     ) -> None:
         ...
 
-    def update_res_task_state(self, task_id: str, res_id: str, cur_stat: str) -> None:
+    def update_res_task_state(
+        self,
+        task_id: str,
+        task_type: TaskType,
+        res_id: str,
+        cur_stat: str,
+    ) -> None:
         ...
 """
         
@@ -163,7 +175,7 @@ class IStateManager(Protocol):
         task_id: str,
         item_id: int | None,
         subtask_type: str,
-        task_type: TaskType | None = None,
+        task_type: TaskType,
     ) -> bool:
         ...
 

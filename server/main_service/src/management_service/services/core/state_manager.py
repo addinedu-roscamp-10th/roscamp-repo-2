@@ -29,7 +29,7 @@ from ..contracts.models import (
 logger = logging.getLogger(__name__)
 
 
-def _make_task_key(task_id: Any, task_type: TaskType | str | None) -> str:
+def _make_task_key(task_id: Any, task_type: TaskType | str) -> str:
     # trans_task_txn / pp_task_txn / equip_task_txn / insp_task_txn 가 PK 시퀀스를 독립으로
     # 가져 같은 정수 id 가 여러 테이블에 동시에 존재할 수 있으므로 task_type 을 prefix 로
     # 붙여 메모리 키 충돌을 막는다.
@@ -41,7 +41,7 @@ def _make_task_key(task_id: Any, task_type: TaskType | str | None) -> str:
         return f"{task_type.value}:{raw}"
     if isinstance(task_type, str) and task_type:
         return f"{task_type}:{raw}"
-    return raw
+    raise ValueError("task_type is required to build a task key")
 
 
 def _parse_iso(value: Any) -> datetime | None:
@@ -568,8 +568,7 @@ class StateManager:
             task_meta["res_id"] = assign_input.res_id
             task_meta["status"] = TxnStat.QUE.value
             task_meta["task_id"] = task_key
-            if assign_input.task_type is not None:
-                task_meta["task_type"] = assign_input.task_type.value
+            task_meta["task_type"] = assign_input.task_type.value
             self._tasks[task_key] = task_meta
 
         self._res_list.setdefault(assign_input.res_id, {})
@@ -577,7 +576,7 @@ class StateManager:
             {
                 "res_id": assign_input.res_id,
                 "res_type": self._res_list.get(assign_input.res_id, {}).get("res_type"),
-                "task_id": assign_input.task_id,
+                "task_id": task_key,
                 "item_id": assign_input.item_id,
                 "status": "ALLOC",
             }
@@ -683,6 +682,7 @@ class StateManager:
     ) -> None:
         """Task 시작 시 따라오는 상태 반영과 이벤트 처리"""
         current_task_type = _normalize_task_type(task_meta.get("task_type"))
+        task_key = _make_task_key(req.task_id, req.task_type)
         if current_task_type != TaskType.ToCHG:
             self._release_charger(assigned_res_id)
 
@@ -700,7 +700,7 @@ class StateManager:
             # ToCHG는 무조건 배터리 부족 AMR이 충전소로 가는 작업
             res_meta.update(
                 {
-                    "task_id": req.task_id,
+                    "task_id": task_key,
                     "item_id": None,
                     "status": "CHG",
                     "task_type": task_meta.get("task_type"),
@@ -709,7 +709,7 @@ class StateManager:
         else:
             res_meta.update(
                 {
-                    "task_id": req.task_id,
+                    "task_id": task_key,
                     "item_id": task_meta.get("item_id"),
                     "status": "ALLOC",
                     "task_type": task_meta.get("task_type"),
@@ -747,8 +747,9 @@ class StateManager:
         """Task 완료/실패 시 resource 상태를 갱신하고 RESOURCE_AVAILABLE 발행 여부를 결정한다."""
         suppress_resource_available = False
         res_meta = self._res_list.setdefault(assigned_res_id, {"res_id": assigned_res_id})
+        task_key = _make_task_key(req.task_id, req.task_type)
         current_task_id = res_meta.get("task_id")
-        if current_task_id not in {None, req.task_id}:
+        if current_task_id not in {None, task_key}:
             self._safe_repo_call("sync_task_status", task_meta)
             logger.info(
                 "[StateManager] resource reset skipped: task=%s res=%s current_task=%s",
@@ -1016,7 +1017,7 @@ class StateManager:
         task_id: str,
         item_id: int | None,
         subtask_type: str,
-        task_type: TaskType | None = None,
+        task_type: TaskType,
     ) -> bool:
         if self._event_bridge is None:
             return False
@@ -1086,15 +1087,22 @@ class StateManager:
         )
         return True
 
-    def mark_task_started(self, task_id: str, res_id: str, is_trans: bool) -> None:
-        if task_id in self._tasks:
-            self._tasks[task_id]["status"] = TxnStat.PROC.value
-            self._tasks[task_id]["task_id"] = task_id
-            self._safe_repo_call("sync_task_status", self._tasks[task_id])
+    def mark_task_started(
+        self,
+        task_id: str,
+        task_type: TaskType,
+        res_id: str,
+        is_trans: bool,
+    ) -> None:
+        task_key = _make_task_key(task_id, task_type)
+        if task_key in self._tasks:
+            self._tasks[task_key]["status"] = TxnStat.PROC.value
+            self._tasks[task_key]["task_id"] = task_key
+            self._safe_repo_call("sync_task_status", self._tasks[task_key])
         res_meta = self._res_list.setdefault(res_id, {"res_id": res_id})
-        res_meta.update({"task_id": task_id, "status": "ALLOC"})
+        res_meta.update({"task_id": task_key, "status": "ALLOC"})
         self._safe_repo_call("sync_resource_snapshot", res_meta)
-        logger.info("[StateManager] mark_task_started: task=%s res=%s", task_id, res_id)
+        logger.info("[StateManager] mark_task_started: task=%s res=%s", task_key, res_id)
 
     def update_item_status(
         self,
@@ -1142,24 +1150,31 @@ class StateManager:
             battery_pct,
         )
 
-    def update_res_task_state(self, task_id: str, res_id: str, cur_stat: str) -> None:
-        if task_id in self._tasks:
-            self._tasks[task_id]["status"] = cur_stat
-            self._tasks[task_id]["task_id"] = task_id
-            self._safe_repo_call("sync_task_status", self._tasks[task_id])
+    def update_res_task_state(
+        self,
+        task_id: str,
+        task_type: TaskType,
+        res_id: str,
+        cur_stat: str,
+    ) -> None:
+        task_key = _make_task_key(task_id, task_type)
+        if task_key in self._tasks:
+            self._tasks[task_key]["status"] = cur_stat
+            self._tasks[task_key]["task_id"] = task_key
+            self._safe_repo_call("sync_task_status", self._tasks[task_key])
         terminal = cur_stat in {TxnStat.SUCC.value, TxnStat.FAIL.value}
         res_status = "IDLE" if terminal else ("ALLOC" if cur_stat == TxnStat.PROC.value else cur_stat)
         res_meta = self._res_list.setdefault(res_id, {"res_id": res_id})
         res_meta.update(
             {
-                "task_id": None if terminal else task_id,
+                "task_id": None if terminal else task_key,
                 "status": res_status,
             }
         )
         self._safe_repo_call("sync_resource_snapshot", res_meta)
         logger.info(
             "[StateManager] update_res_task_state: task=%s res=%s cur_stat=%s",
-            task_id,
+            task_key,
             res_id,
             cur_stat,
         )

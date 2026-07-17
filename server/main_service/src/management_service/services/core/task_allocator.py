@@ -42,7 +42,7 @@ class TaskAllocator:
     # task별 src pose 이름 반환
     def _get_src_pose_name(
         self,
-        task_type: TaskType | None,
+        task_type: TaskType,
     ) -> str | None:
         return TRANS_SRC_POSE.get(task_type)
 
@@ -60,7 +60,7 @@ class TaskAllocator:
     def _select_resource(
         self,
         available_resources: list[str],
-        task_type: TaskType | None,
+        task_type: TaskType,
         zone_nm: str | None = None,
         amr_stats: Sequence[AmrRuntimeState] = (),
     ) -> str | None:
@@ -142,9 +142,9 @@ class TaskAllocator:
         self,
         task: AllocateTaskInput,
     ) -> AllocateTaskResult:
-        # 입력에 타입이 없으면 allocator가 req_res_type을 계산
+        # task_type에 맞는 req_res_type을 allocator가 계산
         required = get_required_resource_type(task.task_type, task.zone_nm)
-        req_res_type = task.req_res_type or (required.value if required else None)
+        req_res_type = required.value
 
         # req_res_id가 들어오면 반드시 그 res가 할당되도록
         if task.req_res_id:

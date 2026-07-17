@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+from pydantic import ValidationError
+
 from services.contracts.enums import EventType, TaskType, TxnStat
 from services.contracts.models import (
     AllocateTaskResInput,
@@ -10,7 +13,7 @@ from services.contracts.models import (
     UpdateTaskStatusInput,
 )
 from services.core.event_bridge import EventBridgeImpl
-from services.core.state_manager import StateManager
+from services.core.state_manager import StateManager, _make_task_key
 from services.core.task_manager import TaskManager
 
 
@@ -20,6 +23,20 @@ def test_seeded_transport_resources_do_not_use_negative_item_sentinel() -> None:
     assert state_manager._res_list["TAT2"]["item_id"] is None
     assert state_manager._res_list["TAT3"]["item_id"] is None
 
+
+def test_canonical_task_key_requires_type_and_scopes_same_txn_id() -> None:
+    """서로 다른 task type의 같은 txn ID는 별도 canonical key를 사용한다."""
+    assert _make_task_key("42", TaskType.ToPP) == "ToPP:42"
+    assert _make_task_key("42", TaskType.ToCHG) == "ToCHG:42"
+
+    with pytest.raises(ValueError, match="task_type is required"):
+        _make_task_key("42", None)  # type: ignore[arg-type]
+
+
+def test_update_task_status_input_requires_task_type() -> None:
+    """상태 전이는 canonical task identity에 필요한 task_type 없이는 생성할 수 없다."""
+    with pytest.raises(ValidationError):
+        UpdateTaskStatusInput(task_id="42", new_stat=TxnStat.PROC)
 
 def test_get_empty_start_slot_falls_back_to_memory_slots_when_repo_is_unavailable() -> None:
     """DB 슬롯 조회가 불가해도 메모리 슬롯 테이블로 생산 시작 위치를 계산한다."""
@@ -358,11 +375,15 @@ def test_tochg_keeps_amr_unavailable_until_charged() -> None:
             CreateTaskInput(item_id=1001, task_type=TaskType.ToCHG)
         )
         await state_manager.update_task_allocation(
-            AllocateTaskResInput(task_id=str(txn_id), item_id=1001, res_id="TAT1")
+            AllocateTaskResInput(task_id=str(txn_id), task_type=TaskType.ToCHG, item_id=1001, res_id="TAT1")
         )
 
         await state_manager.update_task_status(
-            UpdateTaskStatusInput(task_id=str(txn_id), new_stat=TxnStat.PROC)
+            UpdateTaskStatusInput(
+                task_id=str(txn_id),
+                task_type=TaskType.ToCHG,
+                new_stat=TxnStat.PROC,
+            )
         )
 
         assert state_manager._res_list["TAT1"]["status"] == "CHG"
@@ -371,7 +392,11 @@ def test_tochg_keeps_amr_unavailable_until_charged() -> None:
         assert published == []
 
         await state_manager.update_task_status(
-            UpdateTaskStatusInput(task_id=str(txn_id), new_stat=TxnStat.SUCC)
+            UpdateTaskStatusInput(
+                task_id=str(txn_id),
+                task_type=TaskType.ToCHG,
+                new_stat=TxnStat.SUCC,
+            )
         )
 
         assert state_manager._res_list["TAT1"]["status"] == "CHG"
@@ -395,24 +420,32 @@ def test_tochg_completion_does_not_overwrite_newer_resource_assignment() -> None
             CreateTaskInput(item_id=1001, task_type=TaskType.ToCHG)
         )
         await state_manager.update_task_allocation(
-            AllocateTaskResInput(task_id=str(tochg_txn_id), item_id=1001, res_id="TAT1")
+            AllocateTaskResInput(task_id=str(tochg_txn_id), task_type=TaskType.ToCHG, item_id=1001, res_id="TAT1")
         )
         await state_manager.update_task_status(
-            UpdateTaskStatusInput(task_id=str(tochg_txn_id), new_stat=TxnStat.PROC)
+            UpdateTaskStatusInput(
+                task_id=str(tochg_txn_id),
+                task_type=TaskType.ToCHG,
+                new_stat=TxnStat.PROC,
+            )
         )
 
         new_txn_id = await state_manager.insert_task_txn(
             CreateTaskInput(item_id=1002, task_type=TaskType.ToPP)
         )
         await state_manager.update_task_allocation(
-            AllocateTaskResInput(task_id=str(new_txn_id), item_id=1002, res_id="TAT1")
+            AllocateTaskResInput(task_id=str(new_txn_id), task_type=TaskType.ToPP, item_id=1002, res_id="TAT1")
         )
 
         await state_manager.update_task_status(
-            UpdateTaskStatusInput(task_id=str(tochg_txn_id), new_stat=TxnStat.SUCC)
+            UpdateTaskStatusInput(
+                task_id=str(tochg_txn_id),
+                task_type=TaskType.ToCHG,
+                new_stat=TxnStat.SUCC,
+            )
         )
 
-        assert state_manager._res_list["TAT1"]["task_id"] == str(new_txn_id)
+        assert state_manager._res_list["TAT1"]["task_id"] == f"{TaskType.ToPP.value}:{new_txn_id}"
         assert state_manager._res_list["TAT1"]["item_id"] == 1002
         assert state_manager._res_list["TAT1"]["status"] == "ALLOC"
 

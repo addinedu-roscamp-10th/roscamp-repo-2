@@ -153,9 +153,9 @@ def get_resource_binding_policy(task_type: TaskType) -> ResourceBindingPolicy:
 
 
 def get_required_resource_type(
-    task_type: TaskType | None,
+    task_type: TaskType,
     zone_nm: str | None = None,
-) -> ResourceType | None:
+) -> ResourceType:
     if task_type in TAT_TASKS:
         return ResourceType.TAT
     if task_type in CONV_TASKS:
@@ -164,4 +164,4 @@ def get_required_resource_type(
         return ResourceType.PAT
     if task_type in MAT_TASKS:
         return ResourceType.MAT
-    return None
+    raise ValueError(f"resource type mapping missing: task_type={task_type.value}")
