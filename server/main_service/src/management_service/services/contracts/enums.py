@@ -64,11 +64,6 @@ class EventType(str, Enum):
     # subscribers: task_executor (ToINSP task waiter 해제), container.insp_image_responder
     #              (현재는 task_executor orchestrator dispatch 미구현 보완용 fallback).
     INSP_IMAGE_UPLOADED = "INSP_IMAGE_UPLOADED"
-    # ===== DB row trigger event bridge (SPEC: docs/db_event_bridge/SPEC.md) =====
-    # PostgreSQL AFTER INSERT/UPDATE trigger → pg_notify('lifecycle_event', ...)
-    # → DbEventListener → EventBridge.publish(DB_ROW_CHANGED, payload={table, op, row, ...})
-    # 구독자가 payload.table 로 분기. Phase 1 은 generic, Phase 2+ 에서 table 별 specific event 추가 가능.
-    DB_ROW_CHANGED = "DB_ROW_CHANGED"
 
 ## Task Executor
 class TxnStat(str, Enum):
