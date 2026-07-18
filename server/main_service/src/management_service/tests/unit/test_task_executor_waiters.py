@@ -75,6 +75,62 @@ def test_wait_task_completed_raises_when_upstream_task_reports_failure() -> None
     asyncio.run(scenario())
 
 
+def test_wait_task_completed_returns_immediately_for_preobserved_success() -> None:
+    """선행 task가 먼저 완료됐으면 나중에 등록된 waiter도 즉시 통과한다."""
+
+    async def scenario() -> None:
+        executor = TaskExecutor(_RecordingAdapter(), _RecordingStateManager(), _event_bridge())
+        step = CommandStep(
+            step_id=1,
+            action="WAIT_TASK_COMPLETED",
+            params={"task_type": TaskType.ToPAWait},
+            timeout_sec=1,
+        )
+
+        executor.event_bridge.publish(
+            Event(
+                event_type=EventType.TASK_COMPLETED,
+                item_id=1001,
+                payload={"task_type": TaskType.ToPAWait, "status": TxnStat.SUCC.value},
+            )
+        )
+        await asyncio.sleep(0)
+
+        result = await executor._execute_step(_execute_input(TaskType.ToSTRG), step)
+        assert result.success is True
+        assert result.message == "wait_task_completed"
+        assert (1001, TaskType.ToPAWait) not in executor._completed_tasks
+
+    asyncio.run(scenario())
+
+
+def test_wait_task_completed_raises_for_preobserved_failure() -> None:
+    """먼저 도착한 FAIL도 cache에서 소비해 waiter에 즉시 전달한다."""
+
+    async def scenario() -> None:
+        executor = TaskExecutor(_RecordingAdapter(), _RecordingStateManager(), _event_bridge())
+        step = CommandStep(
+            step_id=1,
+            action="WAIT_TASK_COMPLETED",
+            params={"task_type": TaskType.ToPAWait},
+            timeout_sec=1,
+        )
+
+        executor.event_bridge.publish(
+            Event(
+                event_type=EventType.TASK_COMPLETED,
+                item_id=1001,
+                payload={"task_type": TaskType.ToPAWait, "status": TxnStat.FAIL.value},
+            )
+        )
+        await asyncio.sleep(0)
+
+        with pytest.raises(RuntimeError, match="Upstream task finished with status=FAIL"):
+            await executor._execute_step(_execute_input(TaskType.ToSTRG), step)
+
+    asyncio.run(scenario())
+
+
 def test_wait_task_completed_rejects_missing_item_id() -> None:
     """대기 대상 아이템이 없으면 WAIT_TASK_COMPLETED를 시작하지 않는다."""
 

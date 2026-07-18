@@ -46,6 +46,7 @@ class TaskExecutor:
         self._waiters_lock = threading.Lock()
         self._task_waiters: dict[tuple[int, TaskType], list[asyncio.Future[str]]] = defaultdict(list)
         self._subtask_waiters: dict[tuple[int, str], list[asyncio.Future[None]]] = defaultdict(list)
+        self._completed_tasks: dict[tuple[int, TaskType], str] = {}
         self._completed_subtasks: dict[tuple[int, str], bool] = {}
         # 진행 중인 execute_task 코루틴을 task_id로 저장한다
         # 비상 시 abort_task(task_id) 가 여기서 찾아서 정지시킨다
@@ -648,8 +649,27 @@ class TaskExecutor:
         key = (item_id, target_task_type)
         loop = asyncio.get_running_loop()  # 현재 스레드에서 돌고 있는 event loop를 받아옴
         future: asyncio.Future[str] = loop.create_future()  # future 객체 생성
+
         with self._waiters_lock:
-            self._task_waiters[key].append(future)  # item id와 task type으로 waiter 저장
+            completed_status = self._completed_tasks.pop(key, None)
+            if completed_status is None:
+                self._task_waiters[key].append(future)  # item id와 task type으로 waiter 저장
+
+        if completed_status is not None:
+            self.logger.info(
+                "[Executor] Task already observed: task=%s item=%s target=%s status=%s",
+                input_data.task_id,
+                item_id,
+                key[1],
+                completed_status,
+            )
+            if completed_status != TxnStat.SUCC.value:
+                raise RuntimeError(
+                    f"Upstream task finished with status={completed_status}: "
+                    f"item_id={item_id} task_type={key[1]}"
+                )
+            return True
+
         self.logger.info(
             "[Executor] Waiting for task completion: task=%s item=%s target=%s timeout=%ss",
             input_data.task_id,
@@ -833,18 +853,25 @@ class TaskExecutor:
         그 waiter들을 깨워서 WAIT_TASK_COMPLETED 다음 step으로 넘어가게 한다.
         """
         item_id = event.item_id
-        payload_task_type = event.payload.get("task_type")
-        payload_status = event.payload.get("status", TxnStat.SUCC.value)
+        payload_task_type = event.payload["task_type"]
+        payload_status = event.payload["status"]
         if item_id is None or not isinstance(payload_task_type, TaskType):
             return
 
         key = (item_id, payload_task_type)
         with self._waiters_lock:
-            futures = self._task_waiters.pop(key, [])
+            futures = [
+                future
+                for future in self._task_waiters.pop(key, [])
+                if not future.done()
+            ]
+            if not futures:
+                self._completed_tasks[key] = payload_status
+                if len(self._completed_tasks) > 1000:
+                    oldest_key = next(iter(self._completed_tasks))
+                    self._completed_tasks.pop(oldest_key, None)
 
         for future in futures:
-            if future.done():
-                continue
             future.get_loop().call_soon_threadsafe(self._resolve_task_waiter, future, payload_status)
 
     def _on_subtask_completed(self, event: Event) -> None:
