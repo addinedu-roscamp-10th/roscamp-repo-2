@@ -141,7 +141,7 @@ class Orchestrator(IOrchestrator):
                     continue
 
                 # 슬롯 예약
-                reserved_count = self.task_manager.reserve_rack_slots(
+                reserved_count = await self.task_manager.reserve_rack_slots(
                     order_id=ord_id,
                     start_pos=start_pos,
                     target_qty=target_qty,

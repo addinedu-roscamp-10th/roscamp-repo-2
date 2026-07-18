@@ -595,7 +595,7 @@ class TaskExecutor:
 
 
         # 충전소 이동 시 TO_IDLE 상태로 변경
-        self.state_manager.update_amr_charger_return_state(
+        await self.state_manager.update_amr_charger_return_state(
             res_id,
             "TO_IDLE",
             source=source,
@@ -629,7 +629,7 @@ class TaskExecutor:
                 result.message,
             )
         # 충전소 도착 후 IDLE 상태로 변경
-        self.state_manager.update_amr_charger_return_state(
+        await self.state_manager.update_amr_charger_return_state(
             res_id,
             "IDLE",
             source=source,

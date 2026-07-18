@@ -8,8 +8,8 @@ outside this module.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
-import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -159,9 +159,9 @@ class StateManager:
 
         # tat_nav_pose_master / trans_task_bat_threshold / charger pose map:
         # DB 가능하면 DB 우선, 없으면 JSON 폴백.
-        db_poses = self._safe_repo_call("load_tat_nav_poses") or {}
-        db_thresholds = self._safe_repo_call("load_trans_task_bat_thresholds") or {}
-        db_charger_pose_map = self._safe_repo_call("load_charger_pose_map") or {}
+        db_poses = self._safe_repo_call_sync("load_tat_nav_poses") or {}
+        db_thresholds = self._safe_repo_call_sync("load_trans_task_bat_thresholds") or {}
+        db_charger_pose_map = self._safe_repo_call_sync("load_charger_pose_map") or {}
         self.transfer_points: dict[str, tuple[float, float]] = (
             dict(db_poses) if db_poses else dict(seed["transfer_points"])
         )
@@ -178,10 +178,30 @@ class StateManager:
             }
         )
 
-    def _safe_repo_call(self, method_name: str, *args, **kwargs):
+    async def _safe_repo_call(self, method_name: str, *args, **kwargs):
+        """Repository의 비동기 메서드 호출."""
         if not self._db_ready or self._repo is None:
             return None
         method = getattr(self._repo, method_name, None)
+        if method is None:
+            return None
+        try:
+            result = method(*args, **kwargs)
+            if inspect.isawaitable(result):
+                return await result
+            return result
+        except Exception:
+            logger.exception("[StateManager] persistence %s failed", method_name)
+            return None
+
+
+
+    def _safe_repo_call_sync(self, method_name: str, *args, **kwargs):
+        """Repository의 동기 메서드 호출."""
+        if not self._db_ready or self._repo is None:
+            return None
+        sync_method = getattr(self._repo, f"{method_name}_sync", None)
+        method = sync_method or getattr(self._repo, method_name, None)
         if method is None:
             return None
         try:
@@ -191,7 +211,7 @@ class StateManager:
             return None
 
     async def get_order_target_qty(self, ord_id: int) -> int | None:
-        repo_qty = self._safe_repo_call("get_order_target_qty", ord_id)
+        repo_qty = await self._safe_repo_call("get_order_target_qty", ord_id)
         if repo_qty is not None:
             normalized_qty = max(int(repo_qty), 1)
             self.orders.setdefault(ord_id, {})["target"] = normalized_qty
@@ -203,12 +223,12 @@ class StateManager:
             return None
         return max(int(target_qty), 1)
 
-    def reserve_storage_slots(
+    async def reserve_storage_slots(
         self,
         start_pos: tuple[int, int],
         target_qty: int,
     ) -> int | None:
-        return self._safe_repo_call(
+        return await self._safe_repo_call(
             "reserve_storage_slots",
             int(start_pos[0]),
             int(start_pos[1]),
@@ -224,7 +244,7 @@ class StateManager:
 
         for chg_loc, slot_info in self.charger_slots.items():
             if slot_info.get("status") == "empty":
-                reserved = self._safe_repo_call(
+                reserved = await self._safe_repo_call(
                     "reserve_charger_slot",
                     int(chg_loc[0]),
                     int(chg_loc[1]),
@@ -243,7 +263,7 @@ class StateManager:
         logger.warning("[StateManager] No empty charger available for res_id=%s", res_id)
         return None
 
-    def _release_charger(self, res_id: str | None = None) -> None:
+    async def _release_charger(self, res_id: str | None = None) -> None:
         """충전 완료된 AMR의 슬롯 예약을 해제한다."""
         if res_id is None:
             return
@@ -251,7 +271,7 @@ class StateManager:
         for chg_loc, slot_info in self.charger_slots.items():
             if slot_info.get("res_id") != res_id:
                 continue
-            self._safe_repo_call(
+            await self._safe_repo_call(
                 "release_charger_slot",
                 int(chg_loc[0]),
                 int(chg_loc[1]),
@@ -266,7 +286,7 @@ class StateManager:
             )
             return
 
-    def _occupy_charger(self, res_id: str | None = None) -> None:
+    async def _occupy_charger(self, res_id: str | None = None) -> None:
         """예약된 충전 슬롯을 AMR 점유 상태로 확정한다."""
         if res_id is None:
             return
@@ -275,7 +295,7 @@ class StateManager:
             if slot_info.get("res_id") != res_id:
                 continue
             slot_info["status"] = "occupied"
-            self._safe_repo_call(
+            await self._safe_repo_call(
                 "occupy_charger_slot",
                 res_id,
                 int(chg_loc[0]),
@@ -308,7 +328,7 @@ class StateManager:
             )
 
         if self._db_ready:
-            return self._start_production_db(ord_id)
+            return await self._start_production_db(ord_id)
 
         order_meta = self.orders.get(ord_id, {})
         target_qty = max(int(order_meta.get("target", 1) or 1), 1)
@@ -345,7 +365,7 @@ class StateManager:
             equip_task_txn_ids=[],
         )
 
-    def _start_production_db(self, ord_id: int) -> StartProductionOrderAckModel:
+    async def _start_production_db(self, ord_id: int) -> StartProductionOrderAckModel:
         if self._repo is None:
             return StartProductionOrderAckModel(
                 ord_id=ord_id,
@@ -353,11 +373,11 @@ class StateManager:
                 reason="DB-backed start_production is not fully initialized.",
             )
 
-        ack = self._repo.start_production(ord_id)
+        ack = await self._repo.start_production(ord_id)
         if not ack.accepted:
             return ack
 
-        ptn_id = self._safe_repo_call("get_order_ptn_loc_id", ord_id)
+        ptn_id = await self._safe_repo_call("get_order_ptn_loc_id", ord_id)
         for item_id in ack.item_ids:
             self._items[item_id] = {
                 "item_id": item_id,
@@ -446,7 +466,7 @@ class StateManager:
             "res_id": task_input.res_id,
             "chg_loc": task_input.chg_loc,
         }
-        db_txn_id = self._safe_repo_call("sync_task_created", task_meta)
+        db_txn_id = await self._safe_repo_call("sync_task_created", task_meta)
         if db_txn_id is not None:
             txn_id = int(db_txn_id)
             self._next_equip_task_txn_id = max(self._next_equip_task_txn_id, txn_id + 1)
@@ -456,7 +476,7 @@ class StateManager:
         return txn_id
 
     async def create_empty_item(self, order_id: int) -> int:
-        db_item_id = self._safe_repo_call(
+        db_item_id = await self._safe_repo_call(
             "create_empty_item",
             int(order_id),
         )
@@ -531,7 +551,7 @@ class StateManager:
         raw = res_meta.get("task_id")
         return str(raw) if raw is not None else None
 
-    def update_amr_charger_return_state(
+    async def update_amr_charger_return_state(
         self,
         res_id: str,
         status: str,
@@ -551,8 +571,8 @@ class StateManager:
         if source is not None:
             res_meta["charger_return_source"] = source
         if status in {"IDLE", "CHG"}:
-            self._occupy_charger(res_id)
-        self._safe_repo_call("sync_resource_snapshot", res_meta)
+            await self._occupy_charger(res_id)
+        await self._safe_repo_call("sync_resource_snapshot", res_meta)
         logger.info(
             "[StateManager] update_amr_charger_return_state: res=%s status=%s source=%s",
             res_id,
@@ -582,8 +602,8 @@ class StateManager:
             }
         )
         if task_meta is not None:
-            self._safe_repo_call("sync_task_status", task_meta)
-        self._safe_repo_call("sync_resource_snapshot", self._res_list[assign_input.res_id])
+            await self._safe_repo_call("sync_task_status", task_meta)
+        await self._safe_repo_call("sync_resource_snapshot", self._res_list[assign_input.res_id])
         logger.info(
             "[StateManager] update_task_allocation: task=%s item=%s res=%s",
             assign_input.task_id,
@@ -604,9 +624,9 @@ class StateManager:
             if req.error_code is not None:
                 task_meta["error_code"] = req.error_code
             if req.new_stat == TxnStat.PROC and assigned_res_id is not None:
-                self._handle_proc_task_status(req, task_meta, assigned_res_id)
+                await self._handle_proc_task_status(req, task_meta, assigned_res_id)
             if req.new_stat == TxnStat.SUCC:
-                suppress_task_completed = self._handle_success_task_status(
+                suppress_task_completed = await self._handle_success_task_status(
                     task_meta,
                     previous_status,
                 )
@@ -620,7 +640,7 @@ class StateManager:
                     self._res_list.get(assigned_res_id) if assigned_res_id else None,
                 )
             if req.new_stat in {TxnStat.SUCC, TxnStat.FAIL} and assigned_res_id is not None:
-                should_continue, suppress_resource_available = self._handle_terminal_resource_status(
+                should_continue, suppress_resource_available = await self._handle_terminal_resource_status(
                     req,
                     task_meta,
                     assigned_res_id,
@@ -654,7 +674,7 @@ class StateManager:
                 )
             )
         if task_meta is not None:
-            self._safe_repo_call("sync_task_status", task_meta)
+            await self._safe_repo_call("sync_task_status", task_meta)
         return True
 
     async def record_adapter_result(self, req: AdapterStepResultInput) -> bool:
@@ -664,7 +684,7 @@ class StateManager:
         record = req.model_dump()
         record["txn_id"] = task_meta.get("txn_id")
         record["ord_id"] = task_meta.get("ord_id")
-        self._safe_repo_call("record_adapter_result", record)
+        await self._safe_repo_call("record_adapter_result", record)
         logger.info(
             "[StateManager] record_adapter_result: task=%s step=%s action=%s success=%s",
             req.task_id,
@@ -674,7 +694,7 @@ class StateManager:
         )
         return True
 
-    def _handle_proc_task_status(
+    async def _handle_proc_task_status(
         self,
         req: UpdateTaskStatusInput,
         task_meta: dict[str, Any],
@@ -684,7 +704,7 @@ class StateManager:
         current_task_type = _normalize_task_type(task_meta.get("task_type"))
         task_key = _make_task_key(req.task_id, req.task_type)
         if current_task_type != TaskType.ToCHG:
-            self._release_charger(assigned_res_id)
+            await self._release_charger(assigned_res_id)
 
         item_id = task_meta.get("item_id")
         if item_id is not None and task_meta.get("task_type") == "MM":
@@ -693,7 +713,7 @@ class StateManager:
                 item["flow_stat"] = "CAST"
             item["last_task_type"] = task_meta.get("task_type")
             item["req_res_id"] = task_meta.get("res_id")
-            self._safe_repo_call("sync_item_snapshot", item)
+            await self._safe_repo_call("sync_item_snapshot", item)
 
         res_meta = self._res_list.setdefault(assigned_res_id, {"res_id": assigned_res_id})
         if current_task_type == TaskType.ToCHG:
@@ -715,9 +735,9 @@ class StateManager:
                     "task_type": task_meta.get("task_type"),
                 }
             )
-        self._safe_repo_call("sync_resource_snapshot", res_meta)
+        await self._safe_repo_call("sync_resource_snapshot", res_meta)
 
-    def _handle_success_task_status(
+    async def _handle_success_task_status(
         self,
         task_meta: dict[str, Any],
         previous_status: str | None,
@@ -733,12 +753,12 @@ class StateManager:
                 if task_meta.get("task_type") in ITEM_AFFINITY_PREDECESSORS
                 else None
             )
-            self._safe_repo_call("sync_item_snapshot", item)
+            await self._safe_repo_call("sync_item_snapshot", item)
         if previous_status != TxnStat.SUCC.value and task_meta.get("task_type") == "PA_GP":
-            suppress_task_completed = self._handle_pa_gp_completion(task_meta)
+            suppress_task_completed = await self._handle_pa_gp_completion(task_meta)
         return suppress_task_completed
 
-    def _handle_terminal_resource_status(
+    async def _handle_terminal_resource_status(
         self,
         req: UpdateTaskStatusInput,
         task_meta: dict[str, Any],
@@ -750,7 +770,7 @@ class StateManager:
         task_key = _make_task_key(req.task_id, req.task_type)
         current_task_id = res_meta.get("task_id")
         if current_task_id not in {None, task_key}:
-            self._safe_repo_call("sync_task_status", task_meta)
+            await self._safe_repo_call("sync_task_status", task_meta)
             logger.info(
                 "[StateManager] resource reset skipped: task=%s res=%s current_task=%s",
                 req.task_id,
@@ -762,7 +782,7 @@ class StateManager:
         current_task_type = _normalize_task_type(task_meta.get("task_type"))
         if current_task_type == TaskType.ToCHG:
             # ToCHG는 무조건 배터리 부족 AMR이 충전소로 가는 작업
-            self._occupy_charger(assigned_res_id)
+            await self._occupy_charger(assigned_res_id)
             res_meta.update(
                 {
                     "task_id": None,
@@ -771,7 +791,7 @@ class StateManager:
                     "task_type": task_meta.get("task_type"),
                 }
             )
-            self._safe_repo_call("sync_resource_snapshot", res_meta)
+            await self._safe_repo_call("sync_resource_snapshot", res_meta)
             return True, True
 
         keep_item_affinity = (
@@ -790,7 +810,7 @@ class StateManager:
             suppress_resource_available = True
         else:
             res_meta["item_id"] = None
-        self._safe_repo_call("sync_resource_snapshot", res_meta)
+        await self._safe_repo_call("sync_resource_snapshot", res_meta)
 
         req_res_type = res_meta.get("res_type")
         logger.info(
@@ -821,7 +841,7 @@ class StateManager:
             )
         return True, suppress_resource_available
 
-    def _handle_pa_gp_completion(self, task_meta: dict[str, Any]) -> bool:
+    async def _handle_pa_gp_completion(self, task_meta: dict[str, Any]) -> bool:
         """PA_GP 성공 시 DB 적재 슬롯을 occupied로 확정하고, gp_qty를 증가시켜 주문 생산 완료 여부를 판단."""
         ord_id = task_meta.get("ord_id")
         if ord_id is None:
@@ -832,7 +852,7 @@ class StateManager:
             item = self._items.setdefault(item_id, {"item_id": item_id})
             strg_loc = _storage_loc_tuple(item.get("strg_loc"))
             if isinstance(strg_loc, tuple):
-                self._safe_repo_call(
+                await self._safe_repo_call(
                     "update_item_storage_location",
                     item_id,
                     int(strg_loc[0]),
@@ -841,9 +861,9 @@ class StateManager:
             # PA_GP 성공 == 적재 완료. item.cur_stat='STORED' 로 라이프사이클 전이.
             item["flow_stat"] = "STORED"
             item["last_task_type"] = task_meta.get("task_type")
-            self._safe_repo_call("sync_item_snapshot", item)
+            await self._safe_repo_call("sync_item_snapshot", item)
 
-        db_complete = self._safe_repo_call("increment_order_gp_qty", ord_id)
+        db_complete = await self._safe_repo_call("increment_order_gp_qty", ord_id)
         if db_complete is not None:
             if isinstance(db_complete, dict):
                 complete = bool(db_complete.get("complete"))
@@ -1062,8 +1082,8 @@ class StateManager:
             res_meta["task_id"] = task_id
         if item_id is not None:
             res_meta["item_id"] = item_id
-        self._safe_repo_call("sync_resource_snapshot", res_meta)
-        self._release_charger(res_id)
+        await self._safe_repo_call("sync_resource_snapshot", res_meta)
+        await self._release_charger(res_id)
 
         if self._event_bridge is None:
             return False
@@ -1087,7 +1107,7 @@ class StateManager:
         )
         return True
 
-    def mark_task_started(
+    async def mark_task_started(
         self,
         task_id: str,
         task_type: TaskType,
@@ -1098,13 +1118,13 @@ class StateManager:
         if task_key in self._tasks:
             self._tasks[task_key]["status"] = TxnStat.PROC.value
             self._tasks[task_key]["task_id"] = task_key
-            self._safe_repo_call("sync_task_status", self._tasks[task_key])
+            await self._safe_repo_call("sync_task_status", self._tasks[task_key])
         res_meta = self._res_list.setdefault(res_id, {"res_id": res_id})
         res_meta.update({"task_id": task_key, "status": "ALLOC"})
-        self._safe_repo_call("sync_resource_snapshot", res_meta)
+        await self._safe_repo_call("sync_resource_snapshot", res_meta)
         logger.info("[StateManager] mark_task_started: task=%s res=%s", task_key, res_id)
 
-    def update_item_status(
+    async def update_item_status(
         self,
         item_id: int,
         flow_stat: str | None = None,
@@ -1118,7 +1138,7 @@ class StateManager:
             item["zone_nm"] = zone_nm
         if result is not None:
             item["result"] = result
-        self._safe_repo_call("sync_item_snapshot", item)
+        await self._safe_repo_call("sync_item_snapshot", item)
         logger.info(
             "[StateManager] update_item_status: item=%s flow_stat=%s zone_nm=%s",
             item_id,
@@ -1141,7 +1161,7 @@ class StateManager:
             res_meta["y"] = y
         if battery_pct is not None:
             res_meta["battery_pct"] = battery_pct
-        self._safe_repo_call("sync_resource_snapshot", res_meta)
+        self._safe_repo_call_sync("sync_resource_snapshot", res_meta)
         logger.debug(
             "[StateManager] update_amr_runtime_memory: res=%s x=%s y=%s battery=%s",
             res_id,
@@ -1150,7 +1170,7 @@ class StateManager:
             battery_pct,
         )
 
-    def update_res_task_state(
+    async def update_res_task_state(
         self,
         task_id: str,
         task_type: TaskType,
@@ -1161,7 +1181,7 @@ class StateManager:
         if task_key in self._tasks:
             self._tasks[task_key]["status"] = cur_stat
             self._tasks[task_key]["task_id"] = task_key
-            self._safe_repo_call("sync_task_status", self._tasks[task_key])
+            await self._safe_repo_call("sync_task_status", self._tasks[task_key])
         terminal = cur_stat in {TxnStat.SUCC.value, TxnStat.FAIL.value}
         res_status = "IDLE" if terminal else ("ALLOC" if cur_stat == TxnStat.PROC.value else cur_stat)
         res_meta = self._res_list.setdefault(res_id, {"res_id": res_id})
@@ -1171,7 +1191,7 @@ class StateManager:
                 "status": res_status,
             }
         )
-        self._safe_repo_call("sync_resource_snapshot", res_meta)
+        await self._safe_repo_call("sync_resource_snapshot", res_meta)
         logger.info(
             "[StateManager] update_res_task_state: task=%s res=%s cur_stat=%s",
             task_key,
@@ -1184,17 +1204,17 @@ class StateManager:
         cur_stat='STORED' 인데 strg_location_stat 매핑이 풀린 경우를 best-effort
         self-heal 한 뒤, occupied 슬롯이 있는 item 들의 (item_id, row, col) 을 모은다.
         """
-        rebound = self._safe_repo_call("auto_rebind_storage_for_order", ord_id)
+        rebound = await self._safe_repo_call("auto_rebind_storage_for_order", ord_id)
         if rebound:
             logger.info("[StateManager] auto_rebind: ord_id=%s rebound=%s", ord_id, rebound)
 
-        shipping_marked = self._safe_repo_call("mark_order_shipping", ord_id)
+        shipping_marked = await self._safe_repo_call("mark_order_shipping", ord_id)
         logger.info(
             "[StateManager] mark_order_shipping called: ord_id=%s result=%s",
             ord_id,
             shipping_marked,
         )
-        rows = self._safe_repo_call("load_order_items_with_strg", ord_id) or []
+        rows = await self._safe_repo_call("load_order_items_with_strg", ord_id) or []
         result: list[tuple[int, int, int]] = []
         for r in rows:
             strg_loc = _storage_loc_tuple(r.get("strg_loc"))
@@ -1240,7 +1260,7 @@ class StateManager:
         if target_qty <= 0:
             return None
 
-        db_slots = self._safe_repo_call("get_storage_slots")
+        db_slots = await self._safe_repo_call("get_storage_slots")
 
         # DB 조회 실패 시 메모리로
         if db_slots is None:
@@ -1299,8 +1319,8 @@ class StateManager:
             completed_item["last_task_type"] = "PICK"
 
             # DB 출고 처리 후 메모리 반영
-            self._safe_repo_call("sync_item_snapshot", completed_item)
-            released = self._safe_repo_call("release_storage_slot_for_item", item_id)
+            await self._safe_repo_call("sync_item_snapshot", completed_item)
+            released = await self._safe_repo_call("release_storage_slot_for_item", item_id)
 
             item.update(completed_item)
 

@@ -51,7 +51,7 @@ class TaskManager(ITaskManager):
 
 
     #오더 투입시 해당 오더가 사용할 적재 공간 예약
-    def reserve_rack_slots(self, order_id: int, start_pos: tuple[int, int], target_qty: int) -> int:
+    async def reserve_rack_slots(self, order_id: int, start_pos: tuple[int, int], target_qty: int) -> int:
         """주문 투입 시 해당 오더가 사용할 슬롯들을 가상 랙에 예약한다."""
         row, col = start_pos
 
@@ -88,7 +88,7 @@ class TaskManager(ITaskManager):
         if assigned == 0:
             return 0
 
-        reserved_count = self.sm.reserve_storage_slots(start_pos, assigned)
+        reserved_count = await self.sm.reserve_storage_slots(start_pos, assigned)
         if reserved_count != assigned:
             logger.warning(
                 "DB 적재 슬롯 예약 불일치: order_id=%s start=%s requested=%s reserved=%s",

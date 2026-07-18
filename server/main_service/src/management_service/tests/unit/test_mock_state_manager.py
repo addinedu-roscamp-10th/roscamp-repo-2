@@ -157,23 +157,26 @@ def test_get_order_target_qty_prefers_repository_and_syncs_memory() -> None:
 
 
 def test_reserve_storage_slots_passes_start_position_and_quantity_to_repository() -> None:
-    """랙 예약 sync는 시작 row-col과 예약 수량을 repository에 그대로 넘긴다."""
+    """랙 예약은 시작 row-col과 예약 수량을 repository에 그대로 넘긴다."""
 
     class _Repo:
         def __init__(self) -> None:
             self.calls: list[tuple[int, int, int]] = []
 
-        def reserve_storage_slots(self, row: int, col: int, target_qty: int) -> int:
+        async def reserve_storage_slots(self, row: int, col: int, target_qty: int) -> int:
             self.calls.append((row, col, target_qty))
             return target_qty
 
-    repo = _Repo()
-    state_manager = StateManager(repository=repo)
+    async def scenario() -> None:
+        repo = _Repo()
+        state_manager = StateManager(repository=repo)
 
-    reserved_count = state_manager.reserve_storage_slots((1, 2), 3)
+        reserved_count = await state_manager.reserve_storage_slots((1, 2), 3)
 
-    assert reserved_count == 3
-    assert repo.calls == [(1, 2, 3)]
+        assert reserved_count == 3
+        assert repo.calls == [(1, 2, 3)]
+
+    asyncio.run(scenario())
 
 
 def test_task_manager_reserves_db_before_updating_memory_slots() -> None:
@@ -185,7 +188,7 @@ def test_task_manager_reserves_db_before_updating_memory_slots() -> None:
             self.task_manager: TaskManager | None = None
             self.statuses_at_db_call: list[str] = []
 
-        def reserve_storage_slots(
+        async def reserve_storage_slots(
             self,
             start_pos: tuple[int, int],
             target_qty: int,
@@ -198,27 +201,30 @@ def test_task_manager_reserves_db_before_updating_memory_slots() -> None:
             self.calls.append((start_pos, target_qty))
             return target_qty
 
-    state_manager = _StateManager()
-    task_manager = TaskManager(sm=state_manager)
-    state_manager.task_manager = task_manager
+    async def scenario() -> None:
+        state_manager = _StateManager()
+        task_manager = TaskManager(sm=state_manager)
+        state_manager.task_manager = task_manager
 
-    task_manager.reserve_rack_slots(
-        order_id=4,
-        start_pos=(1, 1),
-        target_qty=2,
-    )
+        await task_manager.reserve_rack_slots(
+            order_id=4,
+            start_pos=(1, 1),
+            target_qty=2,
+        )
 
-    assert task_manager.slot_table[(1, 1)]["status"] == "reserved"
-    assert task_manager.slot_table[(1, 2)]["status"] == "reserved"
-    assert state_manager.calls == [((1, 1), 2)]
-    assert state_manager.statuses_at_db_call == ["empty", "empty"]
+        assert task_manager.slot_table[(1, 1)]["status"] == "reserved"
+        assert task_manager.slot_table[(1, 2)]["status"] == "reserved"
+        assert state_manager.calls == [((1, 1), 2)]
+        assert state_manager.statuses_at_db_call == ["empty", "empty"]
+
+    asyncio.run(scenario())
 
 
 def test_task_manager_keeps_memory_empty_when_db_reservation_is_incomplete() -> None:
     """DB 예약 수량이 부족하면 메모리 슬롯을 reserved로 바꾸지 않는다."""
 
     class _StateManager:
-        def reserve_storage_slots(
+        async def reserve_storage_slots(
             self,
             start_pos: tuple[int, int],
             target_qty: int,
@@ -227,23 +233,26 @@ def test_task_manager_keeps_memory_empty_when_db_reservation_is_incomplete() -> 
             assert target_qty == 2
             return 0
 
-    task_manager = TaskManager(sm=_StateManager())
+    async def scenario() -> None:
+        task_manager = TaskManager(sm=_StateManager())
 
-    reserved_count = task_manager.reserve_rack_slots(
-        order_id=4,
-        start_pos=(1, 1),
-        target_qty=2,
-    )
+        reserved_count = await task_manager.reserve_rack_slots(
+            order_id=4,
+            start_pos=(1, 1),
+            target_qty=2,
+        )
 
-    assert reserved_count == 0
-    assert task_manager.slot_table[(1, 1)] == {
-        "status": "empty",
-        "order_id": None,
-    }
-    assert task_manager.slot_table[(1, 2)] == {
-        "status": "empty",
-        "order_id": None,
-    }
+        assert reserved_count == 0
+        assert task_manager.slot_table[(1, 1)] == {
+            "status": "empty",
+            "order_id": None,
+        }
+        assert task_manager.slot_table[(1, 2)] == {
+            "status": "empty",
+            "order_id": None,
+        }
+
+    asyncio.run(scenario())
 
 
 def test_task_manager_marks_slot_occupied_after_location_update() -> None:
@@ -297,12 +306,12 @@ def test_complete_ship_batch_persists_before_memory_update() -> None:
             assert self.state_manager is not None
             assert self.state_manager._items[1001]["strg_loc"] == (1, 1)
 
-        def sync_item_snapshot(self, item: dict) -> None:
+        async def sync_item_snapshot(self, item: dict) -> None:
             self._assert_memory_not_updated()
             assert item["strg_loc"] is None
             self.trace.append("db:item")
 
-        def release_storage_slot_for_item(self, item_id: int) -> bool:
+        async def release_storage_slot_for_item(self, item_id: int) -> bool:
             self._assert_memory_not_updated()
             assert item_id == 1001
             self.trace.append("db:slot")
@@ -331,28 +340,31 @@ def test_task_manager_releases_shipped_slots_for_reuse() -> None:
     """출고가 끝난 슬롯은 다음 주문이 같은 위치를 즉시 예약할 수 있다."""
 
     class _StateManager:
-        def reserve_storage_slots(
+        async def reserve_storage_slots(
             self,
             start_pos: tuple[int, int],
             target_qty: int,
         ) -> int:
             return target_qty
 
-    task_manager = TaskManager(sm=_StateManager())
-    task_manager.reserve_rack_slots(2, (1, 1), 3)
-    for col in range(1, 4):
-        task_manager.slot_table[(1, col)]["status"] = "occupied"
+    async def scenario() -> None:
+        task_manager = TaskManager(sm=_StateManager())
+        await task_manager.reserve_rack_slots(2, (1, 1), 3)
+        for col in range(1, 4):
+            task_manager.slot_table[(1, col)]["status"] = "occupied"
 
-    task_manager.release_shipped_slots(
-        [(1, 1, 1), (2, 1, 2), (3, 1, 3)]
-    )
-    task_manager.reserve_rack_slots(1, (1, 1), 3)
+        task_manager.release_shipped_slots(
+            [(1, 1, 1), (2, 1, 2), (3, 1, 3)]
+        )
+        await task_manager.reserve_rack_slots(1, (1, 1), 3)
 
-    assert all(
-        task_manager.slot_table[(1, col)]
-        == {"status": "reserved", "order_id": 1}
-        for col in range(1, 4)
-    )
+        assert all(
+            task_manager.slot_table[(1, col)]
+            == {"status": "reserved", "order_id": 1}
+            for col in range(1, 4)
+        )
+
+    asyncio.run(scenario())
 
 
 def test_tochg_keeps_amr_unavailable_until_charged() -> None:

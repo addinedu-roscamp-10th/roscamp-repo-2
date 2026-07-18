@@ -78,7 +78,7 @@ class _RecordingTaskManager:
     def log_slot_table(self) -> None:
         return None
 
-    def reserve_rack_slots(
+    async def reserve_rack_slots(
         self,
         order_id: int,
         start_pos: tuple[int, int],

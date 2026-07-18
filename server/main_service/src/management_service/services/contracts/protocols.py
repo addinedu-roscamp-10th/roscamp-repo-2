@@ -3,6 +3,7 @@ from typing import Protocol, Dict, Any, List, Optional, Callable
 
 from .enums import EventType, TaskType
 from .models import *
+from collections.abc import Coroutine
 
 
 class IOrchestrator(Protocol):
@@ -24,7 +25,7 @@ class IOrchestrator(Protocol):
 class ITaskManager(Protocol):
 
     ##orchestrator가 사용하는 인터페이스
-    def reserve_rack_slots(self, order_id: int, start_pos: tuple[int, int], target_qty:int) -> int:
+    async def reserve_rack_slots(self, order_id: int, start_pos: tuple[int, int], target_qty:int) -> int:
         ...
     
     async def create_next_task(self, item_info: ItemStatusRecord ,eventMsg: Optional[str] = None) -> List[NextTaskResult]: 
@@ -47,7 +48,7 @@ class ITaskAllocator(Protocol):
         ...
 
 class ITaskExecutor(Protocol):
-    def execute_task(self, ExecuteTaskInput):
+    async def execute_task(self, input_data: ExecuteTaskInput) -> ExecutionResult:
         ...
 
     async def handle_emergency_return(self, item_id: int, amr_id: str, arm_id: str) -> None:
@@ -87,7 +88,7 @@ class IStateManager(Protocol):
     def update_task_status(self, task_id: str, status: str, is_trans: bool) -> None:
         ...
 
-    def mark_task_started(
+    async def mark_task_started(
         self,
         task_id: str,
         task_type: TaskType,
@@ -96,7 +97,7 @@ class IStateManager(Protocol):
     ) -> None:
         ...
         
-    def update_item_status(
+    async def update_item_status(
         self,
         item_id: int,
         flow_stat: str | None = None,
@@ -118,7 +119,7 @@ class IStateManager(Protocol):
     ) -> None:
         ...
 
-    def update_res_task_state(
+    async def update_res_task_state(
         self,
         task_id: str,
         task_type: TaskType,
@@ -154,7 +155,7 @@ class IStateManager(Protocol):
     def get_task_id_for_resource(self, res_id: str) -> str | None:
         ...
 
-    def update_amr_charger_return_state(
+    async def update_amr_charger_return_state(
         self,
         res_id: str,
         status: str,
@@ -206,7 +207,7 @@ class IStateManager(Protocol):
     async def get_order_target_qty(self, ord_id: int) -> int | None:
         ...
 
-    def reserve_storage_slots(
+    async def reserve_storage_slots(
         self,
         start_pos: tuple[int, int],
         target_qty: int,
@@ -229,7 +230,7 @@ class IEventBridge(Protocol):
     ##Task Executor가 사용하는 인터페이스
     def publish(self, event: Event) -> PublishResult: 
         ...
-    def subscribe(self, event_type: EventType, handler: Callable[[Event], None], subscriber_name: str) -> None: 
+    def subscribe(self, event_type: EventType, handler: Callable[[Event], Coroutine[Any, Any, None] | None], subscriber_name: str) -> None:
         ...
     def unsubscribe(self, event_type: EventType, subscriber_name: str) -> bool: 
         ...

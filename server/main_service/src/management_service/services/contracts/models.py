@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Optional,Dict
+from typing import Any, Optional, Dict
 from dataclasses import dataclass, field
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 
 from pydantic import BaseModel, Field , field_validator, model_validator
 
@@ -13,8 +13,8 @@ from .enums import (
     TaskType,
     EventType,
     FlowStatus,
-
 )
+
 ## Orchestrator
 
 class StartProductionOrderAckModel(BaseModel):
@@ -224,6 +224,6 @@ class HandlerMeta():
     """내부 구독자 관리용 메타. dataclass — Callable 객체를 Pydantic 에 넣기 부적합."""
 
     event_type: EventType
-    handler: Callable[[Event], None]
+    handler: Callable[[Event], Coroutine[Any, Any, None] | None]
     subscriber_name: str
     registered_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))

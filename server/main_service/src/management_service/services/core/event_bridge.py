@@ -15,7 +15,8 @@ import inspect
 import logging
 import threading
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
+from typing import Any
 from services.contracts.models import *
 
 logger = logging.getLogger(__name__)
@@ -105,7 +106,7 @@ class EventBridgeImpl:
     def subscribe(
         self,
         event_type: EventType,
-        handler: Callable[[Event], None],
+        handler: Callable[[Event], Coroutine[Any, Any, None] | None],
         subscriber_name: str,
     ) -> None:
         if not subscriber_name or not subscriber_name.strip():

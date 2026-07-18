@@ -12,7 +12,7 @@ import json
 import logging
 from typing import Any
 
-from sqlalchemy import tuple_
+from sqlalchemy import select, tuple_
 
 from services.contracts.enums import TaskType, TxnStat
 from services.contracts.models import StartProductionOrderAckModel
@@ -128,7 +128,8 @@ class RuntimeStateRepository:
 
     def __init__(
         self,
-        session_factory,
+        sync_session_factory,
+        async_session_factory,
         *,
         ord_model,
         ord_detail_model,
@@ -150,7 +151,8 @@ class RuntimeStateRepository:
         tat_nav_pose_master_model=None,
         trans_task_bat_threshold_model=None,
     ) -> None:
-        self._session_factory = session_factory
+        self._async_session_factory = async_session_factory
+        self._sync_session_factory = sync_session_factory
         self._ord_model = ord_model
         self._ord_detail_model = ord_detail_model
         self._ord_stat_model = ord_stat_model
@@ -173,7 +175,7 @@ class RuntimeStateRepository:
 
     @classmethod
     def from_default_db(cls) -> "RuntimeStateRepository":
-        from smart_cast_db.database import SessionLocal
+        from smart_cast_db.database import AsyncSessionLocal, SessionLocal
         from smart_cast_db.models import (
             ChgLocationStat,
             EquipStat,
@@ -198,6 +200,7 @@ class RuntimeStateRepository:
 
         return cls(
             SessionLocal,
+            AsyncSessionLocal,
             ord_model=Ord,
             ord_detail_model=OrdDetail,
             ord_stat_model=OrdStat,
@@ -223,7 +226,7 @@ class RuntimeStateRepository:
         """tat_nav_pose_master의 활성 pose (pose_nm → (x, y)) 로드."""
         if self._tat_nav_pose_master_model is None:
             return {}
-        with self._session_factory() as db:
+        with self._sync_session_factory() as db:
             rows = (
                 db.query(self._tat_nav_pose_master_model)
                 .filter(self._tat_nav_pose_master_model.is_active.is_(True))
@@ -235,9 +238,12 @@ class RuntimeStateRepository:
         """chg_location_stat × tat_nav_pose_master JOIN으로
         (loc_row, loc_col) → pose_nm (ToCHG*) 매핑을 만든다.
         """
-        if self._tat_nav_pose_master_model is None or self._chg_location_stat_model is None:
+        if (
+            self._tat_nav_pose_master_model is None
+            or self._chg_location_stat_model is None
+        ):
             return {}
-        with self._session_factory() as db:
+        with self._sync_session_factory() as db:
             rows = (
                 db.query(
                     self._chg_location_stat_model.loc_row,
@@ -263,7 +269,7 @@ class RuntimeStateRepository:
         if self._trans_task_bat_threshold_model is None:
             return {}
         thresholds: dict[TaskType, int] = {}
-        with self._session_factory() as db:
+        with self._sync_session_factory() as db:
             rows = db.query(self._trans_task_bat_threshold_model).all()
             for row in rows:
                 try:
@@ -276,23 +282,26 @@ class RuntimeStateRepository:
                     thresholds[task_type] = value
         return thresholds
 
-    def start_production(self, ord_id: int) -> StartProductionOrderAckModel:
-        with self._session_factory() as db:
-            ord_obj = db.get(self._ord_model, ord_id)
+    async def start_production(self, ord_id: int) -> StartProductionOrderAckModel:
+        async with self._async_session_factory() as db:
+            ord_obj = await db.get(self._ord_model, ord_id)
             if ord_obj is None:
                 return StartProductionOrderAckModel(
                     ord_id=ord_id,
                     accepted=False,
                     reason=f"ord_id={ord_id} not found",
                 )
-            if db.get(self._pattern_model, ord_id) is None:
+            if await db.get(self._pattern_model, ord_id) is None:
                 return StartProductionOrderAckModel(
                     ord_id=ord_id,
                     accepted=False,
                     reason=f"pattern for ord_id={ord_id} not registered",
                 )
 
-            detail = db.query(self._ord_detail_model).filter(self._ord_detail_model.ord_id == ord_id).first()
+            detail_res = await db.execute(
+                select(self._ord_detail_model).filter(self._ord_detail_model.ord_id == ord_id)
+            )
+            detail = detail_res.scalars().first()
             if detail is None or int(detail.qty or 0) <= 0:
                 return StartProductionOrderAckModel(
                     ord_id=ord_id,
@@ -300,13 +309,16 @@ class RuntimeStateRepository:
                     reason=f"ord_id={ord_id} has no valid qty in ord_detail",
                 )
 
-            existing_item = db.query(self._item_model).filter(self._item_model.ord_id == ord_id).first()
-            existing_txn = (
-                db.query(self._equip_task_txn_model)
+            item_res = await db.execute(
+                select(self._item_model).filter(self._item_model.ord_id == ord_id)
+            )
+            existing_item = item_res.scalars().first()
+            txn_res = await db.execute(
+                select(self._equip_task_txn_model)
                 .join(self._item_model, self._item_model.item_stat_id == self._equip_task_txn_model.item_id)
                 .filter(self._item_model.ord_id == ord_id)
-                .first()
             )
+            existing_txn = txn_res.scalars().first()
             if existing_item is not None or existing_txn is not None:
                 return StartProductionOrderAckModel(
                     ord_id=ord_id,
@@ -316,7 +328,10 @@ class RuntimeStateRepository:
                     equip_task_txn_id=getattr(existing_txn, "txn_id", None),
                 )
 
-            stat = db.query(self._ord_stat_model).filter(self._ord_stat_model.ord_id == ord_id).first()
+            stat_res = await db.execute(
+                select(self._ord_stat_model).filter(self._ord_stat_model.ord_id == ord_id)
+            )
+            stat = stat_res.scalars().first()
             prev_stat = stat.ord_stat if stat is not None else None
             if stat is None:
                 stat = self._ord_stat_model(ord_id=ord_id, ord_stat="MFG")
@@ -345,7 +360,7 @@ class RuntimeStateRepository:
                     is_defective=None,
                 )
                 db.add(new_item)
-                db.flush()
+                await db.flush()
 
                 new_item_id = getattr(new_item, "item_id", getattr(new_item, "item_stat_id", None))
                 created_items.append(new_item)
@@ -355,9 +370,9 @@ class RuntimeStateRepository:
             # StateManager.insert_task_txn 를 통해 한 번만 만든다. 여기서 미리 만들면
             # 같은 item 에 MM txn 두 개가 생성되어 자원 할당 / 상태 추적이 어긋난다.
 
-            db.commit()
+            await db.commit()
             for new_item in created_items:
-                db.refresh(new_item)
+                await db.refresh(new_item)
 
             return StartProductionOrderAckModel(
                 ord_id=ord_id,
@@ -367,12 +382,12 @@ class RuntimeStateRepository:
                 equip_task_txn_ids=[],
             )
 
-    def sync_task_created(self, task_meta: dict[str, Any]) -> int | None:
+    async def sync_task_created(self, task_meta: dict[str, Any]) -> int | None:
         task_type = _task_db_value(task_meta.get("task_type"))
         if task_type is None:
             return None
 
-        with self._session_factory() as db:
+        async with self._async_session_factory() as db:
             if task_type in TRANS_TASK_TYPES:
                 if self._trans_task_txn_model is None:
                     return None
@@ -385,8 +400,8 @@ class RuntimeStateRepository:
                     chg_loc_id=task_meta.get("chg_loc_id"),
                 )
                 db.add(txn)
-                db.commit()
-                db.refresh(txn)
+                await db.commit()
+                await db.refresh(txn)
                 return int(txn.trans_task_txn_id)
 
             if task_type == TaskType.INSP.value:
@@ -397,8 +412,8 @@ class RuntimeStateRepository:
                     item_id=task_meta.get("item_id"),
                 )
                 db.add(txn)
-                db.commit()
-                db.refresh(txn)
+                await db.commit()
+                await db.refresh(txn)
                 return int(txn.txn_id)
 
             if task_type == TaskType.PP.value:
@@ -413,8 +428,8 @@ class RuntimeStateRepository:
                     txn_stat=_txn_stat_value(task_meta.get("status")),
                 )
                 db.add(txn)
-                db.commit()
-                db.refresh(txn)
+                await db.commit()
+                await db.refresh(txn)
                 return int(txn.txn_id)
 
             txn = self._equip_task_txn_model(
@@ -425,31 +440,31 @@ class RuntimeStateRepository:
                 strg_loc_id=task_meta.get("strg_loc_id"),
             )
             db.add(txn)
-            db.commit()
-            db.refresh(txn)
+            await db.commit()
+            await db.refresh(txn)
             return int(txn.txn_id)
 
-    def get_order_ptn_loc_id(self, ord_id: int) -> int | None:
-        with self._session_factory() as db:
-            pattern = db.get(self._pattern_model, ord_id)
+    async def get_order_ptn_loc_id(self, ord_id: int) -> int | None:
+        async with self._async_session_factory() as db:
+            pattern = await db.get(self._pattern_model, ord_id)
             if pattern is None:
                 return None
             ptn_loc_id = getattr(pattern, "ptn_loc_id", None)
             return int(ptn_loc_id) if ptn_loc_id is not None else None
 
-    def get_order_target_qty(self, ord_id: int) -> int | None:
-        with self._session_factory() as db:
-            detail = (
-                db.query(self._ord_detail_model)
+    async def get_order_target_qty(self, ord_id: int) -> int | None:
+        async with self._async_session_factory() as db:
+            detail_res = await db.execute(
+                select(self._ord_detail_model)
                 .filter(self._ord_detail_model.ord_id == ord_id)
-                .first()
             )
+            detail = detail_res.scalars().first()
             if detail is None:
                 return None
             qty = getattr(detail, "qty", None)
             return int(qty) if qty is not None and int(qty) > 0 else None
 
-    def release_storage_slot_for_item(self, item_id: int) -> bool:
+    async def release_storage_slot_for_item(self, item_id: int) -> bool:
         """item_id 와 매핑된 strg_location_stat 슬롯을 empty 로 되돌린다.
 
         PICK 완료 시점에 PAT 가 물리적으로 item 을 storage 에서 빼내므로
@@ -457,19 +472,19 @@ class RuntimeStateRepository:
         """
         if self._strg_location_stat_model is None:
             return False
-        with self._session_factory() as db:
-            slots = (
-                db.query(self._strg_location_stat_model)
+        async with self._async_session_factory() as db:
+            slots_res = await db.execute(
+                select(self._strg_location_stat_model)
                 .filter(self._strg_location_stat_model.item_id == item_id)
-                .all()
             )
+            slots = slots_res.scalars().all()
             if not slots:
                 return False
             for slot in slots:
                 slot.item_id = None
                 slot.status = "empty"
                 slot.stored_at = datetime.utcnow()
-            db.commit()
+            await db.commit()
             logger.info(
                 "[RuntimeStateRepository] storage slot released: item_id=%s slots=%d",
                 item_id,
@@ -477,7 +492,7 @@ class RuntimeStateRepository:
             )
             return True
 
-    def auto_rebind_storage_for_order(self, ord_id: int) -> int:
+    async def auto_rebind_storage_for_order(self, ord_id: int) -> int:
         """STORED 인데 strg_location_stat 점유 매핑이 끊어진 item 들을 빈 슬롯에 다시 묶는다.
 
         외부 reset 스크립트나 DB 트리거가 strg_location_stat 만 비웠을 때 self-heal
@@ -489,36 +504,35 @@ class RuntimeStateRepository:
         if self._item_model is None or self._strg_location_stat_model is None:
             return 0
 
-        with self._session_factory() as db:
-            stored_items = (
-                db.query(self._item_model)
+        async with self._async_session_factory() as db:
+            stored_items_res = await db.execute(
+                select(self._item_model)
                 .filter(self._item_model.ord_id == ord_id)
                 .filter(self._item_model.cur_stat == "STORED")
                 .order_by(self._item_model.item_id.asc())
-                .all()
             )
+            stored_items = stored_items_res.scalars().all()
             if not stored_items:
                 return 0
 
-            already_bound = {
-                int(r.item_id)
-                for r in db.query(self._strg_location_stat_model)
+            bound_res = await db.execute(
+                select(self._strg_location_stat_model)
                 .filter(self._strg_location_stat_model.item_id.in_([i.item_id for i in stored_items]))
                 .filter(self._strg_location_stat_model.status == "occupied")
-                .all()
-            }
+            )
+            already_bound = {int(r.item_id) for r in bound_res.scalars().all()}
             unbound = [int(i.item_id) for i in stored_items if int(i.item_id) not in already_bound]
             if not unbound:
                 return 0
 
-            empty_slots = (
-                db.query(self._strg_location_stat_model)
+            empty_slots_res = await db.execute(
+                select(self._strg_location_stat_model)
                 .filter(self._strg_location_stat_model.status == "empty")
                 .filter(self._strg_location_stat_model.item_id.is_(None))
                 .order_by(self._strg_location_stat_model.loc_id.asc())
                 .limit(len(unbound))
-                .all()
             )
+            empty_slots = empty_slots_res.scalars().all()
             if len(empty_slots) < len(unbound):
                 logger.warning(
                     "[RuntimeStateRepository] auto_rebind: insufficient empty slots ord_id=%s need=%d have=%d",
@@ -532,7 +546,7 @@ class RuntimeStateRepository:
                 slot.item_id = item_id
                 slot.status = "occupied"
                 slot.stored_at = datetime.utcnow()
-            db.commit()
+            await db.commit()
             logger.info(
                 "[RuntimeStateRepository] auto_rebind: ord_id=%s rebound=%d items",
                 ord_id,
@@ -540,7 +554,7 @@ class RuntimeStateRepository:
             )
             return len(unbound)
 
-    def load_order_items_with_strg(self, ord_id: int) -> list[dict[str, Any]]:
+    async def load_order_items_with_strg(self, ord_id: int) -> list[dict[str, Any]]:
         """주문 한 건의 item + strg_location_stat 점유 슬롯을 join 하여 한꺼번에 반환.
 
         DB-only 시드 (예: scripts/10_create_done_order_in_storage.py) 또는 리스타트 직후
@@ -551,24 +565,24 @@ class RuntimeStateRepository:
         if self._item_model is None:
             return []
 
-        with self._session_factory() as db:
-            items = (
-                db.query(self._item_model)
+        async with self._async_session_factory() as db:
+            items_res = await db.execute(
+                select(self._item_model)
                 .filter(self._item_model.ord_id == ord_id)
                 .order_by(self._item_model.item_id.asc())
-                .all()
             )
+            items = items_res.scalars().all()
             if not items:
                 return []
 
             slots_by_item: dict[int, tuple[int, int]] = {}
             if self._strg_location_stat_model is not None:
-                slot_rows = (
-                    db.query(self._strg_location_stat_model)
+                slot_rows_res = await db.execute(
+                    select(self._strg_location_stat_model)
                     .filter(self._strg_location_stat_model.item_id.in_([i.item_id for i in items]))
                     .filter(self._strg_location_stat_model.status == "occupied")
-                    .all()
                 )
+                slot_rows = slot_rows_res.scalars().all()
                 slots_by_item = {
                     int(r.item_id): (int(r.loc_row), int(r.loc_col)) for r in slot_rows
                 }
@@ -584,19 +598,19 @@ class RuntimeStateRepository:
                 for it in items
             ]
 
-    def get_storage_slots(self) -> list[dict[str, Any]]:
+    async def get_storage_slots(self) -> list[dict[str, Any]]:
         if self._strg_location_stat_model is None:
             return []
 
-        with self._session_factory() as db:
-            rows = (
-                db.query(self._strg_location_stat_model)
+        async with self._async_session_factory() as db:
+            rows_res = await db.execute(
+                select(self._strg_location_stat_model)
                 .order_by(
                     self._strg_location_stat_model.loc_row.asc(),
                     self._strg_location_stat_model.loc_col.asc(),
                 )
-                .all()
             )
+            rows = rows_res.scalars().all()
 
             return [
                 {
@@ -610,7 +624,7 @@ class RuntimeStateRepository:
                 for row in rows
             ]
 
-    def reserve_storage_slots(
+    async def reserve_storage_slots(
         self,
         start_row: int,
         start_col: int,
@@ -627,17 +641,17 @@ class RuntimeStateRepository:
             positions.append((row, col))
             current_abs_idx += 1
 
-        with self._session_factory() as db:
-            slots = (
-                db.query(self._strg_location_stat_model)
+        async with self._async_session_factory() as db:
+            slots_res = await db.execute(
+                select(self._strg_location_stat_model)
                 .filter(
                     tuple_(
                         self._strg_location_stat_model.loc_row,
                         self._strg_location_stat_model.loc_col,
                     ).in_(positions)
                 )
-                .all()
             )
+            slots = slots_res.scalars().all()
             by_pos = {
                 (int(slot.loc_row), int(slot.loc_col)): slot
                 for slot in slots
@@ -652,22 +666,22 @@ class RuntimeStateRepository:
             for slot in target_slots:
                 slot.status = "reserved"
 
-            db.commit()
+            await db.commit()
             return len(target_slots)
 
-    def update_item_storage_location(self, item_id: int, row: int, col: int) -> None:
+    async def update_item_storage_location(self, item_id: int, row: int, col: int) -> None:
         if self._strg_location_stat_model is None:
             return
 
-        with self._session_factory() as db:
-            target_slot = (
-                db.query(self._strg_location_stat_model)
+        async with self._async_session_factory() as db:
+            target_slot_res = await db.execute(
+                select(self._strg_location_stat_model)
                 .filter(
                     self._strg_location_stat_model.loc_row == row,
                     self._strg_location_stat_model.loc_col == col,
                 )
-                .first()
             )
+            target_slot = target_slot_res.scalars().first()
             if target_slot is None:
                 logger.warning(
                     "[RuntimeStateRepository] storage slot not found: item_id=%s row=%s col=%s",
@@ -677,11 +691,11 @@ class RuntimeStateRepository:
                 )
                 return
 
-            occupied_slots = (
-                db.query(self._strg_location_stat_model)
+            occupied_slots_res = await db.execute(
+                select(self._strg_location_stat_model)
                 .filter(self._strg_location_stat_model.item_id == item_id)
-                .all()
             )
+            occupied_slots = occupied_slots_res.scalars().all()
             for slot in occupied_slots:
                 if slot.loc_id == target_slot.loc_id:
                     continue
@@ -690,22 +704,22 @@ class RuntimeStateRepository:
 
             target_slot.item_id = item_id
             target_slot.status = "occupied"
-            db.commit()
+            await db.commit()
 
-    def reserve_charger_slot(self, row: int, col: int) -> bool:
+    async def reserve_charger_slot(self, row: int, col: int) -> bool:
         """Reserve an empty charger slot in chg_location_stat."""
         if self._chg_location_stat_model is None:
             return False
 
-        with self._session_factory() as db:
-            slot = (
-                db.query(self._chg_location_stat_model)
+        async with self._async_session_factory() as db:
+            slot_res = await db.execute(
+                select(self._chg_location_stat_model)
                 .filter(
                     self._chg_location_stat_model.loc_row == row,
                     self._chg_location_stat_model.loc_col == col,
                 )
-                .first()
             )
+            slot = slot_res.scalars().first()
             if slot is None:
                 logger.warning(
                     "[RuntimeStateRepository] charger slot not found: row=%s col=%s",
@@ -719,23 +733,23 @@ class RuntimeStateRepository:
             slot.status = "reserved"
             slot.res_id = None
             slot.stored_at = datetime.utcnow()
-            db.commit()
+            await db.commit()
             return True
 
-    def occupy_charger_slot(self, res_id: str, row: int, col: int) -> bool:
+    async def occupy_charger_slot(self, res_id: str, row: int, col: int) -> bool:
         """Mark a charger slot occupied by an AMR."""
         if self._chg_location_stat_model is None:
             return False
 
-        with self._session_factory() as db:
-            target_slot = (
-                db.query(self._chg_location_stat_model)
+        async with self._async_session_factory() as db:
+            target_slot_res = await db.execute(
+                select(self._chg_location_stat_model)
                 .filter(
                     self._chg_location_stat_model.loc_row == row,
                     self._chg_location_stat_model.loc_col == col,
                 )
-                .first()
             )
+            target_slot = target_slot_res.scalars().first()
             if target_slot is None:
                 logger.warning(
                     "[RuntimeStateRepository] charger slot not found: res_id=%s row=%s col=%s",
@@ -745,11 +759,11 @@ class RuntimeStateRepository:
                 )
                 return False
 
-            occupied_slots = (
-                db.query(self._chg_location_stat_model)
+            occupied_slots_res = await db.execute(
+                select(self._chg_location_stat_model)
                 .filter(self._chg_location_stat_model.res_id == res_id)
-                .all()
             )
+            occupied_slots = occupied_slots_res.scalars().all()
             for slot in occupied_slots:
                 if slot.loc_id == target_slot.loc_id:
                     continue
@@ -760,10 +774,10 @@ class RuntimeStateRepository:
             target_slot.res_id = res_id
             target_slot.status = "occupied"
             target_slot.stored_at = datetime.utcnow()
-            db.commit()
+            await db.commit()
             return True
 
-    def release_charger_slot(
+    async def release_charger_slot(
         self,
         row: int | None = None,
         col: int | None = None,
@@ -773,19 +787,20 @@ class RuntimeStateRepository:
         if self._chg_location_stat_model is None:
             return False
 
-        with self._session_factory() as db:
-            query = db.query(self._chg_location_stat_model)
+        async with self._async_session_factory() as db:
+            stmt = select(self._chg_location_stat_model)
             if row is not None and col is not None:
-                query = query.filter(
+                stmt = stmt.filter(
                     self._chg_location_stat_model.loc_row == row,
                     self._chg_location_stat_model.loc_col == col,
                 )
             elif res_id is not None:
-                query = query.filter(self._chg_location_stat_model.res_id == res_id)
+                stmt = stmt.filter(self._chg_location_stat_model.res_id == res_id)
             else:
                 return False
 
-            slots = query.all()
+            slots_res = await db.execute(stmt)
+            slots = slots_res.scalars().all()
             if not slots:
                 return False
 
@@ -793,22 +808,22 @@ class RuntimeStateRepository:
                 slot.res_id = None
                 slot.status = "empty"
                 slot.stored_at = datetime.utcnow()
-            db.commit()
+            await db.commit()
             return True
 
-    def create_empty_item(self, order_id: int) -> int | None:
-        with self._session_factory() as db:
+    async def create_empty_item(self, order_id: int) -> int | None:
+        async with self._async_session_factory() as db:
             item = self._item_model(
                 ord_id=int(order_id),
                 cur_stat="CREATED",
                 is_defective=False,
             )
             db.add(item)
-            db.commit()
-            db.refresh(item)
+            await db.commit()
+            await db.refresh(item)
             return int(item.item_id)
-    
-    def sync_task_status(self, task_meta: dict[str, Any]) -> None:
+
+    async def sync_task_status(self, task_meta: dict[str, Any]) -> None:
         txn_id = task_meta.get("txn_id") or _task_id_to_int(task_meta.get("task_id"))
         task_type = _task_db_value(task_meta.get("task_type"))
         if txn_id is None or task_type is None:
@@ -816,9 +831,9 @@ class RuntimeStateRepository:
 
         status = _txn_stat_value(task_meta.get("status"))
         now = datetime.utcnow()
-        with self._session_factory() as db:
+        async with self._async_session_factory() as db:
             if task_type in TRANS_TASK_TYPES and self._trans_task_txn_model is not None:
-                txn = db.get(self._trans_task_txn_model, txn_id)
+                txn = await db.get(self._trans_task_txn_model, txn_id)
                 if txn is None:
                     return
                 txn.txn_stat = status
@@ -828,7 +843,7 @@ class RuntimeStateRepository:
                 if status in {TxnStat.SUCC.value, TxnStat.FAIL.value}:
                     txn.end_at = now
             elif task_type == TaskType.INSP.value and self._insp_task_txn_model is not None:
-                txn = db.get(self._insp_task_txn_model, txn_id)
+                txn = await db.get(self._insp_task_txn_model, txn_id)
                 if txn is None:
                     return
                 txn.txn_stat = status
@@ -837,7 +852,7 @@ class RuntimeStateRepository:
                 if status in {TxnStat.SUCC.value, TxnStat.FAIL.value}:
                     txn.end_at = now
             elif task_type == TaskType.PP.value and self._pp_task_txn_model is not None:
-                txn = db.get(self._pp_task_txn_model, txn_id)
+                txn = await db.get(self._pp_task_txn_model, txn_id)
                 if txn is None:
                     return
                 txn.txn_stat = status
@@ -846,7 +861,7 @@ class RuntimeStateRepository:
                 if status in {TxnStat.SUCC.value, TxnStat.FAIL.value}:
                     txn.end_at = now
             else:
-                txn = db.get(self._equip_task_txn_model, txn_id)
+                txn = await db.get(self._equip_task_txn_model, txn_id)
                 if txn is None:
                     return
                 txn.txn_stat = status
@@ -855,9 +870,9 @@ class RuntimeStateRepository:
                     txn.start_at = now
                 if status in {TxnStat.SUCC.value, TxnStat.FAIL.value}:
                     txn.end_at = now
-            db.commit()
+            await db.commit()
 
-    def record_adapter_result(self, record: dict[str, Any]) -> None:
+    async def record_adapter_result(self, record: dict[str, Any]) -> None:
         """Persist adapter command results into runtime log tables.
 
         Task txn tables keep coarse lifecycle status. Adapter-specific command
@@ -868,7 +883,7 @@ class RuntimeStateRepository:
         task_type = _task_db_value(record.get("task_type"))
         detail = json.dumps(record, ensure_ascii=True, default=str)
 
-        with self._session_factory() as db:
+        async with self._async_session_factory() as db:
             if self._log_event_model is not None:
                 db.add(
                     self._log_event_model(
@@ -901,15 +916,15 @@ class RuntimeStateRepository:
                         )
                     )
 
-            db.commit()
+            await db.commit()
 
-    def sync_item_snapshot(self, item_meta: dict[str, Any]) -> None:
+    async def sync_item_snapshot(self, item_meta: dict[str, Any]) -> None:
         item_id = item_meta.get("item_id")
         if item_id is None:
             return
 
-        with self._session_factory() as db:
-            item = db.get(self._item_model, item_id)
+        async with self._async_session_factory() as db:
+            item = await db.get(self._item_model, item_id)
             if item is None:
                 return
             if "flow_stat" in item_meta:
@@ -930,16 +945,48 @@ class RuntimeStateRepository:
                 result = item_meta.get("result")
                 item.is_defective = None if result is None else not bool(result)
             item.updated_at = datetime.utcnow()
-            db.commit()
+            await db.commit()
 
-    def sync_resource_snapshot(self, res_meta: dict[str, Any]) -> None:
+    async def sync_resource_snapshot(self, res_meta: dict[str, Any]) -> None:
         res_id = res_meta.get("res_id")
         if res_id is None:
             return
 
         now = datetime.utcnow()
         item_id = _normalize_item_id(res_meta.get("item_id"))
-        with self._session_factory() as db:
+        async with self._async_session_factory() as db:
+            if _res_kind(res_id) == "trans" and self._trans_stat_model is not None:
+                stat = await db.get(self._trans_stat_model, res_id)
+                if stat is None:
+                    stat = self._trans_stat_model(res_id=res_id)
+                    db.add(stat)
+                stat.item_id = item_id
+                stat.cur_stat = _trans_stat_value(res_meta.get("status"))
+                if res_meta.get("battery_pct") is not None:
+                    stat.battery_pct = res_meta.get("battery_pct")
+                stat.updated_at = now
+            elif self._equip_stat_model is not None:
+                stat_res = await db.execute(
+                    select(self._equip_stat_model).filter(self._equip_stat_model.res_id == res_id)
+                )
+                stat = stat_res.scalars().first()
+                if stat is None:
+                    stat = self._equip_stat_model(res_id=res_id)
+                    db.add(stat)
+                stat.item_id = item_id
+                stat.txn_type = res_meta.get("task_type")
+                stat.cur_stat = _equip_stat_value(res_meta.get("status"))
+                stat.updated_at = now
+            await db.commit()
+
+    def sync_resource_snapshot_sync(self, res_meta: dict[str, Any]) -> None:
+        with self._sync_session_factory() as db:
+            res_id = res_meta.get("res_id")
+            if res_id is None:
+                return
+
+            now = datetime.utcnow()
+            item_id = _normalize_item_id(res_meta.get("item_id"))
             if _res_kind(res_id) == "trans" and self._trans_stat_model is not None:
                 stat = db.get(self._trans_stat_model, res_id)
                 if stat is None:
@@ -951,7 +998,11 @@ class RuntimeStateRepository:
                     stat.battery_pct = res_meta.get("battery_pct")
                 stat.updated_at = now
             elif self._equip_stat_model is not None:
-                stat = db.query(self._equip_stat_model).filter(self._equip_stat_model.res_id == res_id).first()
+                stat = (
+                    db.query(self._equip_stat_model)
+                    .filter(self._equip_stat_model.res_id == res_id)
+                    .first()
+                )
                 if stat is None:
                     stat = self._equip_stat_model(res_id=res_id)
                     db.add(stat)
@@ -961,10 +1012,16 @@ class RuntimeStateRepository:
                 stat.updated_at = now
             db.commit()
 
-    def increment_order_gp_qty(self, ord_id: int) -> dict[str, int | bool] | None:
-        with self._session_factory() as db:
-            detail = db.query(self._ord_detail_model).filter(self._ord_detail_model.ord_id == ord_id).first()
-            stat = db.query(self._ord_stat_model).filter(self._ord_stat_model.ord_id == ord_id).first()
+    async def increment_order_gp_qty(self, ord_id: int) -> dict[str, int | bool] | None:
+        async with self._async_session_factory() as db:
+            detail_res = await db.execute(
+                select(self._ord_detail_model).filter(self._ord_detail_model.ord_id == ord_id)
+            )
+            detail = detail_res.scalars().first()
+            stat_res = await db.execute(
+                select(self._ord_stat_model).filter(self._ord_stat_model.ord_id == ord_id)
+            )
+            stat = stat_res.scalars().first()
             if detail is None or stat is None:
                 logger.warning(
                     "[RuntimeStateRepository] PA_GP completion without order detail/stat: ord_id=%s",
@@ -974,7 +1031,7 @@ class RuntimeStateRepository:
 
             stat.gp_qty = int(stat.gp_qty or 0) + 1
             stat.updated_at = datetime.utcnow()
-            db.commit()
+            await db.commit()
             target_qty = int(detail.qty or 0)
             return {
                 "complete": stat.gp_qty >= target_qty,
@@ -982,16 +1039,16 @@ class RuntimeStateRepository:
                 "qty": target_qty,
             }
 
-    def mark_order_shipping(self, ord_id: int) -> bool:
+    async def mark_order_shipping(self, ord_id: int) -> bool:
         if self._ord_stat_model is None:
             return False
 
-        with self._session_factory() as db:
-            stat = (
-                db.query(self._ord_stat_model)
+        async with self._async_session_factory() as db:
+            stat_res = await db.execute(
+                select(self._ord_stat_model)
                 .filter(self._ord_stat_model.ord_id == ord_id)
-                .first()
             )
+            stat = stat_res.scalars().first()
 
             if stat is None:
                 return False
@@ -999,7 +1056,7 @@ class RuntimeStateRepository:
             stat.ord_stat = "SHIPPING"
             stat.updated_at = datetime.utcnow()
 
-            db.commit()
+            await db.commit()
 
             logger.info(
                 "[RuntimeStateRepository] order marked shipping: ord_id=%s",

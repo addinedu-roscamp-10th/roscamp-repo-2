@@ -73,7 +73,7 @@ class _RecordingStateManager:
         self.charger_requests.append(res_id)
         return self.charger_slot
 
-    def update_amr_charger_return_state(
+    async def update_amr_charger_return_state(
         self,
         res_id: str,
         status: str,
