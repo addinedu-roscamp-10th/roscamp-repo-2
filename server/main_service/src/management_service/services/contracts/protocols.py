@@ -109,16 +109,6 @@ class IStateManager(Protocol):
     def update_res_status_memory(self, res_id: str, x: float, y: float, battery_pct: int) -> None:
         ...
 
-    def update_amr_runtime_memory(
-        self,
-        res_id: str,
-        *,
-        x: float | None = None,
-        y: float | None = None,
-        battery_pct: int | None = None,
-    ) -> None:
-        ...
-
     async def update_res_task_state(
         self,
         task_id: str,
@@ -153,6 +143,21 @@ class IStateManager(Protocol):
         ...
 
     def get_task_id_for_resource(self, res_id: str) -> str | None:
+        ...
+
+    def update_amr_runtime_memory(
+        self,
+        res_id: str,
+        *,
+        x: float | None = None,
+        y: float | None = None,
+        battery_pct: int | None = None,
+    ) -> None:
+        """ROS telemetry를 메모리에 반영한다."""
+        ...
+
+    async def sync_resource_telemetry(self, telemetry: dict[str, Any]) -> None:
+        """ROS telemetry의 배터리 정보만 repository에 반영한다."""
         ...
 
     async def update_amr_charger_return_state(

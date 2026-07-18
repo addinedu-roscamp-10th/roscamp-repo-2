@@ -1161,7 +1161,7 @@ class StateManager:
             res_meta["y"] = y
         if battery_pct is not None:
             res_meta["battery_pct"] = battery_pct
-        self._safe_repo_call_sync("sync_resource_snapshot", res_meta)
+
         logger.debug(
             "[StateManager] update_amr_runtime_memory: res=%s x=%s y=%s battery=%s",
             res_id,
@@ -1169,6 +1169,10 @@ class StateManager:
             y,
             battery_pct,
         )
+
+    async def sync_resource_telemetry(self, telemetry: dict[str, Any]) -> None:
+        """ROS에서 수신된 AMR의 배터리 정보를 repository에 반영한다."""
+        await self._safe_repo_call("sync_resource_telemetry", telemetry)
 
     async def update_res_task_state(
         self,

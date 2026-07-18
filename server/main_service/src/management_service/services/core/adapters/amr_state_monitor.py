@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from services.contracts.protocols import IStateManager
@@ -72,6 +73,10 @@ class AmrStateMonitorNode:
                     amr_name,
                     battery_pct=int(round(percent)),
                 )
+                service.persist_telemetry(
+                    amr_name,
+                    battery_pct=int(round(percent)),
+                )
 
             def amcl_callback(self, amr_name, msg) -> None:
                 """좌표 콜백함수."""
@@ -105,10 +110,26 @@ class AmrStateMonitorService:
         self._thread: threading.Thread | None = None
         self._node: AmrStateMonitorNode | None = None
         self._lock = threading.Lock()
+        self._submit_async: Callable[[Coroutine[Any, Any, None]], Any] | None = None
         # Pre-seed so get_all() always returns TAT1/2/3, even before ROS2 data arrives.
         self._cache: dict[str, AmrStatus] = {
             rid: AmrStatus(id=rid) for rid in self._AMR_IDS
         }
+
+    def set_async_submitter(
+        self,
+        submit_async: Callable[[Coroutine[Any, Any, None]], Any],
+    ) -> None:
+        self._submit_async = submit_async
+
+    def persist_telemetry(self, res_id: str, *, battery_pct: int) -> None:
+        if self._submit_async is None:
+            raise RuntimeError("AMR telemetry coroutine submitter is not configured.")
+        self._submit_async(
+            self._state_manager.sync_resource_telemetry(
+                {"res_id": res_id, "battery_pct": battery_pct}
+            )
+        )
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():

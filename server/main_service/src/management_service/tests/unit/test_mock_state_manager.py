@@ -38,6 +38,60 @@ def test_update_task_status_input_requires_task_type() -> None:
     with pytest.raises(ValidationError):
         UpdateTaskStatusInput(task_id="42", new_stat=TxnStat.PROC)
 
+
+def test_amr_battery_persistence_skips_position_updates() -> None:
+    """위치 수신은 메모리에만 반영하고 배터리 수신만 DB에 저장한다."""
+
+    class _Repo:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        async def sync_resource_telemetry(self, telemetry: dict) -> None:
+            self.calls.append(dict(telemetry))
+
+    repo = _Repo()
+    state_manager = StateManager(repository=repo)
+    state_manager._res_list["TAT1"].update(
+        {
+            "task_id": "ToPP:42",
+            "item_id": 1001,
+            "status": "ALLOC",
+        }
+    )
+
+    state_manager.update_amr_runtime_memory(
+        "TAT1",
+        x=1.25,
+        y=-0.5,
+    )
+
+    assert repo.calls == []
+    assert state_manager._res_list["TAT1"]["x"] == 1.25
+    assert state_manager._res_list["TAT1"]["y"] == -0.5
+
+    state_manager.update_amr_runtime_memory("TAT1", battery_pct=73)
+
+    assert repo.calls == []
+    asyncio.run(
+        state_manager.sync_resource_telemetry(
+            {"res_id": "TAT1", "battery_pct": 73}
+        )
+    )
+
+    assert repo.calls == [
+        {
+            "res_id": "TAT1",
+            "battery_pct": 73,
+        }
+    ]
+    assert "task_id" not in repo.calls[0]
+    assert "item_id" not in repo.calls[0]
+    assert "status" not in repo.calls[0]
+    assert state_manager._res_list["TAT1"]["task_id"] == "ToPP:42"
+    assert state_manager._res_list["TAT1"]["item_id"] == 1001
+    assert state_manager._res_list["TAT1"]["status"] == "ALLOC"
+
+
 def test_get_empty_start_slot_falls_back_to_memory_slots_when_repo_is_unavailable() -> None:
     """DB 슬롯 조회가 불가해도 메모리 슬롯 테이블로 생산 시작 위치를 계산한다."""
 

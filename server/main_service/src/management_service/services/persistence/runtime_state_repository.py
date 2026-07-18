@@ -962,8 +962,6 @@ class RuntimeStateRepository:
                     db.add(stat)
                 stat.item_id = item_id
                 stat.cur_stat = _trans_stat_value(res_meta.get("status"))
-                if res_meta.get("battery_pct") is not None:
-                    stat.battery_pct = res_meta.get("battery_pct")
                 stat.updated_at = now
             elif self._equip_stat_model is not None:
                 stat_res = await db.execute(
@@ -979,38 +977,27 @@ class RuntimeStateRepository:
                 stat.updated_at = now
             await db.commit()
 
-    def sync_resource_snapshot_sync(self, res_meta: dict[str, Any]) -> None:
-        with self._sync_session_factory() as db:
-            res_id = res_meta.get("res_id")
-            if res_id is None:
-                return
+    async def sync_resource_telemetry(self, telemetry: dict[str, Any]) -> None:
+        """ROS에서 수신된 AMR의 배터리 정보를 db에 저장한다."""
+        if self._trans_stat_model is None:
+            return
 
-            now = datetime.utcnow()
-            item_id = _normalize_item_id(res_meta.get("item_id"))
-            if _res_kind(res_id) == "trans" and self._trans_stat_model is not None:
-                stat = db.get(self._trans_stat_model, res_id)
-                if stat is None:
-                    stat = self._trans_stat_model(res_id=res_id)
-                    db.add(stat)
-                stat.item_id = item_id
-                stat.cur_stat = _trans_stat_value(res_meta.get("status"))
-                if res_meta.get("battery_pct") is not None:
-                    stat.battery_pct = res_meta.get("battery_pct")
-                stat.updated_at = now
-            elif self._equip_stat_model is not None:
-                stat = (
-                    db.query(self._equip_stat_model)
-                    .filter(self._equip_stat_model.res_id == res_id)
-                    .first()
-                )
-                if stat is None:
-                    stat = self._equip_stat_model(res_id=res_id)
-                    db.add(stat)
-                stat.item_id = item_id
-                stat.txn_type = res_meta.get("task_type")
-                stat.cur_stat = _equip_stat_value(res_meta.get("status"))
-                stat.updated_at = now
-            db.commit()
+        res_id = telemetry.get("res_id")
+        if _res_kind(res_id) != "trans":
+            return
+
+        battery_pct = telemetry.get("battery_pct")
+        if battery_pct is None:
+            return
+
+        async with self._async_session_factory() as db:
+            stat = await db.get(self._trans_stat_model, res_id)
+            if stat is None:
+                stat = self._trans_stat_model(res_id=res_id)
+                db.add(stat)
+            stat.battery_pct = int(battery_pct)
+            stat.updated_at = datetime.utcnow()
+            await db.commit()
 
     async def increment_order_gp_qty(self, ord_id: int) -> dict[str, int | bool] | None:
         async with self._async_session_factory() as db:

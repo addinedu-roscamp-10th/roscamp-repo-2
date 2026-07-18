@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from decimal import Decimal
 
 from services.contracts.enums import TaskType, TxnStat
 
@@ -12,6 +13,9 @@ def _seed_order(models, db, *, ord_id: int, qty: int, user_id: int) -> None:
     db.add(models.OrdPattern(ord_id=ord_id))
     db.add(models.OrdStat(ord_id=ord_id, user_id=user_id, ord_stat="APPR"))
 
+def _seed_tat(models, db, *, res_id: str = "TAT1") -> None:
+    db.add(models.Res(res_id=res_id, res_type="TAT", model_nm="test-tat"))
+    db.add(models.Trans(res_id=res_id, slot_count=1, max_load_kg=Decimal("100.0")))
 
 def test_start_production_async_commits_items_and_order_status(runtime_repo_db) -> None:
     """생산 시작 후 생성 Item과 주문 상태가 비동기 세션에서 함께 반영되는지 검증."""
@@ -57,3 +61,38 @@ def test_sync_task_status_async_sets_lifecycle_timestamps(runtime_repo_db) -> No
         assert txn.txn_stat == TxnStat.SUCC.value
         assert txn.trans_id == "TAT1"
         assert txn.start_at is not None and txn.end_at is not None
+
+def test_resource_snapshot_preserves_latest_telemetry(runtime_repo_db) -> None:
+    models = runtime_repo_db.models
+    repo = runtime_repo_db.repo
+
+    with runtime_repo_db.sync_session_factory() as db:
+        _seed_tat(models, db, res_id="TAT9")
+        db.commit()
+
+    asyncio.run(
+        repo.sync_resource_telemetry(
+            {
+                "res_id": "TAT9",
+                "battery_pct": 67,
+            }
+        )
+    )
+
+    asyncio.run(
+        repo.sync_resource_snapshot(
+            {
+                "res_id": "TAT9",
+                "status": "ALLOC",
+                "item_id": None,
+                "battery_pct": 41,
+            }
+        )
+    )
+
+    with runtime_repo_db.sync_session_factory() as db:
+        stat = db.get(models.TransStat, "TAT9")
+        assert stat is not None
+        assert stat.cur_stat == "ALLOC"
+        assert stat.item_id is None
+        assert stat.battery_pct == 67

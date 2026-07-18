@@ -96,10 +96,12 @@ class OrchestratorThread:
             logger.info("Orchestrator Thread & Event Loop Stopped.")
 
     def run_coro(self, coro):
+        return self.submit_coro(coro).result(timeout=5.0)
+
+    def submit_coro(self, coro):
         if self.loop.is_closed():
             raise RuntimeError("Orchestrator 루프가 꺼져있습니다.")
-        future = asyncio.run_coroutine_threadsafe(coro, self.loop)
-        return future.result(timeout=5.0)
+        return asyncio.run_coroutine_threadsafe(coro, self.loop)
 
     def stop(self) -> None:
         if self.loop.is_closed():
@@ -233,6 +235,7 @@ def serve() -> None:
     servicer.orchestrator_thread = orchestrator_thread
     # sync 스레드(gRPC servicer)가 async handler 코루틴을 던질 루프 주입.
     container.event_bridge.set_loop(orchestrator_thread.loop)
+    container.amr_state_monitor.set_async_submitter(orchestrator_thread.submit_coro)
 
     container.start()
     server.start()
@@ -241,8 +244,8 @@ def serve() -> None:
     # Graceful shutdown
     def _stop(_signum, _frame):
         logger.info("Shutting down...")
-        orchestrator_thread.stop()
         container.close()
+        orchestrator_thread.stop()
         server.stop(grace=5)
 
     signal.signal(signal.SIGINT, _stop)
