@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import asyncio
 import logging
 import threading
@@ -8,7 +9,6 @@ from typing import Dict, List
 from services.contracts.models import *
 from services.contracts.enums import (
     BYPASSABLE_TASK_TYPES,
-    ResourceType,
     TaskType,
     TxnStat,
 )
@@ -16,8 +16,6 @@ from services.contracts.protocols import IAdapter, IEventBridge, IStateManager
 
 
 class TaskExecutor:
-    _HARDWARE_RESOURCE_IDS = frozenset({ResourceType.MAT.value, ResourceType.PAT.value})
-    _HARDWARE_RESOURCE_PREFIXES = (ResourceType.TAT.value,)
     _EXTERNAL_WAIT_EVENTS = {
         EventType.HANDOFF_ACK,
         EventType.PP_DONE_REQUESTED,
@@ -571,15 +569,6 @@ class TaskExecutor:
             raise RuntimeError("WAIT_SUBTASK_COMPLETED requires params.subtask_type")
         return subtask_type.strip()
 
-    def _should_bypass_hardware_execution(self, res_id: str) -> bool:
-        """현재는 AMR(TAT)과 ARM(MAT/PAT)만 실제 하드웨어 명령을 실행한다."""
-        normalized_res_id = (res_id or "").upper()
-        if normalized_res_id in self._HARDWARE_RESOURCE_IDS:
-            return False
-        if normalized_res_id.startswith(self._HARDWARE_RESOURCE_PREFIXES):
-            return False
-        return True
-
     async def return_amr_to_charger(self, res_id: str, source: str | None = None) -> bool:
         """대기 중인 AMR을 남는 충전소로 복귀시킨다."""
         charger_slot = await self.state_manager.get_empty_charger(res_id)
@@ -719,6 +708,12 @@ class TaskExecutor:
 
         subtask_type = self._get_valid_wait_subtask_type(step)
         key = (item_id, subtask_type)
+
+        if os.environ.get("MOCK_ADAPTERS") == "1":
+            self.logger.info("[MOCK] Bypassing WAIT_SUBTASK_COMPLETED for %s", key)
+            await asyncio.sleep(0.5)
+            return True
+
         # task 생성 전에 먼저 온 이벤트를 보고 성공처리
         if key in self._completed_subtasks:
             self.logger.info(

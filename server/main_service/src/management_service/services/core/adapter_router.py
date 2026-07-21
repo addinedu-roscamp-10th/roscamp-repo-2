@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 from typing import Any
 
 from services.contracts.enums import ResourceType
@@ -54,6 +56,11 @@ class AdapterRouter(IAdapter):
                 start()
 
     async def send_command(self, res_id: str, action: str, params: dict[str, Any]) -> AdapterResult:
+        if os.environ.get("MOCK_ADAPTERS") == "1":
+            logger.info("[MOCK] Adapter mock mode: action=%s res_id=%s", action, res_id)
+            await asyncio.sleep(0.5)  # 대기
+            return AdapterResult(success=True, message=f"mocked_{action}_success")
+
         # AI는 action명으로 라우팅
         if action == "AI_INFERENCE_REQUEST":
             result = await self._ai_adapter.send_command(res_id, action, params)
