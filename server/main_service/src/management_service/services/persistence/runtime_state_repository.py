@@ -362,10 +362,12 @@ class RuntimeStateRepository:
                     is_defective=None,
                 )
                 db.add(new_item)
-                await db.flush()
-
-                new_item_id = getattr(new_item, "item_id", getattr(new_item, "item_stat_id", None))
                 created_items.append(new_item)
+            
+            await db.flush()
+
+            for new_item in created_items:
+                new_item_id = getattr(new_item, "item_id", getattr(new_item, "item_stat_id", None))
                 item_ids.append(int(new_item_id))
 
             # 초기 MM equip_task_txn 은 TaskManager.create_next_task(flow_stat=="CREATED") 가
@@ -703,9 +705,11 @@ class RuntimeStateRepository:
                     continue
                 slot.item_id = None
                 slot.status = "reserved"
+                slot.stored_at = datetime.utcnow()
 
             target_slot.item_id = item_id
             target_slot.status = "occupied"
+            target_slot.stored_at = datetime.utcnow()
             await db.commit()
 
     async def reserve_charger_slot(self, row: int, col: int) -> bool:
@@ -1085,13 +1089,119 @@ class RuntimeStateRepository:
             if stat is None:
                 return False
 
+            if stat.ord_stat == "SHIPPING":
+                return True
+            if stat.ord_stat != "DONE":
+                logger.warning(
+                    "[RuntimeStateRepository] order shipping transition rejected: "
+                    "ord_id=%s current=%s",
+                    ord_id,
+                    stat.ord_stat,
+                )
+                return False
+
             stat.ord_stat = "SHIPPING"
             stat.updated_at = datetime.utcnow()
+            db.add(
+                self._ord_log_model(
+                    ord_id=ord_id,
+                    prev_stat="DONE",
+                    new_stat="SHIP",
+                    changed_by=None,
+                )
+            )
 
             await db.commit()
 
             logger.info(
                 "[RuntimeStateRepository] order marked shipping: ord_id=%s",
+                ord_id,
+            )
+            return True
+
+    async def mark_order_completed_if_shipping_finished(self, ord_id: int) -> bool:
+        """출고가 끝난 주문을 COMP로 전이한다."""
+        if self._ord_stat_model is None or self._item_model is None:
+            return False
+        if self._trans_task_txn_model is None:
+            return False
+
+        async with self._async_session_factory() as db:
+            stat_res = await db.execute(
+                select(self._ord_stat_model)
+                .filter(self._ord_stat_model.ord_id == ord_id)
+                .with_for_update()
+            )
+            stat = stat_res.scalars().first()
+            if stat is None or stat.ord_stat != "SHIPPING":
+                return False
+
+            item_count_res = await db.execute(
+                select(func.count())
+                .select_from(self._item_model)
+                .filter(self._item_model.ord_id == ord_id)
+            )
+            item_count = int(item_count_res.scalar_one())
+
+            unfinished_item_count_res = await db.execute(
+                select(func.count())
+                .select_from(self._item_model)
+                .filter(self._item_model.ord_id == ord_id)
+                .filter(
+                    self._item_model.cur_stat.notin_(
+                        ["READY_TO_SHIP", "DISCARDED"]
+                    )
+                )
+            )
+            unfinished_item_count = int(unfinished_item_count_res.scalar_one())
+
+            toship_count_res = await db.execute(
+                select(func.count())
+                .select_from(self._trans_task_txn_model)
+                .filter(self._trans_task_txn_model.ord_id == ord_id)
+                .filter(self._trans_task_txn_model.task_type == TaskType.ToSHIP.value)
+            )
+            toship_count = int(toship_count_res.scalar_one())
+
+            unfinished_toship_count_res = await db.execute(
+                select(func.count())
+                .select_from(self._trans_task_txn_model)
+                .filter(self._trans_task_txn_model.ord_id == ord_id)
+                .filter(self._trans_task_txn_model.task_type == TaskType.ToSHIP.value)
+                .filter(self._trans_task_txn_model.txn_stat != TxnStat.SUCC.value)
+            )
+            unfinished_toship_count = int(unfinished_toship_count_res.scalar_one())
+
+            if (
+                item_count == 0
+                or unfinished_item_count > 0
+                or toship_count == 0
+                or unfinished_toship_count > 0
+            ):
+                logger.info(
+                    "[RuntimeStateRepository] shipping not finished: ord_id=%s "
+                    "items=%s unfinished_items=%s toship=%s unfinished_toship=%s",
+                    ord_id,
+                    item_count,
+                    unfinished_item_count,
+                    toship_count,
+                    unfinished_toship_count,
+                )
+                return False
+
+            stat.ord_stat = "COMP"
+            stat.updated_at = datetime.utcnow()
+            db.add(
+                self._ord_log_model(
+                    ord_id=ord_id,
+                    prev_stat="SHIP",
+                    new_stat="COMP",
+                    changed_by=None,
+                )
+            )
+            await db.commit()
+            logger.info(
+                "[RuntimeStateRepository] order shipping completed: ord_id=%s",
                 ord_id,
             )
             return True

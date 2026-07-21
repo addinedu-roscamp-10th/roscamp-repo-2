@@ -157,6 +157,7 @@ class _RecordingStateManager:
         self.start_slots: list[int] = []
         self.completed_ship_batches: list[list[tuple[int, int, int]]] = []
         self.start_production_calls: list[int] = []
+        self.completed_shipping_orders: list[int] = []
 
     async def get_item(self, item_id: int) -> ItemStatusRecord:
         self.get_item_calls.append(item_id)
@@ -184,6 +185,10 @@ class _RecordingStateManager:
             self.items[item_id] = item.model_copy(
                 update={"flow_stat": "READY_TO_SHIP", "strg_loc": None}
             )
+
+    async def complete_shipping_order_if_ready(self, ord_id: int) -> bool:
+        self.completed_shipping_orders.append(ord_id)
+        return True
 
     def is_res_available(self, res_id: str) -> bool:
         return self.available_resources.get(res_id, False)
@@ -579,6 +584,34 @@ def test_pick_completed_event_creates_next_shipping_task() -> None:
             "strg_loc": (2, 5),
             "batch": [(1004, 2, 5)],
         }
+
+    asyncio.run(scenario())
+
+
+def test_toship_completed_event_finishes_shipping_order() -> None:
+    """ToSHIP 성공 이벤트는 DB 조건 확인을 거쳐 주문 완료 전이를 요청한다."""
+
+    async def scenario() -> None:
+        event_bridge = EventBridgeImpl()
+        task_manager = _RecordingTaskManager()
+        allocator = _SequencedAllocator([])
+        executor = _RecordingExecutor()
+        state_manager = _RecordingStateManager(
+            {1001: _item(item_id=1001, order_id=501, ptn_id=None, strg_loc=None)}
+        )
+        Orchestrator(task_manager, allocator, state_manager, event_bridge, executor)
+
+        event_bridge.publish(
+            Event(
+                event_type=EventType.TASK_COMPLETED,
+                item_id=1001,
+                payload={"task_type": TaskType.ToSHIP, "status": TxnStat.SUCC.value},
+            )
+        )
+        await _drain_loop()
+
+        assert state_manager.completed_shipping_orders == [501]
+        assert task_manager.calls == []
 
     asyncio.run(scenario())
 

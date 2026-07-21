@@ -185,6 +185,70 @@ def test_sync_task_status_async_sets_lifecycle_timestamps(runtime_repo_db) -> No
         assert txn.start_at is not None
         assert txn.end_at is not None
 
+def test_order_completes_only_after_every_toship_task_succeeds(runtime_repo_db) -> None:
+    models = runtime_repo_db.models
+    repo = runtime_repo_db.repo
+
+    with runtime_repo_db.sync_session_factory() as db:
+        _seed_user(models, db, user_id=10)
+        _seed_order_bundle(models, db, ord_id=103, qty=2, user_id=10)
+        stat = db.query(models.OrdStat).filter(models.OrdStat.ord_id == 103).one()
+        stat.ord_stat = "DONE"
+        items = [
+            models.Item(ord_id=103, cur_stat="READY_TO_SHIP"),
+            models.Item(ord_id=103, cur_stat="READY_TO_SHIP"),
+            models.Item(ord_id=103, cur_stat="DISCARDED", is_defective=True),
+        ]
+        db.add_all(items)
+        db.flush()
+        tasks = [
+            models.TransTaskTxn(
+                task_type=TaskType.ToSHIP.value,
+                txn_stat=TxnStat.SUCC.value,
+                item_id=items[0].item_id,
+                ord_id=103,
+            ),
+            models.TransTaskTxn(
+                task_type=TaskType.ToSHIP.value,
+                txn_stat=TxnStat.PROC.value,
+                item_id=items[1].item_id,
+                ord_id=103,
+            ),
+        ]
+        db.add_all(tasks)
+        db.commit()
+        unfinished_task_id = tasks[1].trans_task_txn_id
+
+    assert asyncio.run(repo.mark_order_shipping(103)) is True
+    assert asyncio.run(repo.mark_order_shipping(103)) is True
+    assert asyncio.run(repo.mark_order_completed_if_shipping_finished(103)) is False
+
+    asyncio.run(
+        repo.sync_task_status(
+            {
+                "txn_id": unfinished_task_id,
+                "task_type": TaskType.ToSHIP.value,
+                "status": TxnStat.SUCC.value,
+            }
+        )
+    )
+    assert asyncio.run(repo.mark_order_completed_if_shipping_finished(103)) is True
+
+    with runtime_repo_db.sync_session_factory() as db:
+        stat = db.query(models.OrdStat).filter(models.OrdStat.ord_id == 103).one()
+        assert stat.ord_stat == "COMP"
+        shipping_logs = (
+            db.query(models.OrdLog)
+            .filter(models.OrdLog.ord_id == 103)
+            .filter(models.OrdLog.new_stat.in_(["SHIP", "COMP"]))
+            .order_by(models.OrdLog.log_id)
+            .all()
+        )
+        assert [(log.prev_stat, log.new_stat) for log in shipping_logs] == [
+            ("DONE", "SHIP"),
+            ("SHIP", "COMP"),
+        ]
+
 def test_resource_snapshot_preserves_latest_telemetry(runtime_repo_db) -> None:
     models = runtime_repo_db.models
     repo = runtime_repo_db.repo

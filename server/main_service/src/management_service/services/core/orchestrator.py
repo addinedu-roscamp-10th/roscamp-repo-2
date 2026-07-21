@@ -106,7 +106,7 @@ class Orchestrator(IOrchestrator):
             try:
                 # 주문 수량 확인
                 target_qty = await self.state_manager.get_order_target_qty(ord_id)
-                
+
                 # 주문 수량 조회 실패
                 if target_qty is None:
                     result = self._build_rejected_ack(
@@ -245,6 +245,13 @@ class Orchestrator(IOrchestrator):
             # 다음 batch 출고
             if self.task_manager.has_ship_plan(item_info.order_id):
                 await self._schedule_ship_task(item_info.order_id, event="pick_done")
+            return
+
+        if event.payload.get("task_type") == TaskType.ToSHIP:
+            item_info = await self.state_manager.get_item(item_id)
+            await self.state_manager.complete_shipping_order_if_ready(
+                item_info.order_id
+            )
             return
 
         await self._schedule_next_task(

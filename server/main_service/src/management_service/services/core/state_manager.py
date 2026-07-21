@@ -1338,3 +1338,15 @@ class StateManager:
                 col,
                 released,
             )
+
+    async def complete_shipping_order_if_ready(self, ord_id: int) -> bool:
+        completed = await self._safe_repo_call(
+            "mark_order_completed_if_shipping_finished",
+            ord_id,
+        )
+        logger.info(
+            "[StateManager] complete_shipping_order_if_ready: ord_id=%s result=%s",
+            ord_id,
+            completed,
+        )
+        return bool(completed)

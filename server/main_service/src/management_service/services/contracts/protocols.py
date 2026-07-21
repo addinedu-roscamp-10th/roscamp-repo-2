@@ -111,6 +111,8 @@ class IStateManager(Protocol):
 
     async def get_items_by_order(self, ord_id: int) -> list[ItemStatusRecord]:
         ...
+    async def complete_shipping_order_if_ready(self, ord_id: int) -> bool:
+        ...
         
     ##Task Allocator가 사용하는 인터페이스
     def get_available_resources(self, req_res_type: str) -> list[str]:

@@ -46,6 +46,25 @@ export default function OrdersPage() {
 
   useEffect(() => { loadOrders(); }, [loadOrders]);
 
+  const hasShippingOrder = orders.some((order) => order.status === "shipping_ready");
+  useEffect(() => {
+    if (!hasShippingOrder) return;
+
+    const intervalId = window.setInterval(async () => {
+      try {
+        const data = await fetchOrders();
+        setOrders(data);
+        setSelectedOrder((current) => {
+          if (!current) return current;
+          return data.find((order) => order.id === current.id) ?? current;
+        });
+      } catch {
+      }
+    }, 2000);
+
+    return () => window.clearInterval(intervalId);
+  }, [hasShippingOrder]);
+
   // 주문 선택 시 상세 로드
   const handleSelectOrder = useCallback(async (order: Order) => {
     setSelectedOrder(order);
@@ -83,6 +102,12 @@ export default function OrdersPage() {
       const summary = result.itemIds.length
         ? `출하 시작: ${result.itemIds.length}개 item TAT 운반 task 가 스케줄링되었습니다.`
         : (result.message || "출하 가능한 item 이 없습니다. PyQt 적재 상태를 확인하세요.");
+      const data = await fetchOrders();
+      setOrders(data);
+      setSelectedOrder((current) => {
+        if (!current) return current;
+        return data.find((order) => order.id === current.id) ?? current;
+      });
       alert(summary);
     } catch (err) {
       alert(err instanceof Error ? err.message : "출하 시작 실패");
