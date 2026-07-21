@@ -7,12 +7,13 @@ while this repository mirrors durable runtime snapshots into smart_cast_db.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 import json
 import logging
 from typing import Any
 
-from sqlalchemy import select, tuple_
+from sqlalchemy import func, select, tuple_, update
 
 from services.contracts.enums import TaskType, TxnStat
 from services.contracts.models import StartProductionOrderAckModel
@@ -172,6 +173,7 @@ class RuntimeStateRepository:
         self._log_err_trans_model = log_err_trans_model
         self._tat_nav_pose_master_model = tat_nav_pose_master_model
         self._trans_task_bat_threshold_model = trans_task_bat_threshold_model
+        self._resource_snapshot_locks: dict[Any, asyncio.Lock] = {}
 
     @classmethod
     def from_default_db(cls) -> "RuntimeStateRepository":
@@ -929,8 +931,6 @@ class RuntimeStateRepository:
                 return
             if "flow_stat" in item_meta:
                 item.cur_stat = item_meta.get("flow_stat")
-            if "zone_nm" in item_meta:
-                item.cur_res = item_meta.get("zone_nm")
             if item_meta.get("req_res_id") is not None:
                 item.cur_res = item_meta.get("req_res_id")
             if item_meta.get("last_task_type") is not None:
@@ -952,30 +952,36 @@ class RuntimeStateRepository:
         if res_id is None:
             return
 
-        now = datetime.utcnow()
-        item_id = _normalize_item_id(res_meta.get("item_id"))
-        async with self._async_session_factory() as db:
-            if _res_kind(res_id) == "trans" and self._trans_stat_model is not None:
-                stat = await db.get(self._trans_stat_model, res_id)
-                if stat is None:
-                    stat = self._trans_stat_model(res_id=res_id)
-                    db.add(stat)
-                stat.item_id = item_id
-                stat.cur_stat = _trans_stat_value(res_meta.get("status"))
-                stat.updated_at = now
-            elif self._equip_stat_model is not None:
-                stat_res = await db.execute(
-                    select(self._equip_stat_model).filter(self._equip_stat_model.res_id == res_id)
-                )
-                stat = stat_res.scalars().first()
-                if stat is None:
-                    stat = self._equip_stat_model(res_id=res_id)
-                    db.add(stat)
-                stat.item_id = item_id
-                stat.txn_type = res_meta.get("task_type")
-                stat.cur_stat = _equip_stat_value(res_meta.get("status"))
-                stat.updated_at = now
-            await db.commit()
+        lock = self._resource_snapshot_locks.get(res_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._resource_snapshot_locks[res_id] = lock
+
+        async with lock:
+            now = datetime.utcnow()
+            item_id = _normalize_item_id(res_meta.get("item_id"))
+            async with self._async_session_factory() as db:
+                if _res_kind(res_id) == "trans" and self._trans_stat_model is not None:
+                    stat = await db.get(self._trans_stat_model, res_id)
+                    if stat is None:
+                        stat = self._trans_stat_model(res_id=res_id)
+                        db.add(stat)
+                    stat.item_id = item_id
+                    stat.cur_stat = _trans_stat_value(res_meta.get("status"))
+                    stat.updated_at = now
+                elif self._equip_stat_model is not None:
+                    stat_res = await db.execute(
+                        select(self._equip_stat_model).filter(self._equip_stat_model.res_id == res_id)
+                    )
+                    stat = stat_res.scalars().first()
+                    if stat is None:
+                        stat = self._equip_stat_model(res_id=res_id)
+                        db.add(stat)
+                    stat.item_id = item_id
+                    stat.txn_type = _task_db_value(res_meta.get("task_type"))
+                    stat.cur_stat = _equip_stat_value(res_meta.get("status"))
+                    stat.updated_at = now
+                await db.commit()
 
     async def sync_resource_telemetry(self, telemetry: dict[str, Any]) -> None:
         """ROS에서 수신된 AMR의 배터리 정보를 db에 저장한다."""
@@ -1005,24 +1011,63 @@ class RuntimeStateRepository:
                 select(self._ord_detail_model).filter(self._ord_detail_model.ord_id == ord_id)
             )
             detail = detail_res.scalars().first()
-            stat_res = await db.execute(
-                select(self._ord_stat_model).filter(self._ord_stat_model.ord_id == ord_id)
-            )
-            stat = stat_res.scalars().first()
-            if detail is None or stat is None:
+            if detail is None:
                 logger.warning(
                     "[RuntimeStateRepository] PA_GP completion without order detail/stat: ord_id=%s",
                     ord_id,
                 )
                 return None
 
-            stat.gp_qty = int(stat.gp_qty or 0) + 1
-            stat.updated_at = datetime.utcnow()
-            await db.commit()
             target_qty = int(detail.qty or 0)
+            now = datetime.utcnow()
+            increment_res = await db.execute(
+                update(self._ord_stat_model)
+                .where(self._ord_stat_model.ord_id == ord_id)
+                .values(
+                    gp_qty=func.coalesce(self._ord_stat_model.gp_qty, 0) + 1,
+                    updated_at=now,
+                )
+                .returning(
+                    self._ord_stat_model.gp_qty,
+                    self._ord_stat_model.ord_stat,
+                )
+            )
+            incremented = increment_res.one_or_none()
+            if incremented is None:
+                logger.warning(
+                    "[RuntimeStateRepository] PA_GP completion without order detail/stat: ord_id=%s",
+                    ord_id,
+                )
+                await db.rollback()
+                return None
+
+            normalized_gp_qty = int(incremented.gp_qty)
+            previous_order_stat = str(incremented.ord_stat)
+            completed = normalized_gp_qty == target_qty
+            if completed:
+                await db.execute(
+                    update(self._ord_stat_model)
+                    .where(self._ord_stat_model.ord_id == ord_id)
+                    .values(ord_stat="DONE", updated_at=now)
+                )
+            if completed and previous_order_stat != "DONE":
+                db.add(
+                    self._ord_log_model(
+                        ord_id=ord_id,
+                        prev_stat=(
+                            "SHIP"
+                            if previous_order_stat == "SHIPPING"
+                            else previous_order_stat
+                        ),
+                        new_stat="DONE",
+                        changed_by=None,
+                    )
+                )
+
+            await db.commit()
             return {
-                "complete": stat.gp_qty >= target_qty,
-                "gp_qty": int(stat.gp_qty or 0),
+                "completed": completed,
+                "gp_qty": normalized_gp_qty,
                 "qty": target_qty,
             }
 

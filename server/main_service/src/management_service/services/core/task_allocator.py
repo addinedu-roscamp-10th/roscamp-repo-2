@@ -1,7 +1,7 @@
 from __future__ import annotations
 import logging
 import math
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING, Any, Sequence
 
 from services.contracts.enums import (
     ResourceType,
@@ -92,7 +92,7 @@ class TaskAllocator:
                 )
                 return None
 
-            candidate_stats = []
+            candidate_stats: list[dict[str, Any]] = []
             for amr in candidates:
                 dist = self._get_distance_to_source_pose(amr, src_pose_name)
                 remain_bat = amr.bat_pct - req_bat  # 필요한 bat을 뺀 잔여 bat
@@ -156,7 +156,7 @@ class TaskAllocator:
             )
 
         # 가용 리소스 조회
-        available_resources = await self.state_manager.get_available_resources(req_res_type)
+        available_resources = self.state_manager.get_available_resources(req_res_type)
 
         if not available_resources:
             return AllocateTaskResult(
@@ -167,7 +167,7 @@ class TaskAllocator:
 
         amr_stats: list[AmrRuntimeState] = []
         if req_res_type == ResourceType.TAT.value:
-            amr_stats = await self.state_manager.get_amr_stats()
+            amr_stats = self.state_manager.get_amr_stats()
 
         # 최적 리소스 선택
         selected_res_id = self._select_resource(

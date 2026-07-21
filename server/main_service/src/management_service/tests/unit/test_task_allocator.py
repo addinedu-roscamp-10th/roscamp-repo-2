@@ -1,8 +1,15 @@
 from __future__ import annotations
 
-from management_service.services.contracts.enums import TaskType, get_required_resource_type
-from management_service.services.contracts.models import AmrRuntimeState
-from management_service.services.core.task_allocator import TaskAllocator
+import asyncio
+
+from services.contracts.enums import TaskType, get_required_resource_type
+from services.contracts.models import (
+    AllocateTaskInput,
+    AmrRuntimeState,
+    CreateTaskInput,
+)
+from services.core.state_manager import StateManager
+from services.core.task_allocator import TaskAllocator
 
 
 class _DummyStateManager:
@@ -160,3 +167,63 @@ def test_select_resource_returns_first_available_for_non_amr_resources() -> None
     )
 
     assert selected == "MAT1"
+
+
+def test_concurrent_allocations_claim_memory_before_repository_wait() -> None:
+    """DB 저장이 지연돼도 같은 메모리 자원을 두 작업에 할당하지 않는다."""
+
+    async def scenario() -> None:
+        state_manager = StateManager(enable_persistence=False)
+        state_manager._res_list = {
+            "PAT1": {
+                "res_id": "PAT1",
+                "res_type": "PAT",
+                "status": "IDLE",
+                "task_id": None,
+                "item_id": None,
+            }
+        }
+        first_task_id = await state_manager.insert_task_txn(
+            CreateTaskInput(item_id=1001, task_type=TaskType.PICK)
+        )
+        second_task_id = await state_manager.insert_task_txn(
+            CreateTaskInput(item_id=1002, task_type=TaskType.PICK)
+        )
+
+        async def delayed_repo_call(*args, **kwargs):
+            await asyncio.sleep(0.01)
+            return None
+
+        state_manager._safe_repo_call = delayed_repo_call  # type: ignore[method-assign]
+        allocator = TaskAllocator(state_manager=state_manager)
+
+        first, second = await asyncio.gather(
+            allocator.allocate(
+                AllocateTaskInput(
+                    task_id=str(first_task_id),
+                    item_id=1001,
+                    task_type=TaskType.PICK,
+                )
+            ),
+            allocator.allocate(
+                AllocateTaskInput(
+                    task_id=str(second_task_id),
+                    item_id=1002,
+                    task_type=TaskType.PICK,
+                )
+            ),
+        )
+
+        assert first.success is True
+        assert first.res_id == "PAT1"
+        assert second.success is False
+        assert second.reason == "no_available_resource"
+        assert state_manager._res_list["PAT1"] == {
+            "res_id": "PAT1",
+            "res_type": "PAT",
+            "status": "ALLOC",
+            "task_id": f"{TaskType.PICK.value}:{first_task_id}",
+            "item_id": 1001,
+        }
+
+    asyncio.run(scenario())

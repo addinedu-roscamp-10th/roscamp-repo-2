@@ -592,8 +592,6 @@ class TaskExecutor:
             )
             return False
 
-
-
         # 충전소 이동 시 TO_IDLE 상태로 변경
         await self.state_manager.update_amr_charger_return_state(
             res_id,
@@ -628,10 +626,24 @@ class TaskExecutor:
                 source,
                 result.message,
             )
-        # 충전소 도착 후 IDLE 상태로 변경
+
+        # 복귀 중 새로운 task 할당 시 task_id 덮어쓰기 방지
+        current_task_id = self.state_manager.get_task_id_for_resource(res_id)
+        if current_task_id is not None:
+            self.logger.info(
+                "[Executor] Charger return skipped: res_id=%s "
+                "new_task_id=%s source=%s",
+                res_id,
+                current_task_id,
+                source,
+            )
+            return result.success
+
+        # 충전소 도착 후 IDLE, 실패 시 FAIL로 변경
+        final_status = "IDLE" if result.success else "FAIL"
         await self.state_manager.update_amr_charger_return_state(
             res_id,
-            "IDLE",
+            final_status,
             source=source,
         )
         return result.success

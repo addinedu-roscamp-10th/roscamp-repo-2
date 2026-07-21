@@ -88,15 +88,6 @@ class IStateManager(Protocol):
     def update_task_status(self, task_id: str, status: str, is_trans: bool) -> None:
         ...
 
-    async def mark_task_started(
-        self,
-        task_id: str,
-        task_type: TaskType,
-        res_id: str,
-        is_trans: bool,
-    ) -> None:
-        ...
-        
     async def update_item_status(
         self,
         item_id: int,
@@ -109,14 +100,6 @@ class IStateManager(Protocol):
     def update_res_status_memory(self, res_id: str, x: float, y: float, battery_pct: int) -> None:
         ...
 
-    async def update_res_task_state(
-        self,
-        task_id: str,
-        task_type: TaskType,
-        res_id: str,
-        cur_stat: str,
-    ) -> None:
-        ...
 """
         
     ##Orchestrator가 사용하는 인터페이스
@@ -130,10 +113,10 @@ class IStateManager(Protocol):
         ...
         
     ##Task Allocator가 사용하는 인터페이스
-    async def get_available_resources(self, req_res_type: str) -> list[str]:
+    def get_available_resources(self, req_res_type: str) -> list[str]:
         ...
 
-    async def get_amr_stats(self) -> list[AmrRuntimeState]:
+    def get_amr_stats(self) -> list[AmrRuntimeState]:
         ...
 
     async def update_task_allocation(self, assign_input: AllocateTaskResInput) -> None:

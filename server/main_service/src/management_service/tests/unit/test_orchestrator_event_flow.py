@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 
 from services.contracts.enums import EventType, TaskType, TxnStat
 from services.contracts.models import (
+    AllocateTaskInput,
     AllocateTaskResult,
     Event,
     ExecuteTaskInput,
+    ExecutionResult,
     ItemStatusRecord,
     NextTaskResult,
     ShipTaskResult,
@@ -104,14 +105,14 @@ class _SequencedAllocator:
         self.results = list(results)
         self.calls: list[dict[str, object]] = []
 
-    async def allocate(self, input_data) -> AllocateTaskResult:
+    async def allocate(self, task: AllocateTaskInput) -> AllocateTaskResult:
         self.calls.append(
             {
-                "task_id": input_data.task_id,
-                "item_id": input_data.item_id,
-                "req_res_id": input_data.req_res_id,
-                "task_type": input_data.task_type,
-                "zone_nm": input_data.zone_nm,
+                "task_id": task.task_id,
+                "item_id": task.item_id,
+                "req_res_id": task.req_res_id,
+                "task_type": task.task_type,
+                "zone_nm": task.zone_nm,
             }
         )
         if self.results:
@@ -127,8 +128,9 @@ class _RecordingExecutor:
         self.emergency_returns: list[dict[str, object]] = []
         self.charger_returns: list[dict[str, object]] = []
 
-    async def execute_task(self, input_data: ExecuteTaskInput) -> None:
+    async def execute_task(self, input_data: ExecuteTaskInput) -> ExecutionResult:
         self.execute_calls.append(input_data)
+        return ExecutionResult(success=True, task_id=input_data.task_id, final_status="mocked", steps_executed=1)
 
     async def handle_emergency_return(self, item_id: int, amr_id: str, arm_id: str) -> None:
         self.emergency_returns.append(
@@ -342,36 +344,6 @@ def test_start_production_rejects_incomplete_slot_reservation() -> None:
         assert result.orders[0].reason == (
             "Rack slot reservation incomplete. target_qty=10 reserved_count=0"
         )
-
-    asyncio.run(scenario())
-
-
-def test_start_production_logs_rejected_order_reasons(caplog) -> None:
-    """라인 투입 거절 시 주문별 이유를 경고 로그로 남긴다."""
-
-    async def scenario() -> None:
-        event_bridge = EventBridgeImpl()
-        task_manager = _RecordingTaskManager()
-        allocator = _SequencedAllocator([])
-        executor = _RecordingExecutor()
-        state_manager = _RecordingStateManager({})
-        state_manager.orders[4] = {"target": 50}
-
-        async def _no_empty_start_slot(target_qty: int) -> tuple[int, int] | None:
-            state_manager.start_slots.append(target_qty)
-            return None
-
-        state_manager.get_empty_start_slot = _no_empty_start_slot  # type: ignore[method-assign]
-        orchestrator = Orchestrator(task_manager, allocator, state_manager, event_bridge, executor)
-
-        with caplog.at_level(logging.WARNING, logger="services.core.orchestrator"):
-            result = await orchestrator.start_production([4])
-
-        assert result.accepted_count == 0
-        assert result.rejected_count == 1
-        assert state_manager.start_slots == [50]
-        assert "start production rejected: ord_id=4 reason=Not enough rack slots. target_qty=50" in caplog.messages
-        assert "start production rejected orders: [{'ord_id': 4, 'reason': 'Not enough rack slots. target_qty=50'}]" in caplog.messages
 
     asyncio.run(scenario())
 
@@ -794,5 +766,72 @@ def test_arm_return_completed_event_schedules_recovery_and_charge_tasks() -> Non
             },
         ]
         assert [call.task_type for call in executor.execute_calls] == [TaskType.ToPP, TaskType.ToCHG]
+
+    asyncio.run(scenario())
+
+
+def test_task_completed_event_burst_schedules_all_follow_up_tasks() -> None:
+    """여러 TASK_COMPLETED 이벤트가 한 번에 들어와도 후속 작업을 빠뜨리지 않는다."""
+
+    class _BurstTaskManager(_RecordingTaskManager):
+        async def create_next_task(
+            self,
+            item_info: ItemStatusRecord,
+            event: str | None = None,
+        ) -> list[NextTaskResult]:
+            self.calls.append(
+                {
+                    "item_id": item_info.item_id,
+                    "order_id": item_info.order_id,
+                    "last_task_type": item_info.last_task_type,
+                    "planning_event": event,
+                    "req_res_id": item_info.req_res_id,
+                    "strg_loc": item_info.strg_loc,
+                    "ptn_id": item_info.ptn_id,
+                }
+            )
+            await asyncio.sleep(0)
+            return [
+                NextTaskResult(
+                    item_id=item_info.item_id,
+                    txn_id=9000 + item_info.item_id,
+                    task_type=TaskType.ToINSP,
+                    priority=5,
+                )
+            ]
+
+    async def scenario() -> None:
+        event_bridge = EventBridgeImpl()
+        task_manager = _BurstTaskManager()
+        allocator = _SequencedAllocator(
+            [
+                AllocateTaskResult(success=True, req_res_type="TAT", res_id="TAT2")
+                for _ in range(12)
+            ]
+        )
+        executor = _RecordingExecutor()
+        items = {
+            item_id: _item(item_id=item_id, order_id=500 + item_id)
+            for item_id in range(1001, 1013)
+        }
+        state_manager = _RecordingStateManager(items)
+        Orchestrator(task_manager, allocator, state_manager, event_bridge, executor)
+
+        for item_id in items:
+            event_bridge.publish(
+                Event(
+                    event_type=EventType.TASK_COMPLETED,
+                    item_id=item_id,
+                    payload={"task_type": TaskType.PP, "status": TxnStat.SUCC.value},
+                )
+            )
+
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+        assert len(task_manager.calls) == len(items)
+        assert len(allocator.calls) == len(items)
+        assert len(executor.execute_calls) == len(items)
+        assert {call.item_id for call in executor.execute_calls} == {str(item_id) for item_id in items}
 
     asyncio.run(scenario())

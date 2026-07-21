@@ -162,9 +162,13 @@ def test_update_item_storage_location_defers_repository_write_until_pa_gp_succes
     class _Repo:
         def __init__(self) -> None:
             self.calls: list[tuple[int, int, int]] = []
+            self.item_snapshots: list[dict] = []
 
         def update_item_storage_location(self, item_id: int, row: int, col: int) -> None:
             self.calls.append((item_id, row, col))
+
+        async def sync_item_snapshot(self, item: dict) -> None:
+            self.item_snapshots.append(item)
 
     async def scenario() -> None:
         repo = _Repo()
@@ -176,7 +180,7 @@ def test_update_item_storage_location_defers_repository_write_until_pa_gp_succes
 
         state_manager._tasks["PA_GP:9001"] = {
             "task_id": "PA_GP:9001",
-            "task_type": "PA_GP",
+            "task_type": TaskType.PA_GP,
             "item_id": 1001,
             "ord_id": 7,
         }
@@ -187,6 +191,9 @@ def test_update_item_storage_location_defers_repository_write_until_pa_gp_succes
         )
 
         assert repo.calls == [(1001, 2, 4)]
+        assert "flow_stat" not in repo.item_snapshots[0]
+        assert repo.item_snapshots[1]["flow_stat"] == "STORED"
+        assert state_manager._items[1001]["flow_stat"] == "STORED"
 
     asyncio.run(scenario())
 
@@ -386,6 +393,7 @@ def test_complete_ship_batch_persists_before_memory_update() -> None:
         assert repo.trace == ["db:item", "db:slot"]
         assert state_manager._items[1001]["flow_stat"] == "READY_TO_SHIP"
         assert state_manager._items[1001]["strg_loc"] is None
+        assert state_manager._items[1001]["last_task_type"] is TaskType.PICK
 
     asyncio.run(scenario())
 
@@ -452,9 +460,10 @@ def test_tochg_keeps_amr_unavailable_until_charged() -> None:
             )
         )
 
+        assert state_manager._tasks[f"ToCHG:{txn_id}"]["task_type"] is TaskType.ToCHG
         assert state_manager._res_list["TAT1"]["status"] == "CHG"
-        assert state_manager._res_list["TAT1"]["task_type"] == TaskType.ToCHG.value
-        assert "TAT1" not in await state_manager.get_available_resources("TAT")
+        assert state_manager._res_list["TAT1"]["task_type"] is TaskType.ToCHG
+        assert "TAT1" not in state_manager.get_available_resources("TAT")
         assert published == []
 
         await state_manager.update_task_status(
@@ -466,13 +475,98 @@ def test_tochg_keeps_amr_unavailable_until_charged() -> None:
         )
 
         assert state_manager._res_list["TAT1"]["status"] == "CHG"
-        assert "TAT1" not in await state_manager.get_available_resources("TAT")
+        assert "TAT1" not in state_manager.get_available_resources("TAT")
         assert published == []
 
         await state_manager.publish_amr_charged(res_id="TAT1", task_id=str(txn_id))
 
         assert state_manager._res_list["TAT1"]["status"] == "IDLE"
-        assert "TAT1" in await state_manager.get_available_resources("TAT")
+        assert "TAT1" in state_manager.get_available_resources("TAT")
+
+    asyncio.run(scenario())
+
+
+def test_terminal_events_are_published_after_db_snapshots() -> None:
+    """완료 이벤트는 item/resource/task terminal 상태가 DB에 반영된 뒤 발행한다."""
+
+    class _Repo:
+        def __init__(self, trace: list[str]) -> None:
+            self.trace = trace
+            self.item_snapshots: list[dict] = []
+            self.resource_snapshots: list[dict] = []
+            self.task_snapshots: list[dict] = []
+
+        async def sync_item_snapshot(self, item: dict) -> None:
+            self.item_snapshots.append(item)
+            self.trace.append("db:item")
+
+        async def sync_resource_snapshot(self, resource: dict) -> None:
+            self.resource_snapshots.append(resource)
+            self.trace.append("db:resource")
+
+        async def sync_task_status(self, task: dict) -> None:
+            self.task_snapshots.append(task)
+            self.trace.append("db:task")
+
+    class _EventBridge:
+        def __init__(self, trace: list[str]) -> None:
+            self.trace = trace
+
+        def publish(self, event) -> None:
+            self.trace.append(f"event:{event.event_type.value}")
+
+    async def scenario() -> None:
+        trace: list[str] = []
+        repo = _Repo(trace)
+        state_manager = StateManager(
+            event_bridge=_EventBridge(trace),
+            repository=repo,
+        )
+        state_manager._tasks["ToPP:42"] = {
+            "task_id": "ToPP:42",
+            "txn_id": 42,
+            "task_type": TaskType.ToPP,
+            "item_id": 1001,
+            "res_id": "TAT1",
+            "status": TxnStat.PROC.value,
+        }
+        state_manager._items[1001] = {
+            "item_id": 1001,
+            "flow_stat": "CAST",
+        }
+        state_manager._res_list["TAT1"].update(
+            {
+                "task_id": "ToPP:42",
+                "item_id": 1001,
+                "status": "ALLOC",
+            }
+        )
+
+        await state_manager.update_task_status(
+            UpdateTaskStatusInput(
+                task_id="42",
+                task_type=TaskType.ToPP,
+                new_stat=TxnStat.SUCC,
+            )
+        )
+
+        assert trace == [
+            "db:item",
+            "db:resource",
+            "db:task",
+            f"event:{EventType.RESOURCE_AVAILABLE.value}",
+            f"event:{EventType.TASK_COMPLETED.value}",
+        ]
+        assert repo.item_snapshots[-1] == {
+            "item_id": 1001,
+            "last_task_type": TaskType.ToPP,
+            "req_res_id": None,
+        }
+        assert repo.item_snapshots[-1]["last_task_type"] is TaskType.ToPP
+        assert state_manager._items[1001]["flow_stat"] == "CAST"
+        assert repo.item_snapshots[-1] is not state_manager._items[1001]
+        assert repo.resource_snapshots[-1] is not state_manager._res_list["TAT1"]
+        assert repo.task_snapshots[-1] is not state_manager._tasks["ToPP:42"]
 
     asyncio.run(scenario())
 
@@ -514,5 +608,31 @@ def test_tochg_completion_does_not_overwrite_newer_resource_assignment() -> None
         assert state_manager._res_list["TAT1"]["task_id"] == f"{TaskType.ToPP.value}:{new_txn_id}"
         assert state_manager._res_list["TAT1"]["item_id"] == 1002
         assert state_manager._res_list["TAT1"]["status"] == "ALLOC"
+
+    asyncio.run(scenario())
+
+
+def test_failed_charger_return_releases_reserved_slot() -> None:
+    """충전소 복귀 실패 시 예약 슬롯을 비워 다른 AMR이 사용할 수 있게 한다."""
+
+    async def scenario() -> None:
+        state_manager = StateManager(enable_persistence=False)
+        state_manager.charger_slots[(1, 1)] = {
+            "status": "reserved",
+            "res_id": "TAT1",
+        }
+
+        await state_manager.update_amr_charger_return_state(
+            "TAT1",
+            "FAIL",
+            source="resource_available",
+        )
+
+        assert state_manager.charger_slots[(1, 1)] == {
+            "status": "empty",
+            "res_id": None,
+        }
+        assert state_manager._res_list["TAT1"]["status"] == "FAIL"
+        assert state_manager._res_list["TAT1"]["task_type"] is None
 
     asyncio.run(scenario())

@@ -30,6 +30,7 @@ class _RecordingStateManager:
 
     def __init__(self, charger_slot: tuple[int, int] | None = (1, 1)) -> None:
         self.charger_slot = charger_slot
+        self.current_task_id: str | None = None
         self.status_updates: list[dict[str, object]] = []
         self.subtask_publications: list[dict[str, object]] = []
         self.charger_requests: list[str | None] = []
@@ -40,6 +41,9 @@ class _RecordingStateManager:
             (1, 2): "ToCHG2",
             (1, 3): "ToCHG3",
         }
+
+    def get_task_id_for_resource(self, res_id: str) -> str | None:
+        return self.current_task_id
 
     async def update_task_status(self, req) -> bool:
         self.status_updates.append(
@@ -134,6 +138,72 @@ def test_return_amr_to_charger_marks_toidle_until_arrival() -> None:
                 "action": "dock_robot",
                 "params": {"pose_name": "ToCHG2", "aruco_num": 1},
             }
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_return_amr_to_charger_does_not_overwrite_new_assignment() -> None:
+    """복귀 대기 중 새 task가 할당되면 이전 coroutine은 IDLE을 기록하지 않는다."""
+
+    class _DeferredAdapter(_RecordingAdapter):
+        def __init__(self) -> None:
+            super().__init__()
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def send_command(
+            self,
+            res_id: str,
+            action: str,
+            params: dict[str, object],
+        ) -> AdapterResult:
+            self.calls.append({"res_id": res_id, "action": action, "params": dict(params)})
+            self.started.set()
+            await self.release.wait()
+            return AdapterResult(success=True, message="ok")
+
+    async def scenario() -> None:
+        adapter = _DeferredAdapter()
+        state_manager = _RecordingStateManager(charger_slot=(1, 1))
+        executor = TaskExecutor(adapter, state_manager, None)
+
+        returning = asyncio.create_task(
+            executor.return_amr_to_charger("TAT1", source="resource_available")
+        )
+        await adapter.started.wait()
+
+        state_manager.current_task_id = "ToPP:42"
+        adapter.release.set()
+
+        assert await returning is True
+        assert state_manager.charger_return_states == [
+            {"res_id": "TAT1", "status": "TO_IDLE", "source": "resource_available"}
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_return_amr_to_charger_failure_marks_resource_failed() -> None:
+    """복귀 명령 실패는 AMR을 IDLE 가용 상태로 노출하지 않는다."""
+
+    class _FailingAdapter(_RecordingAdapter):
+        async def send_command(
+            self,
+            res_id: str,
+            action: str,
+            params: dict[str, object],
+        ) -> AdapterResult:
+            return AdapterResult(success=False, message="dock failed")
+
+    async def scenario() -> None:
+        state_manager = _RecordingStateManager(charger_slot=(1, 1))
+        executor = TaskExecutor(_FailingAdapter(), state_manager, None)
+
+        assert await executor.return_amr_to_charger("TAT1", source="resource_available") is False
+        assert state_manager.charger_return_states == [
+            {"res_id": "TAT1", "status": "TO_IDLE", "source": "resource_available"},
+            {"res_id": "TAT1", "status": "FAIL", "source": "resource_available"},
         ]
 
     asyncio.run(scenario())
