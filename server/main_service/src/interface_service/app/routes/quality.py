@@ -2,6 +2,7 @@
 
 엔드포인트:
   GET  /api/quality/inspections           insp_task_txn 목록 (필터: ord_id, item_id)
+  GET  /api/quality/inspections/{inference_id}/image  Management gRPC 이미지 프록시
   GET  /api/quality/summary               핑크 GUI #6: 발주별 GP/DP/미검사 요약
   GET  /api/quality/summary/{ord_id}      특정 발주 요약
   POST /api/quality/inspections/{txn}/result  검사 결과 업데이트 (AI service 콜백)
@@ -11,9 +12,16 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
+
+from app.clients.management import (
+    InspectionImageNotFound,
+    ManagementClient,
+    ManagementUnavailable,
+    get_management_client,
+)
 
 # PyQt vision_feed 가 timezone-naive 시각을 그대로 HH:MM:SS 로 표시하므로
 # DB 의 naive UTC datetime 을 KST(UTC+9) 로 변환해 반환한다.
@@ -80,12 +88,36 @@ def list_inspections(
                     "end_at": txn.end_at,
                     # PyQt vision_feed 의 timestamp 표시용 — 검사 종료 시각 (KST 변환).
                     "inspected_at": _to_kst(txn.end_at or txn.start_at or txn.req_at),
+                    "inference_id": inference.inference_id if inference else None,
                     "segmented_image_url": inference.segmented_image_url if inference else None,
                     "result_image_url": inference.result_image_url if inference else None,
                 }
             )
         )
     return out
+
+
+@router.get("/inspections/{inference_id}/image")
+def get_inspection_image(
+    inference_id: int,
+    kind: str = Query("result", pattern="^(result|segmented)$"),
+    client: ManagementClient = Depends(get_management_client),
+) -> Response:
+    """Management gRPC에서 검사 이미지를 읽어 HTTP bytes로 반환."""
+    try:
+        image = client.get_inspection_image(inference_id, kind=kind)
+    except InspectionImageNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ManagementUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Management Service unavailable: {exc}",
+        ) from exc
+
+    return Response(
+        content=image["image_bytes"],
+        media_type=str(image["content_type"]),
+    )
 
 
 @router.get("/summary", response_model=list[InspectionSummary])

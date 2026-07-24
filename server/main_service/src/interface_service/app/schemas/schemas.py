@@ -263,6 +263,8 @@ class InspTaskTxnOut(_ORM):
     # 검사 시각 — PyQt vision_feed timestamp 영역에 표시.
     # 우선순위: end_at (검사 종료) → start_at → req_at.
     inspected_at: datetime | None = None
+    # Web UI 이미지 프록시가 Management GetInspectionImage를 호출할 때 사용하는 식별자.
+    inference_id: int | None = None
     # AI /predict 결과 이미지 fetch URL — backend HttpImageServer 가 서빙.
     # 정의: ai_inference_txn.segmented_image_url / result_image_url (옵션 B + 2026-05-18).
     segmented_image_url: str | None = None

@@ -6,6 +6,7 @@ Management Service(gRPC, :50051) 를 호출할 때 사용하는 싱글톤 stub.
 현재 범위:
   - Health RPC proxy
   - StartShipping write proxy
+  - GetInspectionImage image proxy
   - Graceful degradation: Management 미가동 시 ManagementUnavailable 예외 → 503 응답
 
 환경변수:
@@ -61,6 +62,10 @@ TIMEOUT = float(os.environ.get("MANAGEMENT_GRPC_TIMEOUT", "3.0"))
 
 class ManagementUnavailable(RuntimeError):
     """Management Service 미가동 / proto stubs 없음 / 타임아웃 등."""
+
+
+class InspectionImageNotFound(LookupError):
+    """Management에 요청한 검사 이미지가 없음."""
 
 
 class ManagementClient:
@@ -168,6 +173,45 @@ class ManagementClient:
             "item_ids": [int(x) for x in resp.item_ids],
             "accepted": bool(resp.accepted),
             "message": resp.message or "",
+        }
+
+    def get_inspection_image(
+        self,
+        inference_id: int,
+        *,
+        kind: str = "result",
+    ) -> dict[str, bytes | str]:
+        """Management에서 검사 이미지 bytes 조회."""
+        if kind not in {"result", "segmented"}:
+            raise ValueError(f"unsupported inspection image kind={kind!r}")
+
+        try:
+            self._ensure_channel()
+            assert self._stub is not None
+            image_kind = (
+                management_pb2.INSPECTION_IMAGE_KIND_RESULT
+                if kind == "result"
+                else management_pb2.INSPECTION_IMAGE_KIND_SEGMENTED
+            )
+            response = self._stub.GetInspectionImage(
+                management_pb2.GetInspectionImageRequest(
+                    inference_id=int(inference_id),
+                    kind=image_kind,
+                ),
+                timeout=self._timeout,
+            )
+        except grpc.RpcError as exc:
+            code = exc.code() if hasattr(exc, "code") else None
+            details = exc.details() if hasattr(exc, "details") else str(exc)
+            if code == grpc.StatusCode.NOT_FOUND:
+                raise InspectionImageNotFound(details or "inspection image not found") from exc
+            raise ManagementUnavailable(
+                f"GetInspectionImage failed ({code}): {details}"
+            ) from exc
+
+        return {
+            "image_bytes": bytes(response.image_bytes),
+            "content_type": response.content_type,
         }
 
     def close(self) -> None:

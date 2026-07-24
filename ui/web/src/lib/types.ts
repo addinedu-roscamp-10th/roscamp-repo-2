@@ -218,6 +218,7 @@ export interface InspectionRecord {
   confidence: number;
   inspectorId: string;      // 검사자 ID 또는 비전 시스템 ID
   imageId: string;
+  inferenceId?: number;
   inspectedAt: string;
   defectType?: string;
   defectDetail?: string;    // 상세 사유 (치수 미달, 기포 등)

@@ -1,16 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { CheckCircle, XCircle } from "lucide-react";
+import { inspectionImageUrl } from "@/lib/api";
 import type { InspectionRecord } from "@/lib/types";
 import { formatDate } from "@/lib/utils";
-
-// 2026-05-15: 검사 이미지 base URL — AI 서버 HTTP (100.66.177.119:8080).
-// git pull 만으로 다른 PC 도 동일 동작하도록 default 를 AI 서버로 지정.
-// 다른 base 가 필요하면 NEXT_PUBLIC_INSPECTION_IMAGE_BASE env 로 오버라이드.
-const IMAGE_BASE_URL = (
-  process.env.NEXT_PUBLIC_INSPECTION_IMAGE_BASE ?? "http://100.66.177.119:8080"
-).replace(/\/$/, "");
 
 interface VisionCameraFeedProps {
   latestInspection: InspectionRecord | null;
@@ -18,16 +12,12 @@ interface VisionCameraFeedProps {
 
 export function VisionCameraFeed({ latestInspection }: VisionCameraFeedProps) {
   const isLatestPass = latestInspection?.result === "pass";
-  const [imageError, setImageError] = useState(false);
+  const [failedImageUrl, setFailedImageUrl] = useState<string | null>(null);
 
-  // 검사가 바뀌면 error state 초기화.
   const imageId = latestInspection?.imageId ?? null;
-  useEffect(() => {
-    setImageError(false);
-  }, [imageId]);
-
-  const imageUrl = imageId ? `${IMAGE_BASE_URL}/${imageId}.jpg` : null;
-  const showImage = !!imageUrl && !imageError;
+  const inferenceId = latestInspection?.inferenceId ?? null;
+  const imageUrl = inferenceId ? inspectionImageUrl(inferenceId) : null;
+  const showImage = !!imageUrl && imageUrl !== failedImageUrl;
 
   return (
     <div className="relative bg-gray-950 rounded-xl overflow-hidden aspect-video flex items-center justify-center border border-gray-800">
@@ -53,12 +43,12 @@ export function VisionCameraFeed({ latestInspection }: VisionCameraFeedProps) {
       {/* 비네팅 효과 */}
       <div className="absolute inset-0 bg-gradient-to-r from-black/30 via-transparent to-black/30" />
       <div className="absolute inset-0 bg-gradient-to-b from-black/20 via-transparent to-black/30" />
-      {/* 이미지 표시 — 검사 row 의 imageId 로 fetch. 실패 시 NO IMAGE 워터마크. */}
+      {/* Interface Service가 Management gRPC로 조회한 검사 이미지 표시. */}
       {showImage && imageUrl && (
         <img
           src={imageUrl}
           alt={imageId ?? "inspection"}
-          onError={() => setImageError(true)}
+          onError={() => setFailedImageUrl(imageUrl)}
           className="absolute inset-0 z-10 h-full w-full object-contain"
         />
       )}

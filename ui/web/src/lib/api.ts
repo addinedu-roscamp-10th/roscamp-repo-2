@@ -189,6 +189,7 @@ export function fetchProcessStages(): Promise<ProcessStageData[]> {
 type SmartcastInspectionTask = {
   txnId: number;
   itemId: number | null;
+  inferenceId: number | null;
   resId: string | null;
   txnStat: string | null;
   result: boolean | null;
@@ -209,6 +210,7 @@ function adaptInspection(raw: Partial<InspectionRecord> & Partial<SmartcastInspe
       confidence: Number(raw.confidence ?? 0),
       inspectorId: raw.inspectorId ?? "",
       imageId: raw.imageId ?? "",
+      inferenceId: raw.inferenceId,
       inspectedAt: raw.inspectedAt,
       defectType: raw.defectType,
       defectDetail: raw.defectDetail,
@@ -227,6 +229,7 @@ function adaptInspection(raw: Partial<InspectionRecord> & Partial<SmartcastInspe
     confidence: hasResult ? 100 : 0,
     inspectorId: raw.resId ?? "CAM-001",
     imageId: raw.txnId != null ? `IMG-${raw.txnId}` : "",
+    inferenceId: raw.inferenceId ?? undefined,
     inspectedAt: raw.endAt ?? raw.startAt ?? raw.reqAt ?? "",
     defectType: raw.result === false ? "검사 불합격" : undefined,
     defectDetail:
@@ -243,6 +246,10 @@ export async function fetchInspections(): Promise<InspectionRecord[]> {
     "/api/quality/inspections",
   );
   return raw.map(adaptInspection);
+}
+
+export function inspectionImageUrl(inferenceId: number): string {
+  return `${API_BASE}/api/quality/inspections/${inferenceId}/image`;
 }
 
 export function fetchQualityStats(): Promise<{
