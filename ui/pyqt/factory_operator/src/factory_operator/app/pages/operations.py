@@ -17,16 +17,18 @@
   └─────── AMR 핸드오프 ACK 패널 (SPEC-AMR-001) ─────────────────┘
 
 비동기 구조 (2026-04-28):
-  HTTP 호출을 QThread 워커(_RefreshWorker, _OrdItemsWorker)로 분리해
+  gRPC 호출을 QThread 워커(_RefreshWorker, _OrdItemsWorker)로 분리해
   메인 GUI 스레드 블로킹을 제거.
-  - _RefreshWorker: 8개 API 전체 조회 → data_ready 시그널
+  - _RefreshWorker: Operations snapshot과 운영 조회 → data_ready 시그널
   - _OrdItemsWorker: 선택 발주 item + PP + equip_task 조회 → data_ready 시그널
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
+import grpc
 from PyQt5.QtCore import QObject, Qt, QThread, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QBrush, QColor, QFont
 from PyQt5.QtWidgets import (
@@ -47,7 +49,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from app.api_client import ApiClient
+from app.management_client import ManagementClient
 
 # 주문/아이템 진행 테이블 컬럼 — production.py 에서 통합
 ITEM_STAGE_COLUMNS: list[str] = ["대기", "조형", "주탕", "탈형", "후처리", "검사", "적재", "출하"]
@@ -77,26 +79,21 @@ _PROD_NM_BY_ID: dict[int, str] = {
 # ---------------------------------------------------------------------------
 
 class _RefreshWorker(QObject):
-    """전체 페이지 갱신에 필요한 API 8건을 백그라운드 스레드에서 일괄 호출."""
+    """운영 현황 snapshot RPC를 백그라운드에서 실행."""
 
     data_ready = pyqtSignal(dict)
 
-    def __init__(self, api: ApiClient) -> None:
+    def __init__(
+        self,
+        client_factory: Callable[[], ManagementClient] = ManagementClient,
+    ) -> None:
         super().__init__()
-        self._api = api
+        self._client_factory = client_factory
 
     @pyqtSlot()
     def run(self) -> None:
-        from app.management_client import ManagementClient
-
-        def _safe(fn, *args, **kwargs):
-            try:
-                return fn(*args, **kwargs) or []
-            except Exception:  # noqa: BLE001
-                return []
-
         def _progress_rows(
-            client: ManagementClient,
+            items_data: list[dict[str, Any]],
             orders_data: list[dict[str, Any]] | None = None,
         ) -> list[dict[str, Any]]:
             stage_label = {
@@ -125,7 +122,7 @@ class _RefreshWorker(QObject):
                     ord_prod[int(ord_id)] = int(pid)
 
             rows: list[dict[str, Any]] = []
-            for item in client.list_item_views(limit=200):
+            for item in items_data:
                 ord_id_raw = item.get("ord_id", "")
                 item_id = item.get("item_id", "")
                 try:
@@ -146,24 +143,27 @@ class _RefreshWorker(QObject):
                 )
             return rows
 
-        client = ManagementClient()
+        client = self._client_factory()
         try:
-            # 2026-05-14: 콤보에는 생산 중(MFG) 주문만 노출. orders_list 는 _progress_rows
-            # 의 created_at 매핑에도 재사용.
-            orders_list = _safe(client.list_production_orders, status_filters=["MFG"])
-            data: dict[str, Any] = {
-                "orders": orders_list,
-                "patterns": _safe(client.list_patterns),
-                "summary": _safe(self._api.get_inspection_summary),
-                "stages": _safe(client.list_stages),
-                "item_progress": _safe(_progress_rows, client, orders_list),
-                "hourly": _safe(self._api.get_hourly_production_v2, hours=24),
-                "err_trend": _safe(self._api.get_err_log_trend, hours=24),
-            }
             try:
-                data["dashboard"] = self._api.get_dashboard_stats_v2() or {}
-            except Exception:  # noqa: BLE001
-                data["dashboard"] = {}
+                snapshot = client.get_operations_snapshot(hours=24)
+                orders_list = snapshot["orders"]
+                data: dict[str, Any] = {
+                    "orders": orders_list,
+                    "patterns": snapshot["patterns"],
+                    "summary": snapshot["summary"],
+                    "stages": snapshot["stages"],
+                    "item_progress": _progress_rows(
+                        snapshot["items"],
+                        orders_list,
+                    ),
+                    "hourly": snapshot["hourly"],
+                    "err_trend": snapshot["err_trend"],
+                    "dashboard": snapshot["dashboard"],
+                }
+            except grpc.RpcError:
+                self.data_ready.emit({"snapshot_failed": True})
+                return
         finally:
             client.close()
 
@@ -176,7 +176,7 @@ class _OrdItemsWorker(QObject):
     # ord_id, list[{item, item_id, pp_data, active_txn}]
     data_ready = pyqtSignal(int, list)
 
-    def __init__(self, api: ApiClient, ord_id: int) -> None:
+    def __init__(self, ord_id: int) -> None:
         super().__init__()
         self._ord_id = ord_id
 
@@ -225,9 +225,9 @@ class OperationsPage(QWidget):
 
     refresh_requested = pyqtSignal()
 
-    def __init__(self, api: ApiClient, parent: QWidget | None = None) -> None:
+    def __init__(self, mgmt: ManagementClient, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._api = api
+        self._mgmt = mgmt
         self._patterns: dict[int, int] = {}  # ord_id → ptn_loc_id
         self._item_stage_cache: dict[int, str] = {}  # item_id → stage_code (gRPC stream)
         # QThread 참조 보관 — GC 방지 + 중복 실행 방지
@@ -304,65 +304,6 @@ class OperationsPage(QWidget):
                 cell = QTableWidgetItem("")
             cell.setTextAlignment(Qt.AlignCenter)
             self._item_progress_table.setItem(row, col, cell)
-
-    def _fetch_items_via_grpc(self) -> list[dict[str, Any]] | None:
-        """_progress_rows 가 비어있을 때만 사용되는 fallback. 동일한 row 형식 반환."""
-        try:
-            from app.management_client import ManagementClient
-        except ImportError:
-            return None
-        client = None
-        try:
-            client = ManagementClient()
-            items = client.list_items(limit=200)
-            orders_data = client.list_production_orders(status_filters=["MFG"]) or []
-        except Exception:  # noqa: BLE001
-            return None
-        finally:
-            if client is not None:
-                client.close()
-        STAGE_INT_TO_LABEL = {
-            1: "대기",
-            2: "주탕",
-            3: "탈형",
-            4: "후처리",
-            5: "후처리",
-            6: "검사",
-            7: "적재",
-            8: "출하",
-        }
-        STAGE_INT_TO_CODE = {1: "QUE", 2: "MM", 3: "DM", 4: "TR_PP", 5: "PP", 6: "IP", 7: "TR_LD", 8: "SH"}
-        ord_date: dict[int, str] = {}
-        ord_prod: dict[int, int] = {}
-        for o in orders_data:
-            ord_id = o.get("ord_id")
-            if ord_id is None:
-                continue
-            created = (o.get("created_at") or "")[:10].replace("-", "")
-            if created:
-                ord_date[int(ord_id)] = created
-            pid = o.get("prod_id")
-            if pid:
-                ord_prod[int(ord_id)] = int(pid)
-        rows: list[dict[str, Any]] = []
-        for it in items:
-            try:
-                ord_id_int = int(it.order_id)
-            except (TypeError, ValueError):
-                ord_id_int = 0
-            date_str = ord_date.get(ord_id_int) or "00000000"
-            prod_nm = _PROD_NM_BY_ID.get(ord_prod.get(ord_id_int) or 0, "-")
-            stage_int = int(it.cur_stage)
-            rows.append(
-                {
-                    "order_id": it.order_id,
-                    "product": prod_nm,
-                    "item": f"ord_{it.order_id}_item_{date_str}_{it.id}",
-                    "stage": STAGE_INT_TO_LABEL.get(stage_int, "대기"),
-                    "stage_code": STAGE_INT_TO_CODE.get(stage_int, "QUE"),
-                }
-            )
-        return rows
 
     # ------------------------------------------------------------------
     # UI build
@@ -529,11 +470,11 @@ class OperationsPage(QWidget):
     # ------------------------------------------------------------------
     @pyqtSlot()
     def refresh(self) -> None:
-        """페이지 전체 갱신 — HTTP 호출은 _RefreshWorker 스레드에서 수행."""
+        """페이지 전체 갱신, gRPC 호출은 _RefreshWorker에서 수행."""
         if self._refresh_thread is not None and self._refresh_thread.isRunning():
             return  # 이전 호출 진행 중이면 skip
 
-        worker = _RefreshWorker(self._api)
+        worker = _RefreshWorker()
         thread = QThread(self)
         self._refresh_worker = worker
         worker.moveToThread(thread)
@@ -548,6 +489,9 @@ class OperationsPage(QWidget):
     @pyqtSlot(dict)
     def _on_refresh_done(self, data: dict) -> None:
         """_RefreshWorker 완료 후 GUI 스레드에서 UI 일괄 갱신."""
+        if data.get("snapshot_failed"):
+            return
+
         orders = data.get("orders") or []
         patterns = data.get("patterns") or []
         summary = data.get("summary") or []
@@ -626,9 +570,8 @@ class OperationsPage(QWidget):
             total_stage_h += self._stages_table.rowHeight(r)
         self._stages_table.setFixedHeight(max(80, total_stage_h))
 
-        # 주문별 제품 실시간 위치 (gRPC 우선 → HTTP fallback)
-        grpc_rows = item_progress or self._fetch_items_via_grpc()
-        self._render_item_progress(grpc_rows or [])
+        # worker가 반환한 정상 빈 목록도 그대로 반영
+        self._render_item_progress(item_progress)
 
         # 시계열 mini-summary
         try:
@@ -745,7 +688,7 @@ class OperationsPage(QWidget):
             # 이전 요청이 진행 중이면 중단 후 재시작
             self._ord_thread.quit()
 
-        worker = _OrdItemsWorker(self._api, ord_id)
+        worker = _OrdItemsWorker(ord_id)
         thread = QThread(self)
         self._ord_worker = worker
         worker.moveToThread(thread)
@@ -830,7 +773,7 @@ class OperationsPage(QWidget):
     @pyqtSlot()
     def _on_handoff_ack(self) -> None:
         try:
-            data = self._api.post_handoff_ack() or {}
+            data = self._mgmt.report_handoff_ack() or {}
         except Exception as exc:  # noqa: BLE001
             from app.widgets.ui._helpers import set_property as _sp
 
@@ -850,16 +793,3 @@ class OperationsPage(QWidget):
             self._handoff_result.setText(
                 f"⚠ orphan: {data.get('reason', '대기 중인 핸드오프 없음')}"
             )
-
-    # ------------------------------------------------------------------
-    # WS message hook (production.py 통합)
-    # ------------------------------------------------------------------
-    def handle_ws_message(self, payload: dict[str, Any]) -> None:
-        msg_type = payload.get("type", "")
-        if msg_type in (
-            "production_update",
-            "equipment_update",
-            "process_stage_update",
-            "order_update",
-        ):
-            self.refresh()

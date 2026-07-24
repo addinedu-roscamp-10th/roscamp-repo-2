@@ -15,13 +15,19 @@ from services.core.adapters.amr_state_monitor import AmrStateMonitorService
 from services.http_image_server import HttpImageServer
 
 from services.query.item_query_service import ItemQueryService
+from services.query.logistics_query_service import LogisticsQueryService
+from services.query.operations_query_service import OperationsQueryService
 from services.query.pattern_query_service import PatternQueryService
 from services.query.production_order_query_service import ProductionOrderQueryService
+from services.query.quality_query_service import QualityQueryService
 from services.query.schedule_query_service import ScheduleQueryService
 from services.command.pattern_command_service import PatternCommandService
+from services.command.manual_inspection_command_service import ManualInspectionCommandService
+from services.command.handoff_command_service import HandoffCommandService
 
 from datetime import datetime, timezone
 from services.contracts.enums import EventType
+from services.contracts.models import Event
 from services.legacy.command_queue import ConveyorCmd, queue as command_queue
 
 
@@ -71,8 +77,21 @@ class Container:
         self.item_query_service = ItemQueryService()
         self.pattern_query_service = PatternQueryService()
         self.production_order_query_service = ProductionOrderQueryService()
+        self.operations_query_service = OperationsQueryService(
+            item_query_service=self.item_query_service,
+            pattern_query_service=self.pattern_query_service,
+            production_order_query_service=self.production_order_query_service,
+        )
+        self.logistics_query_service = LogisticsQueryService()
+        self.quality_query_service = QualityQueryService()
         self.schedule_query_service = ScheduleQueryService()
         self.pattern_command_service = PatternCommandService()
+        self.manual_inspection_command_service = ManualInspectionCommandService(
+            event_bridge=self.event_bridge,
+        )
+        self.handoff_command_service = HandoffCommandService(
+            event_bridge=self.event_bridge,
+        )
         
         self.execution_monitor = ExecutionMonitor()
 
@@ -186,7 +205,20 @@ class Container:
             source_device = (payload.get("source_device")
                              or payload.get("button")
                              or "unknown")
+            zone = str(payload.get("zone") or "postprocessing")
             idem = payload.get("_idempotency_key") or payload.get("idempotency_key") or None
+            try:
+                operator_id = (
+                    int(payload["operator_id"])
+                    if payload.get("operator_id") is not None
+                    else None
+                )
+            except (TypeError, ValueError):
+                logger.warning(
+                    "[container] HANDOFF_ACK operator_id 형식 오류: %r",
+                    payload.get("operator_id"),
+                )
+                return
 
             try:
                 from services.legacy.handoff_pipeline import apply_handoff
@@ -220,6 +252,8 @@ class Container:
                     ack_source="esp32_button",
                     via="event_gateway",
                     idempotency_key=idem,
+                    operator_id=operator_id,
+                    zone=zone,
                 )
                 db.commit()
                 logger.info(
@@ -228,6 +262,25 @@ class Container:
                     result.released, result.item_id, result.amr_id,
                     result.pp_task_txn_ids, result.reason,
                 )
+                # ToPP 작업의 item_id로 HANDOFF_ACK 대기 해제
+                if result.released and result.item_id is not None:
+                    self.event_bridge.publish(
+                        Event(
+                            event_type=EventType.SUBTASK_COMPLETED,
+                            item_id=int(result.item_id),
+                            res_id=result.amr_id,
+                            payload={
+                                "subtask_type": EventType.HANDOFF_ACK.value,
+                                "source": "container.handoff_ack_responder",
+                                "resolved_via": "apply_handoff",
+                            },
+                        )
+                    )
+                    logger.info(
+                        "[container] HANDOFF_ACK → SUBTASK_COMPLETED(HANDOFF_ACK) "
+                        "republished with resolved item_id=%s amr=%s",
+                        result.item_id, result.amr_id,
+                    )
             except Exception as exc:  # noqa: BLE001
                 db.rollback()
                 logger.warning(

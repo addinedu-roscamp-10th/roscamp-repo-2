@@ -11,23 +11,11 @@
 
 from __future__ import annotations
 
-import logging
-import os
 from typing import Any
 
-from PyQt5.QtCore import Qt, QUrl
+from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPixmap
-from PyQt5.QtNetwork import QNetworkAccessManager, QNetworkRequest
 from PyQt5.QtWidgets import QFrame, QGridLayout, QLabel, QSizePolicy
-
-logger = logging.getLogger(__name__)
-
-# 2026-05-15: 검사 이미지 base URL — AI 서버 HTTP (100.66.177.119:8080).
-# git pull 만으로 다른 PC 도 동일 동작하도록 default 를 AI 서버로 지정. env 로 오버라이드 가능.
-_IMAGE_BASE_URL = os.environ.get(
-    "INSPECTION_IMAGE_BASE_URL", "http://100.66.177.119:8080"
-).rstrip("/")
-
 
 class VisionFeedCard(QFrame):
     """카메라 피드 시뮬 카드. 16:9 비율 검정 배경 + 4 코너 오버레이."""
@@ -81,11 +69,6 @@ class VisionFeedCard(QFrame):
 
         self._last_pixmap: QPixmap | None = None
 
-        # 2026-05-15: backend HttpImageServer 에서 검사 이미지 fetch.
-        self._net = QNetworkAccessManager(self)
-        self._net.finished.connect(self._on_image_fetched)
-        self._pending_image_id: str | None = None
-
     # ---- 외부 API --------------------------------------------------------
 
     def update_data(self, inspection: dict[str, Any] | None) -> None:
@@ -134,60 +117,18 @@ class VisionFeedCard(QFrame):
         )
         self._image.setPixmap(scaled)
 
-    def load_image_for(self, image_id: str | None) -> None:
-        """검사 row 의 image_id 로 backend HttpImageServer 에서 비동기 fetch.
-
-        성공 시 set_image(pixmap), 실패 또는 image_id 없음 시 placeholder 유지.
-        """
-        if not image_id:
-            logger.info("vision_feed: image_id 없음 → NO IMAGE 유지")
+    def set_image_bytes(self, image_bytes: bytes | None) -> bool:
+        """gRPC로 받은 이미지 bytes를 화면에 반영."""
+        if not image_bytes:
             self.set_image(None)
-            return
-        self._pending_image_id = image_id
-        url = f"{_IMAGE_BASE_URL}/{image_id}.jpg"
-        logger.info("vision_feed: GET %s", url)
-        self._net.get(QNetworkRequest(QUrl(url)))
+            return False
 
-    def load_image_url(self, image_url: str | None) -> None:
-        """완전 URL 로 직접 fetch — backend AiInferenceTxn.result_image_url 용 (2026-05-18).
-
-        backend 가 응답에 완전 URL 을 포함하므로 클라이언트 측 base url 합성 불필요.
-        URL 이 비어 있으면 placeholder 유지.
-        """
-        if not image_url:
-            logger.info("vision_feed: image_url 없음 → NO IMAGE 유지")
+        pixmap = QPixmap()
+        if not pixmap.loadFromData(image_bytes) or pixmap.isNull():
             self.set_image(None)
-            return
-        self._pending_image_id = image_url
-        logger.info("vision_feed: GET %s", image_url)
-        self._net.get(QNetworkRequest(QUrl(image_url)))
-
-    def _on_image_fetched(self, reply) -> None:
-        try:
-            err = reply.error()
-            if err:
-                logger.warning(
-                    "vision_feed: fetch 실패 url=%s err=%s msg=%s",
-                    reply.url().toString(),
-                    int(err),
-                    reply.errorString(),
-                )
-                self.set_image(None)
-                return
-            data = reply.readAll()
-            logger.info(
-                "vision_feed: fetched url=%s bytes=%d",
-                reply.url().toString(),
-                data.size(),
-            )
-            pixmap = QPixmap()
-            if not pixmap.loadFromData(data) or pixmap.isNull():
-                logger.warning("vision_feed: QPixmap.loadFromData 실패 (시그니처 미인식)")
-                self.set_image(None)
-                return
-            self.set_image(pixmap)
-        finally:
-            reply.deleteLater()
+            return False
+        self.set_image(pixmap)
+        return True
 
     # ---- 내부 헬퍼 -------------------------------------------------------
 

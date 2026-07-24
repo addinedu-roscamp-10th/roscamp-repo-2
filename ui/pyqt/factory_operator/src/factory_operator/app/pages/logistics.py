@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import grpc
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QFrame,
@@ -27,32 +28,31 @@ from PyQt5.QtWidgets import (
 
 logger = logging.getLogger(__name__)
 
-from app.api_client import ApiClient
+from app.management_client import ManagementClient
 from app.pages.dashboard import KpiCard
 from app.widgets.amr_card import AmrStatusCard
 
-PRIORITY_STYLE = {
-    "urgent": ("#fee2e2", "#991b1b", "#ef4444", "긴급"),
-    "high": ("#fed7aa", "#9a3412", "#f97316", "높음"),
-    "normal": ("#fef3c7", "#854d0e", "#f59e0b", "보통"),
-    "low": ("#f3f4f6", "#374151", "#9ca3af", "낮음"),
+TASK_STATUS_TEXT = {
+    "QUE": "대기",
+    "PROC": "진행 중",
+    "SUCC": "완료",
+    "FAIL": "실패",
 }
 
-STATUS_TEXT = {
-    "running": "진행 중",
-    "pending": "대기",
-    "completed": "완료",
-    "failed": "실패",
+ORDER_STATUS_TEXT = {
+    "DONE": "생산 완료",
+    "SHIPPING": "출고 중",
+    "COMP": "완료",
 }
 
 
 class LogisticsPage(QWidget):
-    def __init__(self, api: ApiClient) -> None:
+    def __init__(self, mgmt: ManagementClient) -> None:
         super().__init__()
-        self._api = api
+        self._mgmt = mgmt
         self._amr_cards: dict[str, AmrStatusCard] = {}
         self._kpi_cards: dict[str, KpiCard] = {}
-        self._amr_live: list[dict[str, Any]] | None = None  # 실시간 데이터 수신 시 mock 대체
+        self._amr_live: list[dict[str, Any]] = []
         self._build_ui()
         self.refresh()
 
@@ -115,9 +115,17 @@ class LogisticsPage(QWidget):
         task_title.setObjectName("sectionTitle")
         task_layout.addWidget(task_title)
 
-        self._task_table = QTableWidget(0, 6)
+        self._task_table = QTableWidget(0, 7)
         self._task_table.setHorizontalHeaderLabels(
-            ["우선순위", "작업 ID", "경로", "화물", "담당 AMR", "상태"]
+            [
+                "작업 ID",
+                "작업 유형",
+                "담당 AMR",
+                "제품 ID",
+                "주문 ID",
+                "상태",
+                "요청 시각",
+            ]
         )
         self._task_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._task_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
@@ -131,9 +139,9 @@ class LogisticsPage(QWidget):
         outbound_label.setObjectName("sectionTitle")
         layout.addWidget(outbound_label)
 
-        self._outbound_table = QTableWidget(0, 6)
+        self._outbound_table = QTableWidget(0, 4)
         self._outbound_table.setHorizontalHeaderLabels(
-            ["주문 ID", "제품", "수량", "납품처", "정책", "상태"]
+            ["주문 ID", "사용자 ID", "상태", "갱신 시각"]
         )
         self._outbound_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._outbound_table.verticalHeader().setVisible(False)
@@ -142,23 +150,22 @@ class LogisticsPage(QWidget):
         layout.addWidget(self._outbound_table)
 
     def refresh(self) -> None:
-        # AMR: 실시간 데이터가 있으면 그것을 사용, 없으면 API/mock 폴백
-        # CASTING_DATA_MODE=normal 모드에서도 빈 응답이면 mock_data 사용 (UI 데모 보장)
-        amrs = self._amr_live if self._amr_live is not None else (self._api.get_amr_status() or [])
-        if not amrs:
-            from app import mock_data
-
-            amrs = mock_data.AMR_STATUS
+        # AMR은 Management gRPC 워커가 마지막으로 전달한 상태만 사용
+        amrs = self._amr_live
         self._update_amr_cards(amrs)
 
-        # 이송 작업 테이블
-        tasks = self._sort_tasks_by_priority(self._api.get_transport_tasks() or [])
+        try:
+            snapshot = self._mgmt.get_logistics_snapshot()
+        except grpc.RpcError as exc:
+            logger.warning(
+                "GetLogisticsSnapshot 실패, 마지막 정상 화면 유지: %s",
+                exc,
+            )
+            return
+
+        tasks = self._sort_tasks(snapshot["tasks"])
         self._update_task_table(tasks)
-
-        # 출고 지시
-        self._update_outbound_table(self._api.get_outbound_orders())
-
-        # KPI 계산
+        self._update_outbound_table(snapshot["orders"])
         self._update_kpis(amrs, tasks)
 
     def _update_kpis(
@@ -166,10 +173,18 @@ class LogisticsPage(QWidget):
         amrs: list[dict[str, Any]],
         tasks: list[dict[str, Any]],
     ) -> None:
-        active_tasks = sum(1 for t in tasks if str(t.get("status", "")).lower() == "running")
-        pending_tasks = sum(1 for t in tasks if str(t.get("status", "")).lower() == "pending")
-        completed_tasks = sum(1 for t in tasks if str(t.get("status", "")).lower() == "completed")
-        idle_amrs = sum(1 for a in amrs if str(a.get("status", "")).lower() == "idle")
+        active_tasks = sum(
+            1 for task in tasks if _task_status(task) == "PROC"
+        )
+        pending_tasks = sum(
+            1 for task in tasks if _task_status(task) == "QUE"
+        )
+        completed_tasks = sum(
+            1 for task in tasks if _task_status(task) == "SUCC"
+        )
+        idle_amrs = sum(
+            1 for amr in amrs if int(amr.get("task_state", 0) or 0) == 1
+        )
 
         self._kpi_cards["active_tasks"].update_value(active_tasks)
         self._kpi_cards["pending_tasks"].update_value(pending_tasks)
@@ -201,85 +216,82 @@ class LogisticsPage(QWidget):
                 card.deleteLater()
 
     @staticmethod
-    def _sort_tasks_by_priority(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        order = {"urgent": 0, "high": 1, "normal": 2, "low": 3}
-        status_order = {"running": 0, "pending": 1, "completed": 2, "failed": 3}
+    def _sort_tasks(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        status_order = {"PROC": 0, "QUE": 1, "FAIL": 2, "SUCC": 3}
         return sorted(
             tasks,
-            key=lambda t: (
-                status_order.get(str(t.get("status", "")).lower(), 9),
-                order.get(str(t.get("priority", "normal")).lower(), 9),
-            ),
+            key=lambda task: status_order.get(_task_status(task), 9),
         )
 
     def _update_task_table(self, tasks: list[dict[str, Any]]) -> None:
         self._task_table.setRowCount(len(tasks))
         for row, task in enumerate(tasks):
-            # 우선순위 배지
-            priority = str(task.get("priority", "normal")).lower()
-            bg, fg, _, label = PRIORITY_STYLE.get(priority, PRIORITY_STYLE["normal"])
-            prio_item = QTableWidgetItem(label)
-            prio_item.setTextAlignment(Qt.AlignCenter)
-            prio_item.setBackground(_brush(bg))
-            prio_item.setForeground(_brush(fg))
-            self._task_table.setItem(row, 0, prio_item)
-
-            # ID
-            self._task_table.setItem(row, 1, QTableWidgetItem(str(task.get("id", ""))))
-
-            # 경로
-            route = f"{task.get('from', '')} → {task.get('to', '')}"
-            self._task_table.setItem(row, 2, QTableWidgetItem(route))
-
-            # 화물
-            self._task_table.setItem(row, 3, QTableWidgetItem(str(task.get("cargo", ""))))
-
-            # AMR
-            amr_item = QTableWidgetItem(str(task.get("amr", "")))
+            self._task_table.setItem(
+                row,
+                0,
+                QTableWidgetItem(str(task.get("txn_id", ""))),
+            )
+            self._task_table.setItem(
+                row,
+                1,
+                QTableWidgetItem(str(task.get("task_type", ""))),
+            )
+            amr_item = QTableWidgetItem(str(task.get("res_id", "")))
             amr_item.setTextAlignment(Qt.AlignCenter)
-            self._task_table.setItem(row, 4, amr_item)
-
-            # 상태
-            status = str(task.get("status", "")).lower()
-            status_item = QTableWidgetItem(STATUS_TEXT.get(status, status))
+            self._task_table.setItem(row, 2, amr_item)
+            self._task_table.setItem(
+                row,
+                3,
+                QTableWidgetItem(str(task.get("item_id", "") or "-")),
+            )
+            self._task_table.setItem(
+                row,
+                4,
+                QTableWidgetItem(str(task.get("ord_id", "") or "-")),
+            )
+            status = _task_status(task)
+            status_item = QTableWidgetItem(
+                TASK_STATUS_TEXT.get(status, status)
+            )
             status_item.setTextAlignment(Qt.AlignCenter)
             self._task_table.setItem(row, 5, status_item)
+            self._task_table.setItem(
+                row,
+                6,
+                QTableWidgetItem(str(task.get("req_at", ""))),
+            )
 
     def _update_outbound_table(self, orders: list[dict[str, Any]]) -> None:
         self._outbound_table.setRowCount(len(orders))
         for row, order in enumerate(orders):
-            self._outbound_table.setItem(row, 0, QTableWidgetItem(str(order.get("id", ""))))
-            self._outbound_table.setItem(row, 1, QTableWidgetItem(str(order.get("product", ""))))
-            qty_item = QTableWidgetItem(str(order.get("qty", 0)))
-            qty_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            self._outbound_table.setItem(row, 2, qty_item)
-            self._outbound_table.setItem(row, 3, QTableWidgetItem(str(order.get("customer", ""))))
-            policy_item = QTableWidgetItem(str(order.get("policy", "")))
-            policy_item.setTextAlignment(Qt.AlignCenter)
-            self._outbound_table.setItem(row, 4, policy_item)
-
-            status = str(order.get("status", "")).lower()
-            status_item = QTableWidgetItem(STATUS_TEXT.get(status, status))
+            self._outbound_table.setItem(
+                row,
+                0,
+                QTableWidgetItem(str(order.get("ord_id", ""))),
+            )
+            self._outbound_table.setItem(
+                row,
+                1,
+                QTableWidgetItem(str(order.get("user_id", ""))),
+            )
+            status = str(order.get("stat", "")).upper()
+            status_item = QTableWidgetItem(
+                ORDER_STATUS_TEXT.get(status, status)
+            )
             status_item.setTextAlignment(Qt.AlignCenter)
-            self._outbound_table.setItem(row, 5, status_item)
+            self._outbound_table.setItem(row, 2, status_item)
+            self._outbound_table.setItem(
+                row,
+                3,
+                QTableWidgetItem(str(order.get("updated_at", ""))),
+            )
 
     def update_amr_live(self, amr_list: list[dict[str, Any]]) -> None:
         """AMR 실시간 데이터(배터리 등) 수신 — 이후 refresh()에서도 이 데이터를 사용."""
         self._amr_live = amr_list
         self._update_amr_cards(amr_list)
 
-    def handle_ws_message(self, payload: dict[str, Any]) -> None:
-        msg_type = payload.get("type", "")
-        if msg_type in (
-            "amr_update",
-            "transport_task_update",
-            "outbound_update",
-        ):
-            self.refresh()
 
 
-def _brush(color: str):
-    """Color hex → QBrush (lazy import to avoid circular)."""
-    from PyQt5.QtGui import QBrush, QColor
-
-    return QBrush(QColor(color))
+def _task_status(task: dict[str, Any]) -> str:
+    return str(task.get("txn_stat", "")).upper()

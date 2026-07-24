@@ -20,7 +20,6 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from app.api_client import ApiClient
 from app.management_client import ManagementClient
 from app.widgets.alert_widgets import AlertListItem
 from app.widgets.factory_map import FactoryMapView
@@ -167,9 +166,8 @@ class _AmrRow(QWidget):
 class DashboardPage(QWidget):
     """대시보드 페이지 - KPI + 공장 현황 맵 (좌우 패널 포함) + 알림."""
 
-    def __init__(self, api: ApiClient, mgmt: ManagementClient) -> None:
+    def __init__(self, mgmt: ManagementClient) -> None:
         super().__init__()
-        self._api = api
         self._mgmt = mgmt
         self._kpi_cards: dict[str, KpiCard] = {}
         self._zone_rows: dict[str, _ZoneRow] = {}
@@ -517,14 +515,3 @@ class DashboardPage(QWidget):
         for alert in alerts:
             widget = AlertListItem(alert)
             self._alert_layout.insertWidget(self._alert_layout.count() - 1, widget)
-
-    def handle_ws_message(self, payload: dict[str, Any]) -> None:
-        if payload.get("type") in (
-            "dashboard_update",
-            "order_update",
-            "production_update",
-        ):
-            self.refresh()
-
-    def handle_mqtt_message(self, topic: str, payload: dict[str, Any]) -> None:
-        pass

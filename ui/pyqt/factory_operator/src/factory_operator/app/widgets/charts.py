@@ -87,6 +87,7 @@ class BaseChartWidget(QWidget):
         super().__init__()
         self.setObjectName("chartCard")
         self.setMinimumHeight(height)
+        self._base_title = title
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -100,6 +101,11 @@ class BaseChartWidget(QWidget):
 
     def chart(self) -> QChart:
         return self._chart
+
+    def set_source_available(self, available: bool) -> None:
+        """실데이터 미연동 시 차트 제목에 예시 데이터임을 표시."""
+        suffix = "" if available else " (예시 데이터, 실데이터 미연동)"
+        self._chart.setTitle(f"{self._base_title}{suffix}")
 
 
 # ============================================================

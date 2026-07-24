@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
+import grpc
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QFrame,
@@ -20,25 +22,25 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from app.api_client import ApiClient
+from app.management_client import ManagementClient
 from app.pages.dashboard import KpiCard
 from app.widgets.warehouse_rack import WarehouseRackWidget
 
 STATUS_TEXT = {
     "empty": "비어있음",
-    "partial": "부분점유",
-    "full": "점유",
+    "occupied": "점유",
     "reserved": "예약",
-    "locked": "잠김",
 }
+
+logger = logging.getLogger(__name__)
 
 
 class StoragePage(QWidget):
     """창고 랙 적재 상태 페이지."""
 
-    def __init__(self, api: ApiClient) -> None:
+    def __init__(self, mgmt: ManagementClient) -> None:
         super().__init__()
-        self._api = api
+        self._mgmt = mgmt
         self._kpi_cards: dict[str, KpiCard] = {}
         self._build_ui()
         self.refresh()
@@ -83,8 +85,10 @@ class StoragePage(QWidget):
         detail_title.setObjectName("sectionTitle")
         layout.addWidget(detail_title)
 
-        self._detail_table = QTableWidget(0, 5)
-        self._detail_table.setHorizontalHeaderLabels(["랙", "상태", "품목", "수량", "비고"])
+        self._detail_table = QTableWidget(0, 6)
+        self._detail_table.setHorizontalHeaderLabels(
+            ["위치 ID", "행", "열", "상태", "품목 ID", "저장 시각"]
+        )
         self._detail_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._detail_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self._detail_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
@@ -94,19 +98,32 @@ class StoragePage(QWidget):
         layout.addWidget(self._detail_table, stretch=1)
 
     def refresh(self) -> None:
-        racks = self._api.get_warehouse_racks()
-        self._rack_widget.update_racks(racks)
-        self._update_kpis(racks)
-        self._update_detail_table(racks)
+        try:
+            locations = self._mgmt.list_warehouse_locations()
+        except grpc.RpcError as exc:
+            logger.warning(
+                "ListWarehouseLocations 실패, 마지막 정상 화면 유지: %s",
+                exc,
+            )
+            return
+        self._rack_widget.update_racks(
+            [_location_to_rack(row) for row in locations]
+        )
+        self._update_kpis(locations)
+        self._update_detail_table(locations)
 
-    def _update_kpis(self, racks: list[dict[str, Any]]) -> None:
-        total = len(racks)
+    def _update_kpis(self, locations: list[dict[str, Any]]) -> None:
+        total = len(locations)
         occupied = sum(
             1
-            for rack in racks
-            if str(rack.get("status", "")).lower() in ("full", "partial", "locked")
+            for location in locations
+            if str(location.get("status", "")).lower() == "occupied"
         )
-        reserved = sum(1 for rack in racks if str(rack.get("status", "")).lower() == "reserved")
+        reserved = sum(
+            1
+            for location in locations
+            if str(location.get("status", "")).lower() == "reserved"
+        )
         occupancy_rate = occupied * 100 / total if total else 0
 
         self._kpi_cards["total"].update_value(total)
@@ -114,40 +131,61 @@ class StoragePage(QWidget):
         self._kpi_cards["reserved"].update_value(reserved)
         self._kpi_cards["occupancy_rate"].update_value(f"{occupancy_rate:.0f}")
 
-    def _update_detail_table(self, racks: list[dict[str, Any]]) -> None:
-        sorted_racks = sorted(racks, key=_rack_sort_key)
-        self._detail_table.setRowCount(len(sorted_racks))
-        for row, rack in enumerate(sorted_racks):
-            rack_id = str(rack.get("id", ""))
-            status = str(rack.get("status", "empty")).lower()
-            content = str(rack.get("content", "") or "-")
-            qty = int(rack.get("qty", 0) or 0)
-            note = "입고 가능" if status == "empty" else ""
+    def _update_detail_table(
+        self,
+        locations: list[dict[str, Any]],
+    ) -> None:
+        rows = sorted(
+            locations,
+            key=lambda location: (
+                int(location.get("row", 0) or 0),
+                int(location.get("col", 0) or 0),
+                str(location.get("loc_id", "")),
+            ),
+        )
+        self._detail_table.setRowCount(len(rows))
+        for row, location in enumerate(rows):
+            location_id = str(location.get("loc_id", ""))
+            status = str(location.get("status", "empty")).lower()
+            item_id = location.get("item_id")
 
-            id_item = QTableWidgetItem(rack_id)
+            id_item = QTableWidgetItem(location_id)
             id_item.setTextAlignment(Qt.AlignCenter)
             self._detail_table.setItem(row, 0, id_item)
 
+            self._detail_table.setItem(
+                row,
+                1,
+                QTableWidgetItem(str(location.get("row", ""))),
+            )
+            self._detail_table.setItem(
+                row,
+                2,
+                QTableWidgetItem(str(location.get("col", ""))),
+            )
             status_item = QTableWidgetItem(STATUS_TEXT.get(status, status))
             status_item.setTextAlignment(Qt.AlignCenter)
-            self._detail_table.setItem(row, 1, status_item)
-
-            self._detail_table.setItem(row, 2, QTableWidgetItem(content))
-
-            qty_item = QTableWidgetItem(str(qty))
-            qty_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            self._detail_table.setItem(row, 3, qty_item)
-
-            self._detail_table.setItem(row, 4, QTableWidgetItem(note))
-
-    def handle_ws_message(self, payload: dict[str, Any]) -> None:
-        if payload.get("type") == "warehouse_update":
-            self.refresh()
+            self._detail_table.setItem(row, 3, status_item)
+            self._detail_table.setItem(
+                row,
+                4,
+                QTableWidgetItem(str(item_id) if item_id is not None else "-"),
+            )
+            self._detail_table.setItem(
+                row,
+                5,
+                QTableWidgetItem(str(location.get("stored_at", ""))),
+            )
 
 
-def _rack_sort_key(rack: dict[str, Any]) -> tuple[int, str]:
-    rack_id = str(rack.get("id", ""))
-    try:
-        return int(rack_id), rack_id
-    except ValueError:
-        return 10_000, rack_id
+
+def _location_to_rack(location: dict[str, Any]) -> dict[str, Any]:
+    row = int(location.get("row", 0) or 0)
+    col = int(location.get("col", 0) or 0)
+    rack_id = str((row - 1) * 6 + col) if row >= 1 and 1 <= col <= 6 else ""
+    item_id = location.get("item_id")
+    return {
+        "id": rack_id,
+        "status": str(location.get("status", "empty")).lower(),
+        "content": f"Item {item_id}" if item_id is not None else "",
+    }

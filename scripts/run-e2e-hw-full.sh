@@ -149,9 +149,8 @@ ok "ui/web/node_modules"
 PROTO1="$ROOT/server/main_service/src/management_service/management_pb2.py"
 PROTO2="$ROOT/server/main_service/src/management_service/management_pb2_grpc.py"
 if [ ! -f "$PROTO1" ] || [ ! -f "$PROTO2" ]; then
-  warn "proto 스텁 누락 — make proto 자동 실행"
-  ( cd "$ROOT/server/main_service/src/management_service" && make proto ) \
-    || fail "proto 빌드 실패 — server/main_service/src/management_service/Makefile 확인"
+  warn "proto 스텁 누락 — scripts/gen_proto.sh 자동 실행"
+  "$ROOT/scripts/gen_proto.sh" || fail "proto 빌드 실패 — scripts/gen_proto.sh 확인"
 fi
 ok "proto 스텁 (management_pb2.py + management_pb2_grpc.py)"
 

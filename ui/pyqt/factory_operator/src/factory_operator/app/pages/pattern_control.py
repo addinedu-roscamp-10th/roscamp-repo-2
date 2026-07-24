@@ -34,7 +34,6 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from app.api_client import ApiClient
 
 
 # ── 상단 통계 카드 ────────────────────────────────────────────────────────────
@@ -159,9 +158,8 @@ class PatternControlPage(QWidget):
     }
     _PATTERN_LABEL = {1: "1 (원형)", 2: "2 (사각)", 3: "3 (타원형)"}
 
-    def __init__(self, api: ApiClient) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self._api = api
         self._orders: list[dict[str, Any]] = []
         self._patterns: dict[int, int] = {}  # ord_id → ptn_loc_id
         self._selected_unreg_ord_id: int | None = None  # 클릭으로 선택된 미등록 주문
@@ -631,8 +629,3 @@ class PatternControlPage(QWidget):
             if widget is None or sip.isdeleted(widget):
                 return True
         return False
-
-    def handle_ws_message(self, payload: dict[str, Any]) -> None:
-        event_type = payload.get("type", "")
-        if event_type in ("order_update", "order_status_changed", "production_approved"):
-            self.refresh()

@@ -55,6 +55,7 @@ def apply_handoff(
     via: str,
     idempotency_key: str | None,
     operator_id: int | None = None,
+    zone: str = "postprocessing",
 ) -> HandoffApplyResult:
     """5단계 핸드오프 DB 변경을 단일 트랜잭션으로 적용.
 
@@ -98,13 +99,19 @@ def apply_handoff(
         ack = HandoffAck(
             ack_at=now_utc,
             task_id=None,
-            zone="postprocessing",
+            zone=zone,
             amr_id=None,
             ack_source=ack_source,
+            operator_id=str(operator_id) if operator_id is not None else None,
             button_device_id=button_device_id,
             orphan_ack=True,
             idempotency_key=idempotency_key,
-            extra={"via": via},
+            extra={
+                "via": via,
+                "released": False,
+                "item_id": None,
+                "ord_id": None,
+            },
         )
         db.add(ack)
         db.flush()
@@ -175,13 +182,20 @@ def apply_handoff(
     ack = HandoffAck(
         ack_at=now_utc,
         task_id=None,
-        zone="postprocessing",
+        zone=zone,
         amr_id=target.res_id,
         ack_source=ack_source,
+        operator_id=str(operator_id) if operator_id is not None else None,
         button_device_id=button_device_id,
         orphan_ack=False,
         idempotency_key=idempotency_key,
-        extra={"via": via, "trans_task_txn_id": target.txn_id},
+        extra={
+            "via": via,
+            "trans_task_txn_id": target.txn_id,
+            "released": True,
+            "item_id": item_id,
+            "ord_id": target.ord_id,
+        },
     )
     db.add(ack)
     db.flush()

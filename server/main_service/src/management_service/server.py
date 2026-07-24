@@ -47,9 +47,13 @@ import management_pb2  # type: ignore  # noqa: E402
 import management_pb2_grpc  # type: ignore  # noqa: E402
 from rpc.field_event_rpc import FieldEventRpcMixin  # noqa: E402
 from rpc.hardware_rpc import HardwareRpcMixin, ImagePublisherServicer  # noqa: E402
+from rpc.logistics_rpc import LogisticsRpcMixin  # noqa: E402
 from rpc.monitor_rpc import MonitorRpcMixin  # noqa: E402
+from rpc.operations_rpc import OperationsRpcMixin  # noqa: E402
 from rpc.pattern_rpc import PatternRpcMixin  # noqa: E402
 from rpc.production_rpc import ProductionRpcMixin  # noqa: E402
+from rpc.production_telemetry_rpc import ProductionTelemetryRpcMixin  # noqa: E402
+from rpc.quality_rpc import QualityRpcMixin  # noqa: E402
 from rpc.robot_rpc import RobotRpcMixin  # noqa: E402
 from rpc.task_rpc import TaskRpcMixin  # noqa: E402
 from rpc.traffic_rpc import TrafficRpcMixin  # noqa: E402
@@ -112,10 +116,14 @@ class OrchestratorThread:
 
 class ManagementServicer(
     ProductionRpcMixin,
+    ProductionTelemetryRpcMixin,
     PatternRpcMixin,
     TaskRpcMixin,
     TrafficRpcMixin,
     MonitorRpcMixin,
+    LogisticsRpcMixin,
+    OperationsRpcMixin,
+    QualityRpcMixin,
     RobotRpcMixin,
     FieldEventRpcMixin,
     HardwareRpcMixin,
@@ -136,9 +144,14 @@ class ManagementServicer(
 
 
         self.pattern_command_service = container.pattern_command_service
+        self.manual_inspection_command_service = container.manual_inspection_command_service
+        self.handoff_command_service = container.handoff_command_service
         self.item_query_service = container.item_query_service
+        self.logistics_query_service = container.logistics_query_service
+        self.operations_query_service = container.operations_query_service
         self.pattern_query_service = container.pattern_query_service
         self.production_order_query_service = container.production_order_query_service
+        self.quality_query_service = container.quality_query_service
         self.schedule_query_service = container.schedule_query_service
         self.event_bridge = container.event_bridge
         self.state_manager = container.state_manager

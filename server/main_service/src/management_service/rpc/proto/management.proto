@@ -461,6 +461,236 @@ message GetRobotStatusResponse {
   repeated RobotStatusEntry robots = 1;
 }
 
+// -----------------------------------------------------------------------------
+// Quality Snapshot
+// -----------------------------------------------------------------------------
+
+message QualitySnapshotRequest {
+  int32 hours = 1;
+  int32 inspection_limit = 2;
+}
+
+message InspectionEntry {
+  reserved 9, 10;
+
+  int32 txn_id = 1;
+  int32 item_id = 2;
+  string txn_stat = 3;
+  string result = 4;
+  string req_at = 5;
+  string start_at = 6;
+  string end_at = 7;
+  string inspected_at = 8;
+  string product = 11;
+  string defect_type = 12;
+  string inspector = 13;
+  string note = 14;
+  double confidence = 15;
+  int32 inference_id = 16;
+}
+
+enum InspectionImageKind {
+  INSPECTION_IMAGE_KIND_UNSPECIFIED = 0;
+  INSPECTION_IMAGE_KIND_RESULT = 1;
+  INSPECTION_IMAGE_KIND_SEGMENTED = 2;
+}
+
+message GetInspectionImageRequest {
+  int32 inference_id = 1;
+  InspectionImageKind kind = 2;
+}
+
+message GetInspectionImageResponse {
+  bytes image_bytes = 1;
+  string content_type = 2;
+}
+
+message QualityStats {
+  int32 inspected = 1;
+  int32 good = 2;
+  int32 defective = 3;
+  int32 pending = 4;
+  double defect_rate = 5;
+}
+
+message DefectRateTrendEntry {
+  string label = 1;
+  double rate = 2;
+  string hour = 3;
+  int32 equip = 4;
+  int32 trans = 5;
+}
+
+message DefectTypeEntry {
+  string type = 1;
+  int32 count = 2;
+}
+
+message DefectTypeSection {
+  bool source_available = 1;
+  repeated DefectTypeEntry entries = 2;
+}
+
+message InspectionStandardEntry {
+  string product = 1;
+  string target = 2;
+  string tolerance = 3;
+  string threshold = 4;
+}
+
+message InspectionStandardSection {
+  bool source_available = 1;
+  repeated InspectionStandardEntry entries = 2;
+}
+
+message ProductionVsDefectEntry {
+  string label = 1;
+  int32 production = 2;
+  double defect_rate = 3;
+}
+
+message ProductionVsDefectSection {
+  bool source_available = 1;
+  repeated ProductionVsDefectEntry entries = 2;
+}
+
+message QualitySnapshotResponse {
+  QualityStats stats = 1;
+  repeated InspectionEntry inspections = 2;
+  repeated DefectRateTrendEntry trend = 3;
+  DefectTypeSection defect_types = 4;
+  InspectionStandardSection standards = 5;
+  ProductionVsDefectSection production_vs_defects = 6;
+}
+
+// -----------------------------------------------------------------------------
+// Operations Snapshot
+// -----------------------------------------------------------------------------
+
+message OperationsSnapshotRequest {
+  int32 hours = 1;
+}
+
+message InspectionSummaryEntry {
+  int32 ord_id = 1;
+  int32 total_items = 2;
+  int32 good_count = 3;
+  int32 defective_count = 4;
+  int32 pending_count = 5;
+}
+
+message HourlyProductionEntry {
+  string hour = 1;
+  int32 count = 2;
+}
+
+message OperationsSnapshotResponse {
+  repeated InspectionSummaryEntry summary = 1;
+  repeated HourlyProductionEntry hourly = 2;
+  repeated DefectRateTrendEntry err_trend = 3;
+  map<string, string> dashboard = 4;
+  repeated ProductionOrder orders = 5;
+  repeated PatternAssignment patterns = 6;
+  repeated StageEntry stages = 7;
+  repeated Item items = 8;
+}
+
+// -----------------------------------------------------------------------------
+// Production Telemetry Snapshot
+// -----------------------------------------------------------------------------
+
+message ProductionTelemetrySnapshotRequest {
+  int32 hours = 1;
+}
+
+message LiveParameterEntry {
+  double mold_pressure = 1;
+  double pour_angle = 2;
+  double furnace_heating_power = 3;
+  double cooling_progress = 4;
+  double cooling_current_temp = 5;
+  double cooling_target_temp = 6;
+  double cooling_remaining_min = 7;
+}
+
+message LiveParameterSection {
+  bool source_available = 1;
+  LiveParameterEntry value = 2;
+}
+
+message TemperatureHistoryEntry {
+  double minute = 1;
+  double temperature = 2;
+  double target = 3;
+}
+
+message TemperatureHistorySection {
+  bool source_available = 1;
+  repeated TemperatureHistoryEntry entries = 2;
+}
+
+message HourlyQualityProductionEntry {
+  string hour = 1;
+  int32 good = 2;
+  int32 bad = 3;
+}
+
+message HourlyQualityProductionSection {
+  bool source_available = 1;
+  repeated HourlyQualityProductionEntry entries = 2;
+}
+
+message ProductionTelemetrySnapshotResponse {
+  LiveParameterSection live = 1;
+  TemperatureHistorySection temperature = 2;
+  HourlyQualityProductionSection hourly = 3;
+}
+
+// -----------------------------------------------------------------------------
+// Logistics and Storage
+// -----------------------------------------------------------------------------
+
+message LogisticsSnapshotRequest {}
+
+message TransportTaskEntry {
+  int32 txn_id = 1;
+  string res_id = 2;
+  string task_type = 3;
+  string txn_stat = 4;
+  int32 item_id = 5;
+  int32 ord_id = 6;
+  string req_at = 7;
+  string start_at = 8;
+  string end_at = 9;
+}
+
+message OutboundOrderEntry {
+  int32 ord_id = 1;
+  int32 user_id = 2;
+  string stat = 3;
+  string updated_at = 4;
+}
+
+message LogisticsSnapshotResponse {
+  repeated TransportTaskEntry tasks = 1;
+  repeated OutboundOrderEntry orders = 2;
+}
+
+message ListWarehouseLocationsRequest {}
+
+message WarehouseLocationEntry {
+  string loc_id = 1;
+  int32 row = 2;
+  int32 col = 3;
+  string status = 4;
+  int32 item_id = 5;
+  string stored_at = 6;
+}
+
+message ListWarehouseLocationsResponse {
+  repeated WarehouseLocationEntry locations = 1;
+}
+
 // AMR 상태 전이 (외부 push — PyQt, RPi, 시뮬레이터)
 message TransitionAmrStateRequest {
   string       robot_id    = 1;
@@ -510,6 +740,24 @@ service ManagementService {
   rpc WatchAlerts(WatchAlertsRequest) returns (stream AlertEvent);
   rpc ListAlerts(ListAlertsRequest) returns (ListAlertsResponse);
 
+  // Quality page snapshot
+  rpc GetQualitySnapshot(QualitySnapshotRequest) returns (QualitySnapshotResponse);
+  rpc GetInspectionImage(GetInspectionImageRequest) returns (GetInspectionImageResponse);
+  rpc CompleteInspection(CompleteInspectionRequest) returns (InspectionEntry);
+
+  // Operations page snapshot
+  rpc GetOperationsSnapshot(OperationsSnapshotRequest) returns (OperationsSnapshotResponse);
+
+  // Production telemetry snapshot
+  rpc GetProductionTelemetrySnapshot(ProductionTelemetrySnapshotRequest)
+      returns (ProductionTelemetrySnapshotResponse);
+
+  // Logistics and storage snapshots
+  rpc GetLogisticsSnapshot(LogisticsSnapshotRequest)
+      returns (LogisticsSnapshotResponse);
+  rpc ListWarehouseLocations(ListWarehouseLocationsRequest)
+      returns (ListWarehouseLocationsResponse);
+
   // Robot Status
   rpc GetRobotStatus(GetRobotStatusRequest) returns (GetRobotStatusResponse);
 
@@ -534,6 +782,7 @@ service ManagementService {
 
   // User / Operator
   rpc ListOperators(ListOperatorsRequest) returns (ListOperatorsResponse);
+  rpc GetOperatorByEmail(GetOperatorByEmailRequest) returns (OperatorRow);
 
   // Stage B — 카메라 프레임 server streaming (image_sink condvar 기반 push)
   rpc WatchCameraFrames(WatchFramesRequest) returns (stream CameraFrameResponse);
@@ -585,6 +834,7 @@ message HandoffAckEvent {
   string    zone          = 2;   // "postprocessing"
   Timestamp occurred_at   = 3;
   string    idempotency_key = 4; // 재전송 중복 방지 (source_device + event_ts_millis)
+  optional int32 operator_id = 5;
 }
 
 message HandoffAckResponse {
@@ -593,6 +843,9 @@ message HandoffAckResponse {
   string amr_id   = 3;  // 해제된 AMR ID (orphan 이면 빈 문자열)
   string reason   = 4;  // "released" | "orphan_no_waiting_task" | "duplicate" | "error"
   string ack_at   = 5;  // ISO8601 UTC
+  bool   released = 6;
+  int32  item_id  = 7;
+  int32  ord_id   = 8;
 }
 
 // -----------------------------------------------------------------------------
@@ -694,6 +947,10 @@ message ListOperatorsRequest {
   string role_filter = 1;  // 빈 문자열이면 전체, "operator" 등으로 필터
 }
 
+message GetOperatorByEmailRequest {
+  string email = 1;
+}
+
 message OperatorRow {
   int32  user_id  = 1;
   string user_nm  = 2;
@@ -703,6 +960,11 @@ message OperatorRow {
 
 message ListOperatorsResponse {
   repeated OperatorRow operators = 1;
+}
+
+message CompleteInspectionRequest {
+  int32 txn_id = 1;
+  bool result = 2;  // true=GP, false=DP
 }
 
 // -----------------------------------------------------------------------------

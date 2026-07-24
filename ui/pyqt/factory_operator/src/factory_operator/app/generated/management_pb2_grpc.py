@@ -5,7 +5,7 @@ import warnings
 
 from . import management_pb2 as management__pb2
 
-GRPC_GENERATED_VERSION = '1.80.0'
+GRPC_GENERATED_VERSION = '1.81.1'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -25,7 +25,7 @@ if _version_not_supported:
     )
 
 
-class ManagementServiceStub(object):
+class ManagementServiceStub:
     """-----------------------------------------------------------------------------
     Service Definition
     -----------------------------------------------------------------------------
@@ -42,6 +42,11 @@ class ManagementServiceStub(object):
                 '/casting.management.v1.ManagementService/StartProduction',
                 request_serializer=management__pb2.StartProductionRequest.SerializeToString,
                 response_deserializer=management__pb2.StartProductionResponse.FromString,
+                _registered_method=True)
+        self.StartShipping = channel.unary_unary(
+                '/casting.management.v1.ManagementService/StartShipping',
+                request_serializer=management__pb2.StartShippingRequest.SerializeToString,
+                response_deserializer=management__pb2.StartShippingResponse.FromString,
                 _registered_method=True)
         self.ListItems = channel.unary_unary(
                 '/casting.management.v1.ManagementService/ListItems',
@@ -133,6 +138,41 @@ class ManagementServiceStub(object):
                 request_serializer=management__pb2.ListAlertsRequest.SerializeToString,
                 response_deserializer=management__pb2.ListAlertsResponse.FromString,
                 _registered_method=True)
+        self.GetQualitySnapshot = channel.unary_unary(
+                '/casting.management.v1.ManagementService/GetQualitySnapshot',
+                request_serializer=management__pb2.QualitySnapshotRequest.SerializeToString,
+                response_deserializer=management__pb2.QualitySnapshotResponse.FromString,
+                _registered_method=True)
+        self.GetInspectionImage = channel.unary_unary(
+                '/casting.management.v1.ManagementService/GetInspectionImage',
+                request_serializer=management__pb2.GetInspectionImageRequest.SerializeToString,
+                response_deserializer=management__pb2.GetInspectionImageResponse.FromString,
+                _registered_method=True)
+        self.CompleteInspection = channel.unary_unary(
+                '/casting.management.v1.ManagementService/CompleteInspection',
+                request_serializer=management__pb2.CompleteInspectionRequest.SerializeToString,
+                response_deserializer=management__pb2.InspectionEntry.FromString,
+                _registered_method=True)
+        self.GetOperationsSnapshot = channel.unary_unary(
+                '/casting.management.v1.ManagementService/GetOperationsSnapshot',
+                request_serializer=management__pb2.OperationsSnapshotRequest.SerializeToString,
+                response_deserializer=management__pb2.OperationsSnapshotResponse.FromString,
+                _registered_method=True)
+        self.GetProductionTelemetrySnapshot = channel.unary_unary(
+                '/casting.management.v1.ManagementService/GetProductionTelemetrySnapshot',
+                request_serializer=management__pb2.ProductionTelemetrySnapshotRequest.SerializeToString,
+                response_deserializer=management__pb2.ProductionTelemetrySnapshotResponse.FromString,
+                _registered_method=True)
+        self.GetLogisticsSnapshot = channel.unary_unary(
+                '/casting.management.v1.ManagementService/GetLogisticsSnapshot',
+                request_serializer=management__pb2.LogisticsSnapshotRequest.SerializeToString,
+                response_deserializer=management__pb2.LogisticsSnapshotResponse.FromString,
+                _registered_method=True)
+        self.ListWarehouseLocations = channel.unary_unary(
+                '/casting.management.v1.ManagementService/ListWarehouseLocations',
+                request_serializer=management__pb2.ListWarehouseLocationsRequest.SerializeToString,
+                response_deserializer=management__pb2.ListWarehouseLocationsResponse.FromString,
+                _registered_method=True)
         self.GetRobotStatus = channel.unary_unary(
                 '/casting.management.v1.ManagementService/GetRobotStatus',
                 request_serializer=management__pb2.GetRobotStatusRequest.SerializeToString,
@@ -168,6 +208,11 @@ class ManagementServiceStub(object):
                 request_serializer=management__pb2.ListOperatorsRequest.SerializeToString,
                 response_deserializer=management__pb2.ListOperatorsResponse.FromString,
                 _registered_method=True)
+        self.GetOperatorByEmail = channel.unary_unary(
+                '/casting.management.v1.ManagementService/GetOperatorByEmail',
+                request_serializer=management__pb2.GetOperatorByEmailRequest.SerializeToString,
+                response_deserializer=management__pb2.OperatorRow.FromString,
+                _registered_method=True)
         self.WatchCameraFrames = channel.unary_stream(
                 '/casting.management.v1.ManagementService/WatchCameraFrames',
                 request_serializer=management__pb2.WatchFramesRequest.SerializeToString,
@@ -185,7 +230,7 @@ class ManagementServiceStub(object):
                 _registered_method=True)
 
 
-class ManagementServiceServicer(object):
+class ManagementServiceServicer:
     """-----------------------------------------------------------------------------
     Service Definition
     -----------------------------------------------------------------------------
@@ -194,6 +239,13 @@ class ManagementServiceServicer(object):
 
     def StartProduction(self, request, context):
         """Task Manager (work_order + items)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def StartShipping(self, request, context):
+        """2026-05-13: 출하 트리거 (orchestrator.start_shipping → TAT 출하 task)
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -311,6 +363,52 @@ class ManagementServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GetQualitySnapshot(self, request, context):
+        """Quality page snapshot
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetInspectionImage(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CompleteInspection(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetOperationsSnapshot(self, request, context):
+        """Operations page snapshot
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetProductionTelemetrySnapshot(self, request, context):
+        """Production telemetry snapshot
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetLogisticsSnapshot(self, request, context):
+        """Logistics and storage snapshots
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListWarehouseLocations(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def GetRobotStatus(self, request, context):
         """Robot Status
         """
@@ -364,6 +462,12 @@ class ManagementServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GetOperatorByEmail(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def WatchCameraFrames(self, request, context):
         """Stage B — 카메라 프레임 server streaming (image_sink condvar 기반 push)
         """
@@ -396,6 +500,11 @@ def add_ManagementServiceServicer_to_server(servicer, server):
                     servicer.StartProduction,
                     request_deserializer=management__pb2.StartProductionRequest.FromString,
                     response_serializer=management__pb2.StartProductionResponse.SerializeToString,
+            ),
+            'StartShipping': grpc.unary_unary_rpc_method_handler(
+                    servicer.StartShipping,
+                    request_deserializer=management__pb2.StartShippingRequest.FromString,
+                    response_serializer=management__pb2.StartShippingResponse.SerializeToString,
             ),
             'ListItems': grpc.unary_unary_rpc_method_handler(
                     servicer.ListItems,
@@ -487,6 +596,41 @@ def add_ManagementServiceServicer_to_server(servicer, server):
                     request_deserializer=management__pb2.ListAlertsRequest.FromString,
                     response_serializer=management__pb2.ListAlertsResponse.SerializeToString,
             ),
+            'GetQualitySnapshot': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetQualitySnapshot,
+                    request_deserializer=management__pb2.QualitySnapshotRequest.FromString,
+                    response_serializer=management__pb2.QualitySnapshotResponse.SerializeToString,
+            ),
+            'GetInspectionImage': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetInspectionImage,
+                    request_deserializer=management__pb2.GetInspectionImageRequest.FromString,
+                    response_serializer=management__pb2.GetInspectionImageResponse.SerializeToString,
+            ),
+            'CompleteInspection': grpc.unary_unary_rpc_method_handler(
+                    servicer.CompleteInspection,
+                    request_deserializer=management__pb2.CompleteInspectionRequest.FromString,
+                    response_serializer=management__pb2.InspectionEntry.SerializeToString,
+            ),
+            'GetOperationsSnapshot': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetOperationsSnapshot,
+                    request_deserializer=management__pb2.OperationsSnapshotRequest.FromString,
+                    response_serializer=management__pb2.OperationsSnapshotResponse.SerializeToString,
+            ),
+            'GetProductionTelemetrySnapshot': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetProductionTelemetrySnapshot,
+                    request_deserializer=management__pb2.ProductionTelemetrySnapshotRequest.FromString,
+                    response_serializer=management__pb2.ProductionTelemetrySnapshotResponse.SerializeToString,
+            ),
+            'GetLogisticsSnapshot': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetLogisticsSnapshot,
+                    request_deserializer=management__pb2.LogisticsSnapshotRequest.FromString,
+                    response_serializer=management__pb2.LogisticsSnapshotResponse.SerializeToString,
+            ),
+            'ListWarehouseLocations': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListWarehouseLocations,
+                    request_deserializer=management__pb2.ListWarehouseLocationsRequest.FromString,
+                    response_serializer=management__pb2.ListWarehouseLocationsResponse.SerializeToString,
+            ),
             'GetRobotStatus': grpc.unary_unary_rpc_method_handler(
                     servicer.GetRobotStatus,
                     request_deserializer=management__pb2.GetRobotStatusRequest.FromString,
@@ -522,6 +666,11 @@ def add_ManagementServiceServicer_to_server(servicer, server):
                     request_deserializer=management__pb2.ListOperatorsRequest.FromString,
                     response_serializer=management__pb2.ListOperatorsResponse.SerializeToString,
             ),
+            'GetOperatorByEmail': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetOperatorByEmail,
+                    request_deserializer=management__pb2.GetOperatorByEmailRequest.FromString,
+                    response_serializer=management__pb2.OperatorRow.SerializeToString,
+            ),
             'WatchCameraFrames': grpc.unary_stream_rpc_method_handler(
                     servicer.WatchCameraFrames,
                     request_deserializer=management__pb2.WatchFramesRequest.FromString,
@@ -545,7 +694,7 @@ def add_ManagementServiceServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class ManagementService(object):
+class ManagementService:
     """-----------------------------------------------------------------------------
     Service Definition
     -----------------------------------------------------------------------------
@@ -569,6 +718,33 @@ class ManagementService(object):
             '/casting.management.v1.ManagementService/StartProduction',
             management__pb2.StartProductionRequest.SerializeToString,
             management__pb2.StartProductionResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def StartShipping(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/casting.management.v1.ManagementService/StartShipping',
+            management__pb2.StartShippingRequest.SerializeToString,
+            management__pb2.StartShippingResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -1066,6 +1242,195 @@ class ManagementService(object):
             _registered_method=True)
 
     @staticmethod
+    def GetQualitySnapshot(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/casting.management.v1.ManagementService/GetQualitySnapshot',
+            management__pb2.QualitySnapshotRequest.SerializeToString,
+            management__pb2.QualitySnapshotResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetInspectionImage(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/casting.management.v1.ManagementService/GetInspectionImage',
+            management__pb2.GetInspectionImageRequest.SerializeToString,
+            management__pb2.GetInspectionImageResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CompleteInspection(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/casting.management.v1.ManagementService/CompleteInspection',
+            management__pb2.CompleteInspectionRequest.SerializeToString,
+            management__pb2.InspectionEntry.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetOperationsSnapshot(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/casting.management.v1.ManagementService/GetOperationsSnapshot',
+            management__pb2.OperationsSnapshotRequest.SerializeToString,
+            management__pb2.OperationsSnapshotResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetProductionTelemetrySnapshot(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/casting.management.v1.ManagementService/GetProductionTelemetrySnapshot',
+            management__pb2.ProductionTelemetrySnapshotRequest.SerializeToString,
+            management__pb2.ProductionTelemetrySnapshotResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetLogisticsSnapshot(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/casting.management.v1.ManagementService/GetLogisticsSnapshot',
+            management__pb2.LogisticsSnapshotRequest.SerializeToString,
+            management__pb2.LogisticsSnapshotResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListWarehouseLocations(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/casting.management.v1.ManagementService/ListWarehouseLocations',
+            management__pb2.ListWarehouseLocationsRequest.SerializeToString,
+            management__pb2.ListWarehouseLocationsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
     def GetRobotStatus(request,
             target,
             options=(),
@@ -1255,6 +1620,33 @@ class ManagementService(object):
             _registered_method=True)
 
     @staticmethod
+    def GetOperatorByEmail(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/casting.management.v1.ManagementService/GetOperatorByEmail',
+            management__pb2.GetOperatorByEmailRequest.SerializeToString,
+            management__pb2.OperatorRow.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
     def WatchCameraFrames(request,
             target,
             options=(),
@@ -1336,7 +1728,7 @@ class ManagementService(object):
             _registered_method=True)
 
 
-class ImagePublisherServiceStub(object):
+class ImagePublisherServiceStub:
     """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
@@ -1352,7 +1744,7 @@ class ImagePublisherServiceStub(object):
                 _registered_method=True)
 
 
-class ImagePublisherServiceServicer(object):
+class ImagePublisherServiceServicer:
     """Missing associated documentation comment in .proto file."""
 
     def PublishFrames(self, request_iterator, context):
@@ -1378,7 +1770,7 @@ def add_ImagePublisherServiceServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class ImagePublisherService(object):
+class ImagePublisherService:
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod

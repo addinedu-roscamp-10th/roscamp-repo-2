@@ -79,7 +79,11 @@ npm install --silent --no-audit --no-fund
 [ -f .env.local ] || cp .env.example .env.local
 ok "ui/web 준비 완료"
 
+log "[4/4] gRPC proto 스텁 코드 생성"
 cd "$ROOT"
+./scripts/gen_proto.sh
+ok "gRPC proto 스텁 코드 생성 완료"
+
 log "완료. 다음 단계:"
 echo "  1) server/main_service/.env.local 의 DATABASE_URL 비밀번호/엔드포인트 입력"
 echo "     - sslrootcert 는 $ROOT/global-bundle.pem 사용"

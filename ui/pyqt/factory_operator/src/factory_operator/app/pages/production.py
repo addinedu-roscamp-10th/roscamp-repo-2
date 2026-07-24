@@ -14,9 +14,10 @@
 
 from __future__ import annotations
 
+import logging
 import time
-from typing import Any
-
+import grpc
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -29,23 +30,25 @@ from PyQt5.QtWidgets import (
 
 # 시간별 생산량/용해로 온도/공정 파라미터 갱신 주기 (초)
 # - 시간별 차트는 1시간 단위 집계 → 60초 이내 변화 거의 없음. 60초 throttle 로 충분.
-# - 게이지(압력/각도/출력) + 냉각 진행은 실시간성이 필요하지만 mock fallback 환경에서는
-#   값이 거의 변하지 않으므로 동일 throttle 적용. HW 연동 후엔 별도 채널(WS) 권장.
+# - 게이지(압력/각도/출력) + 냉각 진행의 실데이터 미연동 Mock은 값이 거의 변하지 않으므로
+#   동일 throttle 적용. 실데이터 연결 후에도 Management gRPC 계약 유지.
 _HOURLY_REFRESH_SEC = 60.0
 _GAUGE_REFRESH_SEC = 5.0  # 게이지는 좀 더 자주
 
 from app import mock_data
-from app.api_client import ApiClient
+from app.management_client import ManagementClient
 from app.widgets.charts import HourlyProductionChart, TemperatureChart
 from app.widgets.gauges import ArcGauge, CircularProgress, ControlPanel
+
+logger = logging.getLogger(__name__)
 
 
 class ProductionPage(QWidget):
     """제어/게이지/차트 중심 생산 모니터링."""
 
-    def __init__(self, api: ApiClient) -> None:
+    def __init__(self, mgmt: ManagementClient) -> None:
         super().__init__()
-        self._api = api
+        self._mgmt = mgmt
         # throttle: 마지막 호출 시각 (monotonic). 0 = 미호출 → 첫 refresh 강제 통과.
         self._last_hourly_at: float = 0.0
         self._last_gauge_at: float = 0.0
@@ -91,9 +94,9 @@ class ProductionPage(QWidget):
         gauge_v.setContentsMargins(12, 8, 12, 8)
         gauge_v.setSpacing(4)
 
-        gauge_title = QLabel("실시간 공정 파라미터")
-        gauge_title.setObjectName("sectionTitle")
-        gauge_v.addWidget(gauge_title)
+        self._gauge_title = QLabel("실시간 공정 파라미터")
+        self._gauge_title.setObjectName("sectionTitle")
+        gauge_v.addWidget(self._gauge_title)
 
         gauge_row = QHBoxLayout()
         gauge_row.setSpacing(4)
@@ -132,6 +135,9 @@ class ProductionPage(QWidget):
         cooling_card.setFrameShape(QFrame.StyledPanel)
         cooling_v = QVBoxLayout(cooling_card)
         cooling_v.setContentsMargins(12, 12, 12, 12)
+        self._cooling_source = QLabel("")
+        self._cooling_source.setAlignment(Qt.AlignCenter)
+        cooling_v.addWidget(self._cooling_source)
         self._cooling = CircularProgress(title="냉각 진행", subtitle="-", unit="%")
         cooling_v.addWidget(self._cooling)
         top_row.addWidget(cooling_card, stretch=1)
@@ -158,18 +164,34 @@ class ProductionPage(QWidget):
     def refresh(self) -> None:
         """주기 갱신. 게이지 5초 / 시간별 차트 60초 throttle.
 
-        MainWindow._timer 가 8초마다 refresh() 를 호출하지만, 동기 HTTP 4건이 매번
-        실행되면 GUI 가 8초마다 100~500ms 정지된다. 시간 단위 집계 차트는 1분 안에
-        값이 거의 변하지 않으므로 throttle.
+        MainWindow._timer가 8초마다 호출하므로 telemetry snapshot은 갱신 대상이
+        있는 경우에만 요청.
         """
         now = time.monotonic()
+        refresh_live = now - self._last_gauge_at >= _GAUGE_REFRESH_SEC
+        refresh_charts = now - self._last_hourly_at >= _HOURLY_REFRESH_SEC
+        if not refresh_live and not refresh_charts:
+            return
 
-        # 게이지 + 냉각 (5초 throttle)
-        # 2026-04-27: HW 미연동 구간 → mock_data 강제 사용 (이미지의 82/42/88 + 78% 표시).
-        # 실 HW 연결 후 backend /api/production/live 정상 응답 시 _api 호출로 복귀.
-        if now - self._last_gauge_at >= _GAUGE_REFRESH_SEC:
+        try:
+            snapshot = self._mgmt.get_production_telemetry_snapshot(hours=24)
+        except grpc.RpcError as exc:
+            logger.warning(
+                "GetProductionTelemetrySnapshot 실패, 마지막 정상 화면 유지: %s",
+                exc,
+            )
+            return
+
+        if refresh_live:
             self._last_gauge_at = now
-            params = dict(mock_data.LIVE_PARAMETERS)
+            live = snapshot["live"]
+            source_available = bool(live["source_available"])
+            params = (
+                live["value"]
+                if source_available
+                else dict(mock_data.LIVE_PARAMETERS)
+            )
+            self._set_live_source_available(source_available)
             self._gauge_pressure.set_value(params.get("mold_pressure", 0))
             self._gauge_angle.set_value(params.get("pour_angle", 0))
             self._gauge_power.set_value(params.get("furnace_heating_power", 0))
@@ -179,23 +201,44 @@ class ProductionPage(QWidget):
             target_t = params.get("cooling_target_temp", 25)
             remaining = params.get("cooling_remaining_min", 0)
             self._cooling.set_value(cooling_progress)
-            self._cooling.set_subtitle(f"{current_t:.0f}°C → {target_t:.0f}°C · {remaining}분 남음")
+            self._cooling.set_subtitle(
+                f"{current_t:.0f}°C → {target_t:.0f}°C, {remaining:g}분 남음"
+            )
 
-        # 차트 — 용해로 온도 이력 + 시간별 생산량/불량 (60초 throttle)
-        # 2026-04-27: HW 미연동 구간 → mock_data 강제 사용. 백엔드 /production/hourly 는
-        # {bucket, produced} 단일 카운트만 주는데 HourlyProductionChart 는
-        # {hour, good, bad} 양품/불량 분리 포맷을 기대 → mock 으로 시각화 일관성 유지.
-        # 실 HW 연결 시 backend 응답을 {hour, good, bad} 형식으로 정규화 후 본 분기 제거.
-        if now - self._last_hourly_at >= _HOURLY_REFRESH_SEC:
+        if refresh_charts:
             self._last_hourly_at = now
-            try:
-                self._temp_chart.update_data(mock_data.TEMPERATURE_HISTORY)
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                self._hourly_chart.update_data(mock_data.HOURLY_PRODUCTION)
-            except Exception:  # noqa: BLE001
-                pass
+            temperature = snapshot["temperature"]
+            temperature_source_available = bool(
+                temperature["source_available"]
+            )
+            temperature_rows = (
+                temperature["entries"]
+                if temperature_source_available
+                else mock_data.TEMPERATURE_HISTORY
+            )
+            self._temp_chart.update_data(temperature_rows)
+            self._temp_chart.set_source_available(
+                temperature_source_available
+            )
+
+            hourly = snapshot["hourly"]
+            hourly_source_available = bool(hourly["source_available"])
+            hourly_rows = (
+                hourly["entries"]
+                if hourly_source_available
+                else mock_data.HOURLY_PRODUCTION
+            )
+            self._hourly_chart.update_data(hourly_rows)
+            self._hourly_chart.set_source_available(
+                hourly_source_available
+            )
+
+    def _set_live_source_available(self, available: bool) -> None:
+        suffix = "" if available else " (예시 데이터, 실데이터 미연동)"
+        self._gauge_title.setText(f"실시간 공정 파라미터{suffix}")
+        self._cooling_source.setText(
+            "" if available else "예시 데이터, 실데이터 미연동"
+        )
 
     # ------------------------------------------------------------------
     # 제어 이벤트
@@ -205,20 +248,12 @@ class ProductionPage(QWidget):
             self,
             "비상 정지 (E-STOP)",
             "비상정지 버튼이 활성화되었습니다.\n\n"
-            "모든 공정이 중단됩니다.\n"
-            "서버에 정지 신호 전송 후 오퍼레이터 확인이 필요합니다.",
+            "현재는 화면 경고만 표시하며 정지 신호는 전송하지 않습니다.\n"
+            "HW command RPC 연결 전에는 현장 정지 절차를 사용하세요.",
             QMessageBox.Ok,
         )
-        # TODO: POST /api/production/emergency_stop (HW 연동 시 활성)
+        # TODO: HW 연동 시 Management 비상 정지 command RPC 추가
 
     def _on_mode_changed(self, auto: bool) -> None:
-        # TODO: POST /api/production/mode { "mode": "AUTO"|"MANUAL" }
+        # TODO: HW 연동 시 Management 운전 모드 command RPC 추가
         _ = "AUTO" if auto else "MANUAL"
-
-    # ------------------------------------------------------------------
-    # WS 메시지 hook
-    # ------------------------------------------------------------------
-    def handle_ws_message(self, payload: dict[str, Any]) -> None:
-        msg_type = payload.get("type", "")
-        if msg_type in ("parameter_update", "production_update"):
-            self.refresh()

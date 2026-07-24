@@ -33,7 +33,7 @@ logger = logging.getLogger("monitoring.event_gateway")
 
 # generated/ sys.path 추가 (proto stub import 호환)
 _GEN_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    os.path.dirname(os.path.abspath(__file__)),
     "generated",
 )
 if _GEN_DIR not in sys.path:

@@ -16,5 +16,5 @@ if [ -f .env.local ]; then
   set -a; source .env.local; set +a
 fi
 
-echo "→ PyQt Monitoring 시작 (API_BASE_URL=${API_BASE_URL:-http://localhost:8000})"
+echo "→ PyQt Monitoring 시작 (Management gRPC=${MANAGEMENT_GRPC_HOST:-localhost}:${MANAGEMENT_GRPC_PORT:-50051})"
 exec "$PY" -m factory_operator.main

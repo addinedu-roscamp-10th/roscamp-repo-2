@@ -6,12 +6,12 @@
      (a) Jetson esp_bridge → backend record_rfid_scan → rfid_scan_log INSERT +
          latest_rfid in-memory store 갱신
      (b) 본 페이지가 1 초 polling 으로 latest 가져와 _payload_edit 자동 채움
-     (c) 작업자가 ② RFID 스캔 버튼 클릭 → lookup_item_by_rfid (read-only) →
+     (c) 작업자가 ② RFID 스캔 버튼 클릭 → EventGateway 조회 요청 →
          item_id / cur_stat / 후처리 옵션 표시 (상태 변경 X)
   3. 후처리 작업 완료 + RFID 부착 후 작업자가 "③ 후처리 완료" 버튼을 누르면
      3 초 카운트다운 후 컨베이어 모터 구동 + PP→ToINSP 전이 동시 수행
-     (POST /api/management/conveyor/CONV1/start?item_id=N →
-       backend ESP32 dispatch (motor on) → _apply_pp_done_transition
+     (EventGateway PP_DONE_REQUESTED publish →
+       backend ESP32 dispatch (motor on) → PP→ToINSP 전이
        (PP→WAIT_INSP + ToINSP equip_task_txn PROC + equip_stat ON))
   4. 카메라 앞 TOF1 이 주물을 감지 → 펌웨어 motorOff + ST_STOPPED → Jetson 캡처 +
      UploadInspectionImage RPC → backend ToINSP→INSP 전이.
@@ -66,7 +66,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from app.api_client import ApiClient
+from app.management_client import ManagementClient
 
 
 class PpWorkerPage(QWidget):
@@ -85,15 +85,14 @@ class PpWorkerPage(QWidget):
     # PyQt 가 250ms polling 시 worst-case 지연 ≈ 335 + 250 ≈ 585ms (실용적 실시간).
     TOF1_POLL_INTERVAL_MS: int = 250
     # RFID payload 자동 채움 polling 주기 (책임 재배치, 2026-05-08).
-    # 실 RC522 가 ESP32 → Jetson → backend record_rfid_scan 까지 도달하면
-    # /api/rfid/<reader_id>/latest in-memory 갱신 → 본 timer 가 다음 tick 에 가져와
-    # _payload_edit 자동 채움. RFID 빈도 낮으므로 1 초로 충분.
+    # 실 RC522 가 ESP32 → Jetson → EventGateway RFID_SCANNED 로 도달하면
+    # WatchEvents 구독이 _payload_edit 를 자동 갱신.
     RFID_POLL_INTERVAL_MS: int = 1000
     RFID_READER_ID: str = "RFID-CONV1"  # Jetson env ESP_BRIDGE_RFID_READER_ID 와 일치
 
-    def __init__(self, api: ApiClient, parent: QWidget | None = None) -> None:
+    def __init__(self, mgmt: ManagementClient, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._api = api
+        self._mgmt = mgmt
         self._current_item_id: int | None = None
         self._current_payload: str = ""
         # 카운트다운 상태 — _build_ui 가 위젯 만들기 전에 초기화 필요.
@@ -112,23 +111,6 @@ class PpWorkerPage(QWidget):
         self._eg_watcher: object | None = None  # WatchEventsThread, 후 setup
         self._build_ui()
         self._setup_event_gateway_subscribe()
-
-        # 매뉴얼 캡처/오프라인 데모 — RFID 스캔 결과를 즉시 시뮬레이션
-        import os as _os
-
-        if _os.environ.get("CASTING_DATA_MODE") == "mock_only":
-            try:
-                demo = self._api.lookup_item_by_rfid("order_101_item_20260501_4")
-                if isinstance(demo, dict):
-                    self._render_item(demo.get("item") or {})
-                    self._render_options(demo.get("pp_options") or [])
-                    item = demo.get("item") or {}
-                    if item.get("item_id"):
-                        self._current_item_id = int(item["item_id"])
-                    if hasattr(self, "_payload_edit"):
-                        self._payload_edit.setText("order_101_item_20260501_4")
-            except Exception:  # noqa: BLE001
-                pass
 
     # ------------------------------------------------------------------
     # UI build
@@ -207,7 +189,7 @@ class PpWorkerPage(QWidget):
         self._btn_pp_done.setProperty("tone", "primary")
         self._btn_pp_done.setToolTip(
             "후처리 작업이 끝났음을 알리고 컨베이어 모터를 구동합니다.\n"
-            "버튼 클릭 → 3 초 카운트다운 → POST /api/management/conveyor/CONV1/start "
+            "버튼 클릭 → 3 초 카운트다운 → EventGateway publish "
             "→ ESP32 firmware motor ON."
         )
         self._btn_pp_done.clicked.connect(self._on_pp_done)
@@ -298,10 +280,7 @@ class PpWorkerPage(QWidget):
     def _on_fetch_operators(self) -> None:
         """gRPC ListOperators 로 DB 작업자 목록을 가져와 드롭다운 메뉴로 표시."""
         try:
-            from app.management_client import ManagementClient
-            client = ManagementClient()
-            operators = client.list_operators(role_filter="operator")
-            client.close()
+            operators = self._mgmt.list_operators(role_filter="operator")
         except Exception as exc:
             QMessageBox.warning(self, "작업자 목록 오류", f"gRPC 조회 실패:\n{exc}")
             return
@@ -328,7 +307,7 @@ class PpWorkerPage(QWidget):
             self._set_status("이메일 입력 필요", ok=False)
             return
         try:
-            r = self._api.auth_lookup(email)
+            r = self._mgmt.get_operator_by_email(email)
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "로그인 실패", str(exc))
             self._set_status(f"로그인 실패: {exc}", ok=False)
@@ -337,14 +316,13 @@ class PpWorkerPage(QWidget):
         if not r:
             self._set_status("응답 없음", ok=False)
             return
-        self._operator_label.setText(f"현재: {self._api.current_operator_label()}")
+        self._operator_label.setText(f"현재: {self._mgmt.current_operator_label()}")
         self._set_status(
             f"로그인 OK — user_id={r.get('user_id')} 이후 후처리 작업은 자동으로 operator_id 기록"
         )
 
     def _on_logout(self) -> None:
-        self._api.__init_operator__()
-        self._api._operator = None  # noqa: SLF001
+        self._mgmt.clear_operator()
         self._operator_label.setText("현재: 비로그인")
         self._set_status("로그아웃 완료")
 
@@ -355,16 +333,20 @@ class PpWorkerPage(QWidget):
         결과는 ITEM_LOOKUP_RESULT 또는 별도 EventType 으로 PyQt 가 subscribe (Watch...) 받음.
         """
         try:
-            from app.clients.event_gateway import publish_event as _publish_eg
+            from app.event_gateway_client import publish_event as _publish_eg
 
+            event_payload = {
+                "zone": "postprocessing",
+                "source_device": "pyqt-pp-worker",
+                "button": "ui-handoff",
+            }
+            operator_id = self._mgmt.current_operator_id()
+            if operator_id is not None:
+                event_payload["operator_id"] = operator_id
             ok = _publish_eg(
                 event_type="HANDOFF_ACK",
                 resource_id="CONV1",
-                payload={
-                    "zone": "postprocessing",
-                    "source_device": "pyqt-pp-worker",
-                    "button": "ui-handoff",
-                },
+                payload=event_payload,
             )
         except Exception as exc:  # noqa: BLE001
             self._set_status(f"① 핸드오프 publish 예외: {exc}", ok=False)
@@ -392,7 +374,7 @@ class PpWorkerPage(QWidget):
             return
         self._current_payload = payload
         try:
-            from app.clients.event_gateway import publish_event as _publish_eg
+            from app.event_gateway_client import publish_event as _publish_eg
 
             ok = _publish_eg(
                 event_type="ITEM_LOOKUP_REQUESTED",
@@ -460,7 +442,7 @@ class PpWorkerPage(QWidget):
         """
         self._reset_pp_done_ui()
         try:
-            from app.clients.event_gateway import publish_event as _publish_eg
+            from app.event_gateway_client import publish_event as _publish_eg
 
             ok = _publish_eg(
                 event_type="PP_DONE_REQUESTED",
@@ -517,7 +499,7 @@ class PpWorkerPage(QWidget):
         EVENT_GATEWAY_TARGET 미설정 시 silent skip.
         """
         try:
-            from app.clients.event_gateway import WatchEventsThread
+            from app.event_gateway_client import WatchEventsThread
         except Exception:  # noqa: BLE001
             return
         try:
@@ -584,17 +566,6 @@ class PpWorkerPage(QWidget):
             f"· 현재 단계: {item.get('cur_stat')} · 옵션 {len(pp_options)}건 "
             "(상태 변경은 ③ 후처리 완료 시점)"
         )
-
-    def _refresh_lookup(self, payload: str) -> None:
-        try:
-            r = self._api.lookup_item_by_rfid(payload)
-        except Exception as exc:  # noqa: BLE001
-            self._set_status(f"lookup 실패: {exc}", ok=False)
-            return
-        if not r:
-            return
-        self._render_item(r.get("item") or {})
-        self._render_options(r.get("pp_options") or [])
 
     # ------------------------------------------------------------------
     # rendering

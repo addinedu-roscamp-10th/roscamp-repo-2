@@ -1,7 +1,7 @@
-"""Mock 데이터 — FastAPI 백엔드 장애 / 오프라인 시 fallback.
+"""실데이터 미연동 섹션용 Mock 데이터.
 
-네트워크 연결이 끊겨 있거나 백엔드가 응답하지 않을 때 화면이 비지 않도록
-대체 데이터를 제공한다. ApiClient 가 None 을 반환할 때 사용.
+Management gRPC가 `source_available=false`로 명시한 섹션에만 대체 데이터를
+제공한다. 정상 빈 응답이나 gRPC 실패에는 사용하지 않는다.
 """
 
 from __future__ import annotations
@@ -251,7 +251,7 @@ QUALITY_STATS: dict[str, Any] = {
 }
 
 
-# 2026-05-14: web mockInspections 30건과 데이터 단일 진실 원천 동기화.
+# 2026-05-14: web mockInspections 30건의 단일 기준 데이터와 동기화.
 # 매핑: productId→product (KS 규격 카탈로그), result(pass→OK / fail→NG),
 #       defectType→defect_type, inspectorId→inspector, defectDetail→note.
 _PRODUCT_NAMES_FOR_INSP: dict[str, str] = {
@@ -306,7 +306,7 @@ INSPECTIONS: list[dict[str, Any]] = [
         "confidence": conf,
         "casting_id": cid,
         # 2026-05-15: web mockInspections.imageId 와 동일 패턴 — INS-001 ↔ IMG-001.
-        # backend HttpImageServer 가 /<image_id>.jpg 로 서빙.
+        # 실데이터 미연동 예시 검사 이미지 식별자.
         "image_id": ins_id.replace("INS-", "IMG-"),
     }
     for (ins_id, prod_id, res, dtype, detail, at, conf, cid) in _INSP_RAW
@@ -488,7 +488,7 @@ HOURLY_PRODUCTION: list[dict[str, Any]] = [
 
 
 # 2026-05-14: web (ui/web/src/lib/mock-data.ts) 의 mockProductionMetrics / mockDefectTypeStats /
-# mockInspectionStandards 와 데이터 단일 진실 원천 동기화.
+# mockInspectionStandards의 단일 기준 데이터와 동기화.
 # (date, production, defects, defectRate) — web 30일 값과 1:1 일치.
 _PROD_METRICS_30D: list[tuple[str, int, int, float]] = [
     ("03/01", 45, 2, 4.4),
