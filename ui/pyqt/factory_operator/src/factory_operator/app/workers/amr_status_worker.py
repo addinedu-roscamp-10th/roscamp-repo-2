@@ -24,7 +24,7 @@ class AmrStatusWorker(QObject):
     status_updated = pyqtSignal(list)  # list[dict]
     connection_state = pyqtSignal(bool)
 
-    def __init__(self, poll_interval: float = 10.0) -> None:
+    def __init__(self, poll_interval: float = 1.0) -> None:
         super().__init__()
         self._interval = poll_interval
         self._stop = False
@@ -69,7 +69,7 @@ class AmrStatusWorker(QObject):
             # interruptible sleep
             deadline = time.monotonic() + self._interval
             while not self._stop and time.monotonic() < deadline:
-                time.sleep(0.5)
+                time.sleep(0.1)
 
         client.close()
         logger.info("AmrStatusWorker 종료")

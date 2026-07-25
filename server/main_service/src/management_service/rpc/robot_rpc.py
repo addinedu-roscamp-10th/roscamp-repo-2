@@ -14,19 +14,28 @@ class RobotRpcMixin:
 
     def GetRobotStatus(self, request, context):
         entries = []
-        for s in self.amr_battery.get_all():
+        robot_states = self.state_manager.get_all_robot_states()
+
+        for state in robot_states:
+            r_type = (
+                management_pb2.ROBOT_TYPE_AMR
+                if state.get("type") == "amr"
+                else management_pb2.ROBOT_TYPE_COBOT
+                if state.get("type") == "manipulator"
+                else management_pb2.ROBOT_TYPE_UNSPECIFIED
+            )
             entries.append(
                 management_pb2.RobotStatusEntry(
-                    id=s.id,
-                    type=management_pb2.ROBOT_TYPE_AMR,
-                    host=s.host,
-                    status=s.status,
-                    battery=s.battery,
-                    voltage=s.voltage,
-                    location=s.location,
-                    task_state=int(getattr(s, "task_state", 1) or 1),
-                    task_id=getattr(s, "task_id", "") or "",
-                    loaded_item=getattr(s, "loaded_item", "") or "",
+                    id=state.get("id", ""),
+                    type=r_type,
+                    host=state.get("host", "ros2"),
+                    status=state.get("status", "online"),
+                    battery=float(state.get("battery", 0.0)),
+                    voltage=float(state.get("voltage", 0.0)),
+                    location=state.get("location", "-"),
+                    task_state=int(state.get("task_state", 1) or 1),
+                    task_id=str(state.get("task_id", "") or ""),
+                    loaded_item=str(state.get("loaded_item", "") or ""),
                 )
             )
         return management_pb2.GetRobotStatusResponse(robots=entries)

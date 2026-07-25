@@ -121,6 +121,9 @@ class IStateManager(Protocol):
     def get_amr_stats(self) -> list[AmrRuntimeState]:
         ...
 
+    def get_all_robot_states(self) -> list[dict[str, Any]]:
+        ...
+
     async def update_task_allocation(self, assign_input: AllocateTaskResInput) -> None:
         ...
 

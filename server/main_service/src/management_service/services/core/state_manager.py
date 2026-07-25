@@ -541,6 +541,42 @@ class StateManager:
             if res_meta.get("res_type") == "TAT"
         ]
 
+    def get_all_robot_states(self) -> list[dict[str, Any]]:
+        """PyQt 및 외부 클라이언트 조회를 위해 자원 상태(TAT 등)의 실시간 상태 리스트를 반환한다."""
+        results = []
+        for res_id, res_meta in sorted(self._res_list.items()):
+            res_type = res_meta.get("res_type", "").upper()
+            if res_type == "TAT":
+                r_type = "amr"
+            elif res_type in ("PAT", "MAT"):
+                r_type = "manipulator"
+            else:
+                continue
+
+            x = float(res_meta.get("x", 0.0))
+            y = float(res_meta.get("y", 0.0))
+            battery_pct = float(res_meta.get("battery_pct", 100))
+            location = f"x={x:.2f}, y={y:.2f}" if (x != 0.0 or y != 0.0) else "-"
+
+            status_str = res_meta.get("status", "IDLE")
+            online_status = "offline" if status_str == "OFFLINE" else "online"
+
+            results.append(
+                {
+                    "id": res_id,
+                    "type": r_type,
+                    "host": "ros2",
+                    "status": online_status,
+                    "battery": battery_pct,
+                    "voltage": 0.0,
+                    "location": location,
+                    "task_state": res_meta.get("task_state", 1),
+                    "task_id": str(res_meta.get("task_id") or ""),
+                    "loaded_item": str(res_meta.get("item_id") or ""),
+                }
+            )
+        return results
+
     def is_res_available(self, res_id: str) -> bool:
         res_meta = self._res_list.get(res_id)
         if res_meta is None:
