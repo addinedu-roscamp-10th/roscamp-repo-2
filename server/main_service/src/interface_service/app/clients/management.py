@@ -45,8 +45,8 @@ except ImportError as exc:
     # proto stubs 로딩 실패는 Management 미가동(런타임 장애)이 아니라 빌드/배포 구성 오류다.
     logger.error(
         "Management proto stubs import FAILED (CONFIG ERROR, not a service outage): %s. "
-        "Regenerate via 'python -m grpc_tools.protoc -I rpc/proto --python_out=. --grpc_python_out=. "
-        "rpc/proto/management.proto' from server/main_service/src/management_service "
+        "Regenerate via 'python -m grpc_tools.protoc -I proto --python_out=. --grpc_python_out=. "
+        "proto/management.proto' from the repository root "
         "or verify sys.path includes the management_service stubs directory.",
         exc,
     )
