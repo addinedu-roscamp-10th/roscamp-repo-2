@@ -41,7 +41,6 @@ class ArucoMarkerPoseNode(Node):
         self.declare_parameter('height', 480)
         self.declare_parameter('fps', 10.0)
         self.declare_parameter('rotate_180', True)
-        self.declare_parameter('orientation_yaw_offset', 0.0)
         self.declare_parameter('aruco_dictionary', 'DICT_5X5_100')
         self.declare_parameter('marker_length', 0.079)
         self.declare_parameter('target_marker_id', 23)
@@ -54,7 +53,6 @@ class ArucoMarkerPoseNode(Node):
         self.height = int(self.get_parameter('height').value)
         self.fps = float(self.get_parameter('fps').value)
         self.rotate_180 = bool(self.get_parameter('rotate_180').value)
-        self.orientation_yaw_offset = float(self.get_parameter('orientation_yaw_offset').value)
         self.marker_length = float(self.get_parameter('marker_length').value)
         self.target_marker_id = int(self.get_parameter('target_marker_id').value)
 
@@ -162,7 +160,6 @@ class ArucoMarkerPoseNode(Node):
         rotation_matrix, _ = cv2.Rodrigues(rvec)
         ros_camera_rotation = self.cv_optical_to_ros_camera_link_rotation()
         ros_marker_rotation = ros_camera_rotation @ rotation_matrix
-        ros_marker_rotation = self.rotation_about_z(self.orientation_yaw_offset) @ ros_marker_rotation
         ros_translation = ros_camera_rotation @ np.array(
             [float(tvec[0][0]), float(tvec[1][0]), float(tvec[2][0])],
             dtype=np.float64,
@@ -195,18 +192,6 @@ class ArucoMarkerPoseNode(Node):
             dtype=np.float64,
         )
 
-    @staticmethod
-    def rotation_about_z(yaw):
-        cos_yaw = np.cos(yaw)
-        sin_yaw = np.sin(yaw)
-        return np.array(
-            [
-                [cos_yaw, -sin_yaw, 0.0],
-                [sin_yaw, cos_yaw, 0.0],
-                [0.0, 0.0, 1.0],
-            ],
-            dtype=np.float64,
-        )
 
     def parameter_callback(self, params):
         for param in params:

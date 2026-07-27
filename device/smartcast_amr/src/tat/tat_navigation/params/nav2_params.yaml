@@ -388,8 +388,10 @@ docking_server:
       external_detection_timeout: 30.0  # detection timeout
       external_detection_translation_x: -0.04  # 마커 기준 최종 dock pose 오프셋
       external_detection_translation_y: 0.0
-      external_detection_rotation_pitch: 0.0
-      external_detection_rotation_roll: 0.0
+      external_detection_rotation_yaw: 0.0
+      external_detection_rotation_pitch: 1.57
+      external_detection_rotation_roll: -1.57
+
       filter_coef: 0.3
       use_stall_detection: false
       docking_threshold: 0.05
@@ -402,8 +404,10 @@ docking_server:
       external_detection_timeout: 30.0  # detection timeout
       external_detection_translation_x: -0.07  # 마커 기준 최종 dock pose 오프셋
       external_detection_translation_y: 0.0
-      external_detection_rotation_pitch: 0.0
-      external_detection_rotation_roll: 0.0
+      external_detection_rotation_yaw: 0.0
+      external_detection_rotation_pitch: 1.57
+      external_detection_rotation_roll: -1.57
+
       filter_coef: 0.3
       use_stall_detection: false
       docking_threshold: 0.05
@@ -416,8 +420,10 @@ docking_server:
       external_detection_timeout: 30.0  # detection timeout
       external_detection_translation_x: -0.015  # 마커 기준 최종 dock pose 오프셋
       external_detection_translation_y: 0.0
-      external_detection_rotation_pitch: 0.0
-      external_detection_rotation_roll: 0.0
+      external_detection_rotation_yaw: 0.0
+      external_detection_rotation_pitch: 1.57
+      external_detection_rotation_roll: -1.57
+
       filter_coef: 0.3
       use_stall_detection: false
       docking_threshold: 0.05
