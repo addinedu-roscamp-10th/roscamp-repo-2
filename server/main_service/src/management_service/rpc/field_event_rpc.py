@@ -3,26 +3,15 @@
 from __future__ import annotations
 
 import logging
-import os
-from datetime import UTC, datetime
 
 import grpc
 import management_pb2  # type: ignore
-
-from services.core.adapters.sensors.rfid_service import RfidServiceError
 
 logger = logging.getLogger(__name__)
 
 
 def _item_state_label(item) -> str:
     return getattr(item, "flow_stat", None) or ""
-
-
-def _handoff_task_id_from_extra(extra: object) -> str:
-    if not isinstance(extra, dict):
-        return ""
-    task_id = extra.get("trans_task_txn_id")
-    return str(task_id) if task_id is not None else ""
 
 
 def _pp_option_proto(option: dict) -> management_pb2.PpOptionView:
@@ -34,37 +23,6 @@ def _pp_option_proto(option: dict) -> management_pb2.PpOptionView:
         txn_id=int(option.get("txn_id") or 0),
         map_id=int(option.get("map_id") or 0),
     )
-
-
-def _notify_handoff_ack(result, *, zone: str, ack_at_iso: str) -> None:
-    import json as _json
-    import urllib.request
-
-    notify_url = os.environ.get(
-        "INTERFACE_NOTIFY_URL",
-        "http://localhost:8000/api/debug/_notify/handoff-ack",
-    )
-    body = _json.dumps(
-        {
-            "task_id": result.task_id,
-            "amr_id": result.amr_id or "",
-            "item_id": result.item_id,
-            "ord_id": result.ord_id,
-            "zone": zone,
-            "ack_at": ack_at_iso,
-            "orphan": result.orphan,
-            "source": "management_grpc",
-            "pp_task_txn_ids": result.pp_task_txn_ids,
-            "item_cur_stat": result.item_cur_stat,
-        }
-    ).encode()
-    req = urllib.request.Request(
-        notify_url,
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    urllib.request.urlopen(req, timeout=1.0).read()
 
 
 def _build_rfid_ack_details(item_id: int) -> tuple[str, int, list[management_pb2.PpOptionView]]:
@@ -93,106 +51,39 @@ class FieldEventRpcMixin:
     """Handoff, RFID, and conveyor event RPCs."""
 
     def ReportHandoffAck(self, request, context):
-        from services.legacy.handoff_pipeline import apply_handoff
-
-        from smart_cast_db.database import SessionLocal
-        from smart_cast_db.models.models_legacy import HandoffAck
-
         zone = request.zone or "postprocessing"
         source_device = request.source_device or "unknown"
         idempotency_key = request.idempotency_key or None
-        now_utc = datetime.now(UTC)
-
-        if idempotency_key:
-            dup_db = SessionLocal()
-            try:
-                dup = (
-                    dup_db.query(HandoffAck)
-                    .filter(HandoffAck.idempotency_key == idempotency_key)
-                    .first()
-                )
-                if dup is not None:
-                    logger.info("ReportHandoffAck: 중복 이벤트 skip key=%s", idempotency_key)
-                    return management_pb2.HandoffAckResponse(
-                        accepted=True,
-                        task_id=_handoff_task_id_from_extra(dup.extra),
-                        amr_id=dup.amr_id or "",
-                        reason="duplicate",
-                        ack_at=dup.ack_at.isoformat() if dup.ack_at else now_utc.isoformat(),
-                    )
-            finally:
-                dup_db.close()
-
-        db = SessionLocal()
-        try:
-            try:
-                result = apply_handoff(
-                    db,
-                    button_device_id=source_device,
-                    ack_source="esp32_button",
-                    via="grpc",
-                    idempotency_key=idempotency_key,
-                )
-                db.commit()
-            except Exception:  # noqa: BLE001
-                db.rollback()
-                raise
-        finally:
-            db.close()
-
-        fsm_reason = result.reason
-        if result.amr_id:
-            fsm_reason = "released"
-
-        try:
-            _notify_handoff_ack(result, zone=zone, ack_at_iso=now_utc.isoformat())
-        except Exception as e:  # noqa: BLE001
-            logger.warning("Handoff WebSocket notify 실패 (무시): %s", e)
+        operator_id = request.operator_id if request.HasField("operator_id") else None
+        result = self.handoff_command_service.report(
+            source_device=source_device,
+            zone=zone,
+            idempotency_key=idempotency_key,
+            operator_id=operator_id,
+        )
 
         return management_pb2.HandoffAckResponse(
-            accepted=True,
-            task_id=str(result.task_id) if result.task_id else "",
-            amr_id=result.amr_id or "",
-            reason=fsm_reason,
-            ack_at=now_utc.isoformat(),
+            accepted=result.accepted,
+            task_id=result.task_id,
+            amr_id=result.amr_id,
+            reason=result.reason,
+            ack_at=result.ack_at.isoformat(),
+            released=result.released,
+            item_id=result.item_id or 0,
+            ord_id=result.ord_id or 0,
         )
 
     def ReportRfidScan(self, request, context):
-        try:
-            result = self.rfid_service.report_scan(
-                reader_id=request.reader_id,
-                zone=request.zone or None,
-                raw_payload=request.raw_payload,
-                scanned_at_iso=request.scanned_at.iso8601 or None,
-                idempotency_key=request.idempotency_key or None,
-            )
-        except RfidServiceError as exc:
-            context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
-            context.set_details(str(exc))
-            return management_pb2.RfidScanAck()
-
-        item_cur_stat = ""
-        ord_id_int = 0
-        pp_options_proto: list[management_pb2.PpOptionView] = []
-        if result.accepted and result.item_id:
-            item_cur_stat, ord_id_int, pp_options_proto = _build_rfid_ack_details(result.item_id)
-
-        return management_pb2.RfidScanAck(
-            accepted=result.accepted,
-            item_id=result.item_id,
-            parse_status=result.parse_status,
-            reason=result.reason,
-            item_cur_stat=item_cur_stat,
-            ord_id=ord_id_int,
-            pp_options=pp_options_proto,
-        )
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("ReportRfidScan is disabled")
+        return management_pb2.RfidScanAck()
 
     def ReportConveyorEvent(self, request, context):
         from services.legacy.handoff_pipeline import apply_tof1, apply_tof2
 
         from smart_cast_db.database import SessionLocal
 
-        res_id = request.res_id or "CONV-01"
+        res_id = request.res_id or "CONV1"
         event = (request.event_type or "").strip().lower()
         rfid_payload = request.rfid_payload or None
         item_id = int(request.item_id) if request.item_id else None

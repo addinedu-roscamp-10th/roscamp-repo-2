@@ -1,0 +1,21 @@
+// PAT1 zenoh bridge
+
+{
+    plugins: {
+        ros2dds: {
+            domain: <DOMAIN_ID>, // domain id 채우기 (PAT1~: 71~)
+            namespace: "/PAT",  // robot namespace 채우기 (ex: PAT1, PAT2...)
+
+            allow: {
+                action_servers: [
+                    "/execute_task"
+                ],
+            },
+        },
+    },
+
+    mode: "client",
+    connect: {
+        endpoints: ["tcp/192.168.1.40:7447"],
+    },
+}

@@ -1,0 +1,333 @@
+"""EventGateway servicer — sole external wire for backend EventBridgeImpl.
+
+Wire (gRPC, defined in proto/event_gateway.proto):
+    rpc PublishEvent(PublishEventRequest) returns (PublishEventResponse);
+    rpc WatchEvents(WatchEventsRequest) returns (stream EventEnvelope);
+
+Internal (in-process):
+    PublishEvent → EventBridgeImpl.publish (Pydantic Event 변환 + idempotency dedup TTL 60s).
+    WatchEvents  → EventBridgeImpl.subscribe (callback → Queue adapter, server-streaming).
+
+본 servicer 는 외부 client (jetson_publisher / monitoring) 와 backend EventBridge 의
+단일 통신 채널. 다른 backend service (state_manager, robot_adapter, route 등) 는
+EventBridge.subscribe 를 in-process 직접 호출하므로 본 servicer 를 거치지 않음.
+
+@MX:NOTE EventBridgeImpl 의 외부 wire 인터페이스 — Jetson client 와 PyQt client 와 결합.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import sys
+import threading
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from queue import Empty, Queue
+from typing import Any
+
+import grpc
+from google.protobuf import struct_pb2, timestamp_pb2
+from google.protobuf.json_format import MessageToDict, ParseDict
+
+# generated/ 를 sys.path 에 추가 — 직접 실행/임포트 모두 동일하게 동작하도록
+_THIS_DIR = Path(__file__).resolve().parent
+_GENERATED_DIR = next(
+    (parent / "generated" for parent in _THIS_DIR.parents if (parent / "generated").exists()),
+    None,
+)
+if _GENERATED_DIR is not None and str(_GENERATED_DIR) not in sys.path:
+    sys.path.insert(0, str(_GENERATED_DIR))
+
+import event_gateway_pb2 as eg_pb  # type: ignore  # noqa: E402
+import event_gateway_pb2_grpc as eg_pb_grpc  # type: ignore  # noqa: E402
+
+from services.contracts.enums import EventType  # noqa: E402
+from services.contracts.models import Event  # noqa: E402
+
+logger = logging.getLogger(__name__)
+
+# Idempotency dedup TTL (초). 동일 idempotency_key 가 본 시간 내 재진입하면 1회만 publish.
+DEDUP_TTL_SECONDS = 60.0
+# WatchEvents subscriber 의 큐 크기. 가득 차면 oldest drop (slow consumer 방어).
+WATCH_QUEUE_MAXSIZE = 1024
+# WatchEvents 가 client 활성 상태 폴링 주기 (초). 낮을수록 종료 응답 빠름, CPU 약간 ↑.
+WATCH_POLL_INTERVAL = 1.0
+
+
+# ----------------------------------------------------------------------------
+# 변환 유틸 — proto EventEnvelope ↔ Pydantic Event
+# ----------------------------------------------------------------------------
+# Event 필드: event_type, txn_id, ord_id, item_id, res_id, payload, occurred_at
+# (services.contracts.models.Event 정의 — 'res_id' 필드명 사용)
+# ----------------------------------------------------------------------------
+
+
+def _envelope_to_event(envelope: "eg_pb.EventEnvelope") -> Event | None:
+    """proto EventEnvelope → Pydantic Event. 알 수 없는 EventType / 검증 실패 시 None."""
+    raw_type = (envelope.event_type or "").strip()
+    if not raw_type:
+        logger.warning("PublishEvent: empty event_type — skip")
+        return None
+    try:
+        et = EventType(raw_type)
+    except ValueError:
+        logger.warning("PublishEvent: unknown event_type=%r — skip", raw_type)
+        return None
+
+    payload_dict: dict[str, Any] = {}
+    if envelope.HasField("payload"):
+        payload_dict = MessageToDict(
+            envelope.payload, preserving_proto_field_name=True
+        )
+
+    # source / idempotency_key 는 Pydantic Event 에 직접 필드 없음 → payload 에 보존.
+    if envelope.source:
+        payload_dict.setdefault("_source", envelope.source)
+    if envelope.idempotency_key:
+        payload_dict.setdefault("_idempotency_key", envelope.idempotency_key)
+
+    occurred_at: datetime | None = None
+    if envelope.HasField("occurred_at"):
+        occurred_at = envelope.occurred_at.ToDatetime(tzinfo=timezone.utc)
+
+    kwargs: dict[str, Any] = {"event_type": et, "payload": payload_dict}
+    if envelope.resource_id:
+        # Event.res_id 는 smartcast.res.res_id (VARCHAR(10)) 제약. 초과 식별자
+        # (예: reader_id "RFID-CONV1" 12자) 는 payload 에 보존하고 res_id 미설정.
+        rid = envelope.resource_id
+        if len(rid) <= 10:
+            kwargs["res_id"] = rid
+        else:
+            payload_dict.setdefault("_resource_id_raw", rid)
+    if occurred_at is not None:
+        kwargs["occurred_at"] = occurred_at
+
+    # payload 에 표준 식별자 (item_id/ord_id/txn_id) 가 있으면 Pydantic 표준 필드로 끌어올림.
+    # payload 에서 빼지는 않음 — 구독자가 양쪽 어느 곳에서 읽어도 동일.
+    for fld in ("item_id", "ord_id", "txn_id"):
+        v = payload_dict.get(fld)
+        if isinstance(v, int) and v > 0:
+            kwargs[fld] = v
+        elif isinstance(v, float) and v.is_integer() and int(v) > 0:
+            kwargs[fld] = int(v)
+
+    try:
+        return Event(**kwargs)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "PublishEvent: Event 검증 실패 event_type=%s reason=%s — skip", et, exc,
+        )
+        return None
+
+
+def _event_to_envelope(event: Event) -> "eg_pb.EventEnvelope":
+    """Pydantic Event → proto EventEnvelope (WatchEvents egress)."""
+    payload = dict(event.payload)
+    source = str(payload.pop("_source", "") or "")
+    idem = str(payload.pop("_idempotency_key", "") or "")
+    # 표준 식별자 — payload 에 정규화하여 외부 client 가 일관되게 읽도록.
+    if event.txn_id is not None:
+        payload.setdefault("txn_id", event.txn_id)
+    if event.ord_id is not None:
+        payload.setdefault("ord_id", event.ord_id)
+    if event.item_id is not None:
+        payload.setdefault("item_id", event.item_id)
+
+    payload_struct = struct_pb2.Struct()
+    if payload:
+        ParseDict(payload, payload_struct)
+
+    occurred_at = timestamp_pb2.Timestamp()
+    if event.occurred_at is not None:
+        occurred_at.FromDatetime(
+            event.occurred_at.astimezone(timezone.utc).replace(tzinfo=None)
+        )
+
+    return eg_pb.EventEnvelope(
+        event_type=event.event_type.value,
+        resource_id=event.res_id or "",
+        source=source,
+        occurred_at=occurred_at,
+        idempotency_key=idem,
+        payload=payload_struct,
+    )
+
+
+# ----------------------------------------------------------------------------
+# Idempotency cache — TTL 기반 dedup (slow-consumer 안전)
+# ----------------------------------------------------------------------------
+
+
+class _IdempotencyCache:
+    """Idempotency key TTL cache. hit() True 면 동일 key 가 TTL 내 재진입."""
+
+    def __init__(self, ttl_seconds: float = DEDUP_TTL_SECONDS) -> None:
+        self._ttl = ttl_seconds
+        self._lock = threading.Lock()
+        self._seen: dict[str, float] = {}
+
+    def hit(self, key: str) -> bool:
+        if not key:
+            return False
+        now = time.time()
+        with self._lock:
+            self._evict(now)
+            if key in self._seen:
+                return True
+            self._seen[key] = now
+            return False
+
+    def _evict(self, now: float) -> None:
+        cutoff = now - self._ttl
+        expired = [k for k, t in self._seen.items() if t < cutoff]
+        for k in expired:
+            self._seen.pop(k, None)
+
+
+# ----------------------------------------------------------------------------
+# gRPC servicer
+# ----------------------------------------------------------------------------
+
+
+class EventGatewayServicer(eg_pb_grpc.EventGatewayServicer):
+    """gRPC servicer — sole external wire for EventBridgeImpl.
+
+    Args:
+        bridge: in-process EventBridgeImpl instance (container.event_bridge).
+    """
+
+    SUBSCRIBER_PREFIX = "event-gateway"
+
+    def __init__(self, bridge: Any) -> None:
+        self._bridge = bridge
+        self._dedup = _IdempotencyCache()
+
+    # ---- PublishEvent (unary) -----------------------------------------------
+
+    def PublishEvent(self, request, context):  # type: ignore[no-untyped-def]
+        envelope = request.event
+        idem = (envelope.idempotency_key or "").strip()
+        if idem and self._dedup.hit(idem):
+            logger.info("PublishEvent: dedup hit idempotency_key=%s — skip", idem)
+            return eg_pb.PublishEventResponse(
+                accepted=True,
+                reason="duplicate idempotency_key",
+                deduplicated=True,
+            )
+
+        event = _envelope_to_event(envelope)
+        if event is None:
+            return eg_pb.PublishEventResponse(
+                accepted=False,
+                reason="invalid event_type or payload",
+                deduplicated=False,
+            )
+
+        try:
+            self._bridge.publish(event)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("PublishEvent: bridge.publish 실패")
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details(f"publish error: {exc}")
+            return eg_pb.PublishEventResponse(
+                accepted=False, reason=str(exc), deduplicated=False,
+            )
+
+        logger.info(
+            "PublishEvent: accepted event_type=%s source=%s idem=%s",
+            event.event_type.value,
+            envelope.source or "-",
+            idem or "-",
+        )
+        return eg_pb.PublishEventResponse(
+            accepted=True, reason="published", deduplicated=False,
+        )
+
+    # ---- WatchEvents (server-streaming) -------------------------------------
+
+    def WatchEvents(self, request, context):  # type: ignore[no-untyped-def]
+        consumer = (request.consumer or "anonymous").strip() or "anonymous"
+
+        wanted: list[EventType] = []
+        if list(request.event_types):
+            for et_str in request.event_types:
+                try:
+                    wanted.append(EventType(et_str.strip()))
+                except ValueError:
+                    logger.warning(
+                        "WatchEvents: unknown event_type=%r consumer=%s — skip",
+                        et_str, consumer,
+                    )
+        else:
+            # 빈 list → 모든 EventType 구독 (디버깅 / dev 용).
+            wanted = list(EventType)
+
+        if not wanted:
+            context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+            context.set_details("no valid event_types")
+            return
+
+        q: Queue[Event] = Queue(maxsize=WATCH_QUEUE_MAXSIZE)
+        subscriber_name = f"{self.SUBSCRIBER_PREFIX}:{consumer}:{id(q)}"
+
+        def _handler(event: Event) -> None:
+            try:
+                q.put_nowait(event)
+            except Exception:  # noqa: BLE001
+                # queue full → oldest 1 건 drop 후 재시도 (slow consumer 방어).
+                try:
+                    q.get_nowait()
+                except Empty:
+                    pass
+                try:
+                    q.put_nowait(event)
+                except Exception:
+                    logger.warning(
+                        "WatchEvents: queue full drop consumer=%s event=%s",
+                        consumer, event.event_type.value,
+                    )
+
+        subscribed: list[EventType] = []
+        try:
+            for et in wanted:
+                self._bridge.subscribe(
+                    event_type=et,
+                    handler=_handler,
+                    subscriber_name=subscriber_name,
+                )
+                subscribed.append(et)
+            logger.info(
+                "WatchEvents: consumer=%s subscribed=%s",
+                consumer, [e.value for e in subscribed],
+            )
+
+            while context.is_active():
+                try:
+                    event = q.get(timeout=WATCH_POLL_INTERVAL)
+                except Empty:
+                    continue
+                yield _event_to_envelope(event)
+        finally:
+            for et in subscribed:
+                try:
+                    self._bridge.unsubscribe(et, subscriber_name)
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "WatchEvents: unsubscribe 실패 et=%s consumer=%s",
+                        et, consumer,
+                    )
+            logger.info("WatchEvents: consumer=%s closed", consumer)
+
+
+def add_to_grpc_server(server: grpc.Server, bridge: Any) -> EventGatewayServicer:
+    """편의 헬퍼 — server.py 가 한 줄로 등록 가능.
+
+    Returns:
+        등록된 servicer (테스트에서 dedup cache 직접 access 가능).
+    """
+    servicer = EventGatewayServicer(bridge)
+    eg_pb_grpc.add_EventGatewayServicer_to_server(servicer, server)
+    logger.info("EventGateway: gRPC servicer 등록 완료")
+    return servicer

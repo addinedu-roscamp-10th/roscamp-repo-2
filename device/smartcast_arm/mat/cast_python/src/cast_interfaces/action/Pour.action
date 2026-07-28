@@ -1,0 +1,9 @@
+# Goal (필드 0개)
+---
+# Result 
+bool success
+string message 
+---
+# Feedback 
+string cur_stage
+int32 progress_pct 

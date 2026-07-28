@@ -1,10 +1,954 @@
-"""Command dispatching for robot arm, conveyor, and AMR execution."""
+from __future__ import annotations
+
+import os
+import asyncio
+import logging
+import threading
+from collections import defaultdict
+from typing import Dict, List
+from services.contracts.models import *
+from services.contracts.enums import (
+    BYPASSABLE_TASK_TYPES,
+    TaskType,
+    TxnStat,
+)
+from services.contracts.protocols import IAdapter, IEventBridge, IStateManager
 
 
 class TaskExecutor:
-    """Sends execution commands to equipment adapters."""
+    _EXTERNAL_WAIT_EVENTS = {
+        EventType.HANDOFF_ACK,
+        EventType.PP_DONE_REQUESTED,
+        EventType.ITEM_LOOKUP_REQUESTED,
+        # ToINSP task 종결 신호 — 카메라 밑에서 캡처된 이미지가 backend 에 도착하고
+        # 디스크 저장까지 완료된 시점. UploadInspectionImage RPC 가 publish.
+        EventType.INSP_IMAGE_UPLOADED,
+    }
+    _EXTERNAL_WAIT_SUBTASK_TYPES = frozenset(
+        event_type.value for event_type in _EXTERNAL_WAIT_EVENTS
+    )
 
-    def execute(self) -> None:
-        """Execute an allocated task."""
-        raise NotImplementedError
+    def __init__(
+        self,
+        adapter: IAdapter,
+        state_manager: IStateManager,
+        event_bridge: IEventBridge | None = None,
+        *,
+        bypass_non_robot_hardware: bool = False,
+    ):
+        self.adapter = adapter
+        self.state_manager = state_manager
+        self.event_bridge = event_bridge
+        self._bypass_non_robot_hardware = bypass_non_robot_hardware
+        self.logger = logging.getLogger(__name__)
+        self._waiters_lock = threading.Lock()
+        self._task_waiters: dict[tuple[int, TaskType], list[asyncio.Future[str]]] = defaultdict(list)
+        self._subtask_waiters: dict[tuple[int, str], list[asyncio.Future[None]]] = defaultdict(list)
+        self._completed_tasks: dict[tuple[int, TaskType], str] = {}
+        self._completed_subtasks: dict[tuple[int, str], bool] = {}
+        # 진행 중인 execute_task 코루틴을 task_id로 저장한다
+        # 비상 시 abort_task(task_id) 가 여기서 찾아서 정지시킨다
+        self._active_executions: dict[str, asyncio.Task] = {}
 
+        if self.event_bridge is not None:
+            self.event_bridge.subscribe(
+                EventType.TASK_COMPLETED,
+                self._on_task_completed,
+                "task_executor.task_completed_waiters",
+            )
+            self.event_bridge.subscribe(
+                EventType.SUBTASK_COMPLETED,
+                self._on_subtask_completed,
+                "task_executor.subtask_completed_waiters",
+            )
+            for event_type in self._EXTERNAL_WAIT_EVENTS:
+                self.event_bridge.subscribe(
+                    event_type,
+                    self._on_external_wait_event,
+                    f"task_executor.external_waiters.{event_type.value.lower()}",
+                )
+
+        
+        self._sequence_map: Dict[TaskType, List[CommandStep]] = {
+            # === MAT (Casting Robot) ===
+            TaskType.MM: [
+                CommandStep(step_id=1, action="pattern_pick_action", params={}),
+                CommandStep(step_id=2, action="die_stamp_action", params={}),
+                CommandStep(step_id=3, action="pattern_return_action", params={}),
+                CommandStep(step_id=4, action="return_to_base_action", params={}),
+            ],
+            TaskType.POUR: [
+                CommandStep(step_id=1, action="crucible_pick_action", params={}),
+                CommandStep(step_id=2, action="metal_pour_action", params={}),
+                CommandStep(step_id=3, action="crucible_return_action", params={}),
+                CommandStep(step_id=4, action="return_to_base_action", params={}),
+            ],
+            TaskType.DM: [
+                CommandStep(step_id=1, action="casting_pick_action", params={}),
+                CommandStep(step_id=2, action="tat_load_action", params={}),
+                CommandStep(step_id=3, action="return_to_base_action", params={}),
+            ],
+            # === PAT (Logistics Robot) ===
+            # dld 후 GP 적재
+            TaskType.PA_GP: [
+                CommandStep(step_id=1, action="pat_pick_action", params={}),
+                CommandStep(step_id=2, action="pat_place_storage_action", params={}),
+            ],
+            # dld 후 DP 적재
+            TaskType.PA_DP: [
+                CommandStep(step_id=1, action="pat_pick_action", params={}),
+                CommandStep(step_id=2, action="pat_defect_drop_action", params={}),
+            ],
+            # ld 출고
+            TaskType.PICK: [
+                CommandStep(step_id=1, action="pat_retrieve_action", params={}),
+            ],
+            # ld SHIP은 현재 없음
+            TaskType.SHIP: [
+                CommandStep(step_id=1, action="pat_retrieve_action", params={}),
+            ],
+            # === TAT (AMR) ===
+            TaskType.ToPP: [
+                CommandStep(step_id=1, action="dock_robot", params={"pose_name": "ToCAST"}),  # Casting zone 상차 대기 장소
+                CommandStep(
+                    step_id=2,
+                    action="WAIT_TASK_COMPLETED",
+                    params={"task_type": TaskType.DM},
+                    timeout_sec=600,
+                ),
+                CommandStep(step_id=3, action="undock_robot", params={}),  # undock
+                CommandStep(
+                    step_id=4, action="dock_robot", params={"pose_name": "ToPP"}),    # PP Zone 하차 대기 장소
+                CommandStep(
+                    step_id=5,
+                    action="WAIT_SUBTASK_COMPLETED",
+                    params={"subtask_type": EventType.HANDOFF_ACK.value},
+                    timeout_sec=600,
+                ),
+                CommandStep(step_id=6, action="undock_robot", params={}),  # undock
+            ],
+            TaskType.ToSTRG: [
+                CommandStep(step_id=1, action="dock_robot", params={"pose_name": "ToINSP"}),   # 컨베이어 상차 대기 장소
+                CommandStep(
+                    step_id=2,
+                    action="WAIT_TASK_COMPLETED",
+                    params={"task_type": TaskType.ToPAWait},
+                    timeout_sec=600,
+                ),
+                CommandStep(step_id=3, action="undock_robot", params={}),  # undock
+                CommandStep(
+                    step_id=4, action="dock_robot", params={"pose_name": "ToSTRG"}),  # STRG zone 하차 대기 장소
+                CommandStep(
+                    step_id=5,
+                    action="WAIT_SUBTASK_COMPLETED",
+                    params={"subtask_type": "pa_dld_done"},
+                    timeout_sec=600,
+                ),
+                CommandStep(step_id=6, action="undock_robot", params={}),  # undock
+            ],
+            TaskType.ToSHIP: [
+                CommandStep(step_id=1, action="dock_robot", params={"pose_name": "ToPICK"}),  # STRG Zone 상차 대기 장소
+                CommandStep(
+                    step_id=2,
+                    action="WAIT_TASK_COMPLETED",
+                    params={"task_type": TaskType.PICK},
+                    timeout_sec=600,
+                ),
+                CommandStep(step_id=3, action="undock_robot", params={}),  # undock
+                CommandStep(step_id=4, action="dock_robot", params={"pose_name": "ToSHIP"}),   # SHIP Zone 하차 대기 장소
+                CommandStep(step_id=5, action="WAIT_TIME", params={"duration_sec": 5}),  # 5초 대기로 하차 신호
+                CommandStep(step_id=6, action="undock_robot", params={}),  # undock
+            ],
+            TaskType.ToCHG: [
+                CommandStep(step_id=1, action="dock_robot", params={}),  # 실행 전 계산 후 주입
+            ],
+            
+            # === CONV (Conveyor Belt) ===
+            # 후처리 시작 -> pyqt 후처리 UI의 버튼 클릭이 종료 조건
+            TaskType.PP: [  
+                CommandStep(
+                    step_id=1,
+                    action="WAIT_SUBTASK_COMPLETED",
+                    params={"subtask_type": EventType.PP_DONE_REQUESTED.value},
+                    timeout_sec=600,
+                ),
+            ],
+            # 컨베이어 이동 후 카메라 밑 캡처 이미지가 backend 에 도착하면 종료.
+            # UploadInspectionImage RPC 가 디스크 저장 성공 후 INSP_IMAGE_UPLOADED publish.
+            TaskType.ToINSP: [
+                CommandStep(
+                    step_id=1,
+                    action="WAIT_SUBTASK_COMPLETED",
+                    params={"subtask_type": EventType.INSP_IMAGE_UPLOADED.value},
+                    timeout_sec=600,
+                ),
+            ],
+            # INSP은 수신된 이미지로 AI에 추론 요청을 보내고 추론 결과 수신이 종료 조건
+            TaskType.INSP: [
+                CommandStep(step_id=1, action="AI_INFERENCE_REQUEST", params={}),
+            ],
+            TaskType.ToPAWait: [
+                CommandStep(step_id=1, action="NOOP", params={}),
+                CommandStep(
+                    step_id=2,
+                    action="WAIT_SUBTASK_COMPLETED",
+                    params={"subtask_type": "tostrg"},
+                    timeout_sec=600,
+                ),
+                CommandStep(step_id=3, action="CONV_ALLOW_MOVE", params={"duration_sec": 4}),
+            ],
+        }
+
+    async def execute_task(self, input_data: ExecuteTaskInput) -> ExecutionResult:
+        """
+        메인 실행 파이프라인
+        
+        1. 전처리 및 Task 진행 상태 업데이트 (QUE -> PROC)
+        2. 시퀀스 분해
+        3. 단계별 Adapter 호출 및 모니터링
+        3.1 특정 task나 subtask가 선행 조건이 되어야하는 step에 대해서는, waiter를 만들어 event가 올 때까지 대기한다.
+        4. 최종 결과 보고 (SUCC/FAIL) -> State Manager 업데이트 요청 후 종료
+
+        waiter는 특정 완료 이벤트를 기다리는 future이고, 이벤트 도착 시 set_result()로 완료시켜서 대기 중인 실행을 재개시킴
+        """
+        self.logger.info(f"[Executor] Start Task: {input_data.task_id} ({input_data.task_type.value})")
+
+        # abort_task(task_id)로 이 코루틴을 찾을 수 있도록 자기 자신을 등록한다.
+        # finally 에서 반드시 제거되도록 try 블록으로 lifecycle 을 감싼다.
+        # 예: ToSTRG task_id=42 -> {"ToSTRG:42": 현재 asyncio.Task}
+        task_id = str(input_data.task_id)
+        execution_key = (
+            task_id
+            if task_id.startswith(f"{input_data.task_type.value}:")
+            else f"{input_data.task_type.value}:{task_id}"
+        )
+        current_task = asyncio.current_task()
+        if current_task is not None:
+            self._active_executions[execution_key] = current_task
+        try:
+            # 1. 전처리: 실행 가능 여부 확인 (Mock)
+            # 실제 구현 시에는 res_stat 확인 등 수행
+            if not await self._pre_check(input_data):
+                return await self._handle_error(input_data, "PRECHECK_FAILED", 0)
+
+            # Task 시작 시 진행 상태 전이: QUE -> PROC
+            await self.state_manager.update_task_status(
+                UpdateTaskStatusInput(
+                    task_id=input_data.task_id,
+                    task_type=input_data.task_type,
+                    new_stat=TxnStat.PROC,
+                )
+            )
+            if self._should_bypass_task(input_data.task_type):
+                self.logger.info(
+                    "[Executor] Bypassing non-robot task: task=%s type=%s",
+                    input_data.task_id,
+                    input_data.task_type.value,
+                )
+                await self.state_manager.update_task_status(
+                    UpdateTaskStatusInput(
+                        task_id=input_data.task_id,
+                        task_type=input_data.task_type,
+                        new_stat=TxnStat.SUCC,
+                    )
+                )
+                return ExecutionResult(
+                    task_id=input_data.task_id,
+                    task_type=input_data.task_type,
+                    final_status=TxnStat.SUCC,
+                    steps_executed=0,
+                )
+            await asyncio.sleep(1)
+
+            # 2. 시퀀스 분해
+            try:
+                sequence = self._breakdown_sequence(input_data.task_type)
+            except ValueError as e:
+                return await self._handle_error(input_data, str(e), 0)
+
+            executed_steps = 0
+
+            # 3. 순차 실행
+            try:
+                for step in sequence:
+                    # 단계 실행
+                    step_result = await self._execute_step(input_data, step)
+                    # INSP task 의 AI_INFERENCE_REQUEST step 은 성공/실패 상관 없이 DB 영속화.
+                    # 실패도 insp_task_txn FAIL 로 기록해야 다음 cycle 진입이 가능.
+                    if (
+                        input_data.task_type == TaskType.INSP
+                        and step.action == "AI_INFERENCE_REQUEST"
+                    ):
+                        await self._persist_insp_result(input_data, step_result)
+                    if not step_result.success:
+                        raise RuntimeError(step_result.message or f"Adapter failed at step {step.step_id}")
+
+                    executed_steps += 1
+                    self.logger.info(f"[Executor] Step {step.step_id} completed")
+                    await self._handle_step_completion(input_data, step, step_result)
+
+                # Task가 성공한 경우 전이: PROC -> SUCC
+                await self.state_manager.update_task_status(
+                    UpdateTaskStatusInput(
+                        task_id=input_data.task_id,
+                        task_type=input_data.task_type,
+                        new_stat=TxnStat.SUCC,
+                    )
+                )
+                # asyncio.create_task()로 만들어진 코루틴 객체이기 때문에, return은 현재 사용되지 않음
+                return ExecutionResult(
+                    task_id=input_data.task_id,
+                    task_type=input_data.task_type,
+                    final_status=TxnStat.SUCC,
+                    steps_executed=executed_steps
+                )
+
+            except Exception as e:
+                # Task가 실패한 경우 전이: PROC -> FAIL
+                return await self._handle_error(input_data, str(e), executed_steps)
+
+        except asyncio.CancelledError:
+            # abort_task 가 호출되어 강제 종료된 경우.
+            # 코루틴이 살아남아 SUCC/FAIL 을 덮어쓰지 않도록 여기서 한 번만 FAIL 마킹한 뒤 전파한다.
+            self.logger.warning(
+                "[Executor] execute_task cancelled: task=%s",
+                input_data.task_id,
+            )
+            try:
+                await self.state_manager.update_task_status(
+                    UpdateTaskStatusInput(
+                        task_id=input_data.task_id,
+                        task_type=input_data.task_type,
+                        new_stat=TxnStat.FAIL,
+                        error_code="aborted",
+                    )
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    "[Executor] FAIL marking during cancel failed: task=%s exc=%s",
+                    input_data.task_id,
+                    exc,
+                )
+            raise
+
+        finally:
+            self._active_executions.pop(execution_key, None)
+
+    async def abort_task(self, task_id: str, reason: str = "aborted") -> None:
+        """진행 중인 execute_task 코루틴을 강제 종료한다."""
+        task = self._active_executions.get(task_id)
+        if task is None or task.done():
+            self.logger.info(
+                "[Executor] abort_task: task not active or already done: task_id=%s",
+                task_id,
+            )
+            return
+        self.logger.warning(
+            "[Executor] abort_task: cancelling task=%s reason=%s",
+            task_id,
+            reason,
+        )
+        task.cancel(msg=reason)
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            # cancel cleanup 결과는 무시
+            pass
+
+    async def handle_emergency_return(self, item_id: int, amr_id: str, arm_id: str) -> None:
+            """
+            비상 상황 시 로봇팔을 안전하게 복구하고 초기화한다.
+            먼저 bat low AMR 이 잡고 있던 task를 FAIL로 종료시키고
+            1. 현재 실행 중인 로봇팔 태스크 중단 (상태 업데이트)
+            2. 하드웨어를 통한 안전 하차 및 홈 위치 복귀
+            3. 복구 완료 이벤트 발행
+            """
+            self.logger.warning(
+                f"[Executor] Emergency Return initiated: item={item_id}, amr={amr_id}, arm={arm_id}"
+            )
+
+            # bat low AMR이 잡고 있던 task의 코루틴 강제 종료
+            aborted_task_id = self.state_manager.get_task_id_for_resource(amr_id)
+            if aborted_task_id:
+                await self.abort_task(aborted_task_id, reason="amr_battery_low_aborted")
+            # 이미 끝났으면
+            else:
+                self.logger.info(
+                    "[Executor] No in-flight task to abort for amr=%s",
+                    amr_id,
+                )
+
+            try:
+                # 1. 하드웨어 복구 시퀀스 실행 (Adapter 호출)
+                # 시나리오 5단계: 아이템을 안전한 곳에 내려놓고(Place) 홈으로 이동(Home)
+                # 실제 어댑터에 해당 액션들이 정의되어 있어야 합니다.
+
+                # 단계 A: 그리퍼 열기 혹은 안전 위치에 하차
+                success_place = await self.adapter.send_command(
+                    res_id=arm_id,
+                    action="EMERGENCY_PLACE_ITEM",
+                    params={"item_id": item_id, "speed": 30}
+                )
+
+                if not success_place:
+                    self.logger.error(f"[Executor] Failed to place item safely for {arm_id}")
+                    # 실패하더라도 다음 단계를 시도하거나 에러 처리를 강화할 수 있습니다.
+
+                # 단계 B: 홈 위치로 복귀
+                await self.adapter.send_command(
+                    res_id=arm_id,
+                    action="GO_HOME",
+                    params={"speed": 50}
+                )
+
+                # 2. 상태 관리자에게 복구 완료 알림 (선택 사항)
+                # 필요한 경우 state_manager.update_res_status 등을 통해 리소스 상태를 idle로 변경
+
+                # 3. ARM_RETURN_COMPLETED 이벤트 발행 (오케스트레이터가 대기 중인 신호)
+                if self.event_bridge is not None:
+                    self.event_bridge.publish(
+                        Event(
+                            event_type=EventType.ARM_RETURN_COMPLETED,
+                            item_id=item_id,
+                            res_id=amr_id, # 방전된 amr_id를 전달하여 오케가 식별하게 함
+                            payload={
+                                "arm_id": arm_id,
+                                "status": "COMPLETED",
+                                "msg": "Emergency return sequence finished safely"
+                            }
+                        )
+                    )
+                    self.logger.info(f"[Executor] ARM_RETURN_COMPLETED event published for item {item_id}")
+
+            except Exception as e:
+                self.logger.error(f"[Executor] Error during handle_emergency_return: {str(e)}")
+                # 치명적 오류 발생 시 별도의 알람 로직 필요
+
+    async def _pre_check(self, input_data: ExecuteTaskInput) -> bool:
+        """실행 전 조건 확인 (Mock)"""
+        # TODO: 실제 구현 시 res_id 의 상태 (IDLE 등) 체크
+        return True
+
+    def _breakdown_sequence(self, task_type: TaskType) -> List[CommandStep]:
+        """Task Type 기준으로 시퀀스를 분해한다."""
+        seq = self._sequence_map.get(task_type)
+        if not seq:
+            raise ValueError(f"No sequence defined for task_type: {task_type.value}")
+        return seq.copy()
+
+    async def _execute_step(self, input_data: ExecuteTaskInput, step: CommandStep) -> AdapterResult:
+        """
+        단일 단계 실행 및 Adapter를 호출한다.
+        
+        특정 선행 단계(task, subtask)를 기다려야할 경우 waiter를 만들고 완료 event를 기다린다.
+        """
+        if step.action == "WAIT_TASK_COMPLETED":
+            target_task_type = self._get_valid_wait_task_type(step)
+            if self._should_bypass_task(target_task_type):
+                self.logger.info(
+                    "[Executor] Bypassing upstream non-robot task wait: task=%s target=%s",
+                    input_data.task_id,
+                    target_task_type.value,
+                )
+                return AdapterResult(success=True, message="wait_task_completed")
+            await self._wait_for_task_completed(input_data, step)
+            return AdapterResult(success=True, message="wait_task_completed")
+        if step.action == "WAIT_SUBTASK_COMPLETED":
+            subtask_type = self._get_valid_wait_subtask_type(step)
+            if self._should_bypass_external_wait(subtask_type):
+                self.logger.info(
+                    "[Executor] Bypassing external wait: task=%s subtask_type=%s",
+                    input_data.task_id,
+                    subtask_type,
+                )
+                return AdapterResult(success=True, message="wait_subtask_completed")
+            await self._wait_for_subtask_completed(input_data, step)
+            return AdapterResult(success=True, message="wait_subtask_completed")
+        if step.action == "WAIT_TIME":  # 출고 대기용 시간
+            await asyncio.sleep(step.params.get("duration_sec", 0))
+            return AdapterResult(success=True, message="wait_time")
+        if step.action == "NOOP": # 테스트용 fake action
+            return AdapterResult(success=True, message="noop")
+        params = {**step.params, **input_data.payload}
+
+        if step.action == "dock_robot":
+            if "pose_name" not in params:
+                charger_slot = await self.state_manager.get_empty_charger(input_data.res_id)
+                pose_name = self._resolve_charger_pose(charger_slot)
+                if pose_name is None:
+                    return AdapterResult(success=False, message="no_available_charger")
+                params["pose_name"] = pose_name
+
+            pose_name = params.get("pose_name")
+            if pose_name == "ToCHG1":
+                params["aruco_num"] = 0
+            elif pose_name == "ToCHG2":
+                params["aruco_num"] = 1
+            elif pose_name == "ToCHG3":
+                params["aruco_num"] = 2
+
+        return await self.adapter.send_command(
+            res_id=input_data.res_id,
+            action=step.action,
+            params=params,
+        )
+
+    async def _record_adapter_result(
+        self,
+        input_data: ExecuteTaskInput,
+        step: CommandStep,
+        step_result: AdapterResult,
+    ) -> None:
+        """Persist adapter step results when the StateManager supports it."""
+        if step.action in {
+            "WAIT_TASK_COMPLETED",
+            "WAIT_SUBTASK_COMPLETED",
+            "WAIT_TIME",
+            "NOOP",
+        }:
+            return
+
+        recorder = getattr(self.state_manager, "record_adapter_result", None)
+        if recorder is None:
+            return
+
+        item_id = int(input_data.item_id) if input_data.item_id is not None else None
+        try:
+            await recorder(
+                AdapterStepResultInput(
+                    task_id=input_data.task_id,
+                    item_id=item_id,
+                    res_id=input_data.res_id,
+                    task_type=input_data.task_type,
+                    step_id=step.step_id,
+                    action=step.action,
+                    success=step_result.success,
+                    message=step_result.message,
+                    payload=step_result.payload,
+                    command_params={**step.params, **input_data.payload},
+                )
+            )
+        except Exception:
+            self.logger.exception(
+                "[Executor] Failed to record adapter result: task=%s step=%s action=%s",
+                input_data.task_id,
+                step.step_id,
+                step.action,
+            )
+
+    def _resolve_charger_pose(self, charger_slot: tuple[int, int] | None) -> str | None:
+        """chg_loc을 AMR의 dock pose 이름으로 매핑. master(chg_location_stat ×
+        tat_nav_pose_master) 기반으로 state_manager가 제공."""
+        if charger_slot is None:
+            return None
+        pose_map = getattr(self.state_manager, "charger_pose_map", None) or {}
+        return pose_map.get(charger_slot)
+
+    def _should_bypass_task(self, task_type: TaskType) -> bool:
+        return self._bypass_non_robot_hardware and task_type in BYPASSABLE_TASK_TYPES
+
+    def _should_bypass_external_wait(self, subtask_type: str) -> bool:
+        if not self._bypass_non_robot_hardware:
+            return False
+        return subtask_type in self._EXTERNAL_WAIT_SUBTASK_TYPES
+
+    def _get_valid_wait_task_type(self, step: CommandStep) -> TaskType:
+        target_task_type = step.params.get("task_type")
+        if isinstance(target_task_type, str):
+            try:
+                target_task_type = TaskType(target_task_type)
+            except ValueError as exc:
+                raise RuntimeError("WAIT_TASK_COMPLETED requires params.task_type") from exc
+        if not isinstance(target_task_type, TaskType):
+            raise RuntimeError("WAIT_TASK_COMPLETED requires params.task_type")
+        return target_task_type
+
+    def _get_valid_wait_subtask_type(self, step: CommandStep) -> str:
+        subtask_type = step.params.get("subtask_type")
+        if not isinstance(subtask_type, str) or not subtask_type.strip():
+            raise RuntimeError("WAIT_SUBTASK_COMPLETED requires params.subtask_type")
+        return subtask_type.strip()
+
+    async def return_amr_to_charger(self, res_id: str, source: str | None = None) -> bool:
+        """대기 중인 AMR을 남는 충전소로 복귀시킨다."""
+        charger_slot = await self.state_manager.get_empty_charger(res_id)
+        pose_name = self._resolve_charger_pose(charger_slot)
+        if pose_name is None:
+            self.logger.info(
+                "[Executor] Charger return skipped: no available charger for res_id=%s source=%s",
+                res_id,
+                source,
+            )
+            return False
+
+        # 충전소 이동 시 TO_IDLE 상태로 변경
+        await self.state_manager.update_amr_charger_return_state(
+            res_id,
+            "TO_IDLE",
+            source=source,
+        )
+        params = {"pose_name": pose_name}
+        if pose_name == "ToCHG1":
+            params["aruco_num"] = 0
+        elif pose_name == "ToCHG2":
+            params["aruco_num"] = 1
+        elif pose_name == "ToCHG3":
+            params["aruco_num"] = 2
+
+        result = await self.adapter.send_command(
+            res_id=res_id,
+            action="dock_robot",
+            params=params,
+        )
+        if result.success:
+            self.logger.info(
+                "[Executor] Charger return dispatched: res_id=%s pose_name=%s source=%s",
+                res_id,
+                pose_name,
+                source,
+            )
+        else:
+            self.logger.warning(
+                "[Executor] Charger return failed: res_id=%s pose_name=%s source=%s message=%s",
+                res_id,
+                pose_name,
+                source,
+                result.message,
+            )
+
+        # 복귀 중 새로운 task 할당 시 task_id 덮어쓰기 방지
+        current_task_id = self.state_manager.get_task_id_for_resource(res_id)
+        if current_task_id is not None:
+            self.logger.info(
+                "[Executor] Charger return skipped: res_id=%s "
+                "new_task_id=%s source=%s",
+                res_id,
+                current_task_id,
+                source,
+            )
+            return result.success
+
+        # 충전소 도착 후 IDLE, 실패 시 FAIL로 변경
+        final_status = "IDLE" if result.success else "FAIL"
+        await self.state_manager.update_amr_charger_return_state(
+            res_id,
+            final_status,
+            source=source,
+        )
+        return result.success
+
+    async def _wait_for_task_completed(self, input_data: ExecuteTaskInput, step: CommandStep) -> bool:
+        """특정 task 완료를 기다리기 위해 waiter를 등록하고 대기한다."""
+        item_id = input_data.item_id
+        if item_id is not None:
+            item_id = int(item_id)
+        if item_id is None:
+            raise RuntimeError("WAIT_TASK_COMPLETED requires item_id")
+
+        target_task_type = self._get_valid_wait_task_type(step)
+
+        key = (item_id, target_task_type)
+        loop = asyncio.get_running_loop()  # 현재 스레드에서 돌고 있는 event loop를 받아옴
+        future: asyncio.Future[str] = loop.create_future()  # future 객체 생성
+
+        with self._waiters_lock:
+            completed_status = self._completed_tasks.pop(key, None)
+            if completed_status is None:
+                self._task_waiters[key].append(future)  # item id와 task type으로 waiter 저장
+
+        if completed_status is not None:
+            self.logger.info(
+                "[Executor] Task already observed: task=%s item=%s target=%s status=%s",
+                input_data.task_id,
+                item_id,
+                key[1],
+                completed_status,
+            )
+            if completed_status != TxnStat.SUCC.value:
+                raise RuntimeError(
+                    f"Upstream task finished with status={completed_status}: "
+                    f"item_id={item_id} task_type={key[1]}"
+                )
+            return True
+
+        self.logger.info(
+            "[Executor] Waiting for task completion: task=%s item=%s target=%s timeout=%ss",
+            input_data.task_id,
+            item_id,
+            key[1],
+            step.timeout_sec,
+        )
+
+        try:
+            status = await asyncio.wait_for(future, timeout=step.timeout_sec)  # waiter의 future를 대기시킴. task, subtask completed에서 resolve(done)시킴
+            self.logger.info(
+                "[Executor] Wait released: task=%s item=%s target=%s status=%s",
+                input_data.task_id,
+                item_id,
+                key[1],
+                status,
+            )
+            if status != TxnStat.SUCC.value:
+                raise RuntimeError(
+                    f"Upstream task finished with status={status}: item_id={item_id} task_type={key[1]}"
+                )
+            return True
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError(
+                f"Timed out waiting for task completion: item_id={item_id} task_type={key[1]}"
+            ) from exc
+        finally:
+            self._remove_waiter(key, future)
+
+    async def _wait_for_subtask_completed(self, input_data: ExecuteTaskInput, step: CommandStep) -> bool:
+        """특정 subtask 완료를 기다리기 위해 waiter를 등록하고 대기한다."""
+        item_id = int(input_data.item_id) if input_data.item_id is not None else None
+        if item_id is None:
+            raise RuntimeError("WAIT_SUBTASK_COMPLETED requires item_id")
+
+        subtask_type = self._get_valid_wait_subtask_type(step)
+        key = (item_id, subtask_type)
+
+        if os.environ.get("MOCK_ADAPTERS") == "1":
+            self.logger.info("[MOCK] Bypassing WAIT_SUBTASK_COMPLETED for %s", key)
+            await asyncio.sleep(0.5)
+            return True
+
+        # task 생성 전에 먼저 온 이벤트를 보고 성공처리
+        if key in self._completed_subtasks:
+            self.logger.info(
+                "[Executor] Subtask already observed: task=%s item=%s subtask_type=%s",
+                input_data.task_id,
+                item_id,
+                key[1],
+            )
+            self._completed_subtasks.pop(key, None)
+            return True
+
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[None] = loop.create_future()
+        with self._waiters_lock:
+            self._subtask_waiters[key].append(future)
+
+        self.logger.info(
+            "[Executor] Waiting for subtask completion: task=%s item=%s subtask_type=%s timeout=%ss",
+            input_data.task_id,
+            item_id,
+            key[1],
+            step.timeout_sec,
+        )
+        try:
+            await asyncio.wait_for(future, timeout=step.timeout_sec)
+            self.logger.info(
+                "[Executor] Subtask wait released: task=%s item=%s subtask_type=%s",
+                input_data.task_id,
+                item_id,
+                key[1],
+            )
+            self._completed_subtasks.pop(key, None)
+            return True
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError(
+                f"Timed out waiting for subtask completion: item_id={item_id} subtask_type={key[1]}"
+            ) from exc
+        finally:
+            self._remove_subtask_waiter(key, future)
+
+    async def _handle_step_completion(
+        self,
+        input_data: ExecuteTaskInput,
+        step: CommandStep,
+        step_result: AdapterResult,
+    ) -> None:
+        """특정 subtask 완료 시 StateManager에게 알린다."""
+        subtask_type = None
+        pose_name = step.params.get("pose_name")
+        if input_data.task_type == TaskType.POUR and step.action == "metal_pour_action":
+            subtask_type = "pour"
+        elif input_data.task_type == TaskType.ToPP and step.action == "dock_robot" and pose_name == "ToCAST":
+            subtask_type = "topp"
+        elif input_data.task_type == TaskType.ToSTRG and step.action == "dock_robot" and pose_name == "ToINSP":
+            subtask_type = "tostrg"
+        elif input_data.task_type == TaskType.ToSTRG and step.action == "dock_robot" and pose_name == "ToSTRG":
+            subtask_type = "tostrg_dld"
+        elif input_data.task_type == TaskType.ToSHIP and step.action == "dock_robot" and pose_name == "ToPICK":
+            subtask_type = "toship_src_arrived"
+        elif input_data.task_type == TaskType.PA_GP and step.action == "pat_pick_action":
+            subtask_type = "pa_dld_done"
+        elif input_data.task_type == TaskType.PA_DP and step.action == "pat_pick_action":
+            subtask_type = "pa_dld_done"
+        if subtask_type is None:
+            return
+
+        item_id = int(input_data.item_id) if input_data.item_id is not None else None
+        await self.state_manager.publish_subtask_completed(
+            task_id=input_data.task_id,
+            item_id=item_id,
+            subtask_type=subtask_type,
+            task_type=input_data.task_type,
+        )
+
+    async def _persist_insp_result(
+        self,
+        input_data: ExecuteTaskInput,
+        step_result: AdapterResult,
+    ) -> None:
+        """INSP task 의 AI_INFERENCE_REQUEST step 결과를 state_manager 에 위임.
+
+        AIAdapter 는 DB 를 건드리지 않고 추론 결과만 반환한다 (P2.4 분리).
+        본 메서드가 step_result.payload["inference"] 를 꺼내 state_manager 로
+        넘기고, state_manager 가 InspectionResultCommand 를 통해 4-table 갱신.
+        실패 path 도 동일 메서드로 호출되어 insp_task_txn 을 FAIL 로 기록.
+        """
+        item_id = int(input_data.item_id) if input_data.item_id is not None else None
+        if item_id is None:
+            self.logger.warning("[Executor] INSP persist: item_id 없음 — skip")
+            return
+
+        payload = step_result.payload or {}
+        inference = payload.get("inference")
+        if inference is None and not step_result.success:
+            # AIAdapter 가 payload validation 단계에서 실패 — inference 자체가 없음.
+            inference = {
+                "ok": False,
+                "error_reason": step_result.message or "ai_step_failed",
+            }
+        recorder = getattr(self.state_manager, "record_inspection_result", None)
+        if recorder is None:
+            self.logger.warning(
+                "[Executor] state_manager 가 record_inspection_result 미지원 "
+                "item_id=%s — DB 갱신 skip",
+                item_id,
+            )
+            return
+        try:
+            ok = await recorder(item_id=item_id, inference=inference)
+            self.logger.info(
+                "[Executor] INSP persist item_id=%s ok=%s step_success=%s",
+                item_id, ok, step_result.success,
+            )
+        except Exception as exc:  # noqa: BLE001 — DB 영속화 실패가 step 흐름을 막지 않게 격리
+            self.logger.warning(
+                "[Executor] state_manager.record_inspection_result 예외 item_id=%s exc=%s",
+                item_id, exc,
+            )
+
+    async def _handle_error(self, input_data: ExecuteTaskInput, error_msg: str, steps: int) -> ExecutionResult:
+        """에러 처리 및 상태 업데이트"""
+        self.logger.error(f"[Executor] Task {input_data.task_id} failed: {error_msg}")
+        await self.state_manager.update_task_status(
+            UpdateTaskStatusInput(
+                task_id=input_data.task_id,
+                task_type=input_data.task_type,
+                new_stat=TxnStat.FAIL,
+                error_code=error_msg,
+            )
+        )
+        return ExecutionResult(
+            task_id=input_data.task_id,
+            task_type=input_data.task_type,
+            final_status=TxnStat.FAIL,
+            steps_executed=steps,
+            error_code=error_msg
+        )
+
+    def _on_task_completed(self, event: Event) -> None:
+        """
+        특정 task가 끝나야 실행되는 subtask를 깨우는 handler.
+
+        TASK_COMPLETED 종료 이벤트를 받으면 그 task를 기다리던 waiter 목록을 key로 찾고
+        그 waiter들을 깨워서 WAIT_TASK_COMPLETED 다음 step으로 넘어가게 한다.
+        """
+        item_id = event.item_id
+        payload_task_type = event.payload["task_type"]
+        payload_status = event.payload["status"]
+        if item_id is None or not isinstance(payload_task_type, TaskType):
+            return
+
+        key = (item_id, payload_task_type)
+        with self._waiters_lock:
+            futures = [
+                future
+                for future in self._task_waiters.pop(key, [])
+                if not future.done()
+            ]
+            if not futures:
+                self._completed_tasks[key] = payload_status
+                if len(self._completed_tasks) > 1000:
+                    oldest_key = next(iter(self._completed_tasks))
+                    self._completed_tasks.pop(oldest_key, None)
+
+        for future in futures:
+            future.get_loop().call_soon_threadsafe(self._resolve_task_waiter, future, payload_status)
+
+    def _on_subtask_completed(self, event: Event) -> None:
+        """
+        특정 subtask가 끝나야 실행되는 subtask를 깨우는 handler.
+        
+        SUBTASK_COMPLETED 이벤트를 받으면 그 task를 기다리던 waiter 목록을 key로 찾고
+        그 waiter들을 깨워서 WAIT_TASK_COMPLETED 다음 step으로 넘어가게 한다.
+        """
+        item_id = event.item_id
+        payload_subtask_type = event.payload.get("subtask_type")
+        if item_id is None or payload_subtask_type is None:
+            return
+
+        key = (item_id, str(payload_subtask_type))
+        self._record_completed_subtask(key)
+        with self._waiters_lock:
+            futures = self._subtask_waiters.pop(key, [])
+
+        for future in futures:
+            if future.done():
+                continue
+            future.get_loop().call_soon_threadsafe(self._resolve_subtask_waiter, future)
+
+    def _on_external_wait_event(self, event: Event) -> None:
+        """외부 이벤트를 WAIT_SUBTASK_COMPLETED waiter와 같은 방식으로 처리한다."""
+        if event.item_id is None:
+            return
+        key = (event.item_id, event.event_type.value)
+        self._record_completed_subtask(key)
+        with self._waiters_lock:
+            futures = self._subtask_waiters.pop(key, [])
+
+        for future in futures:
+            if future.done():
+                continue
+            future.get_loop().call_soon_threadsafe(self._resolve_subtask_waiter, future)
+
+    def _record_completed_subtask(self, key: tuple[int, str]) -> None:
+        self._completed_subtasks[key] = True
+        if len(self._completed_subtasks) > 1000:
+            oldest_key = next(iter(self._completed_subtasks))
+            self._completed_subtasks.pop(oldest_key, None)
+
+    def _resolve_task_waiter(self, future: asyncio.Future[str], status: str) -> None:
+        """task waiter의 future를 완료시키고 upstream task status를 전달한다."""
+        if not future.done():
+            future.set_result(status)
+
+    def _resolve_subtask_waiter(self, future: asyncio.Future[None]) -> None:
+        """subtask waiter의 future를 완료시키고 upstream task status를 전달한다."""
+        if not future.done():
+            future.set_result(None)
+
+    def _remove_waiter(self, key: tuple[int, TaskType], future: asyncio.Future[str]) -> None:
+        """task가 끝나는 걸 기다리던 waiter를 제거."""
+        with self._waiters_lock:
+            futures = self._task_waiters.get(key)
+            if not futures:
+                return
+            self._task_waiters[key] = [registered for registered in futures if registered is not future]
+            if not self._task_waiters[key]:
+                self._task_waiters.pop(key, None)
+
+    def _remove_subtask_waiter(self, key: tuple[int, str], future: asyncio.Future[None]) -> None:
+        """subtask가 끝나는 걸 기다리던 waiter를 제거."""
+        with self._waiters_lock:
+            futures = self._subtask_waiters.get(key)
+            if not futures:
+                return
+            self._subtask_waiters[key] = [registered for registered in futures if registered is not future]
+            if not self._subtask_waiters[key]:
+                self._subtask_waiters.pop(key, None)

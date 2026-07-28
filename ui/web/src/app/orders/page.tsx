@@ -11,6 +11,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   fetchOrderDetails,
   fetchOrders,
+  startShipping,
   updateOrderStatus,
 } from "@/lib/api";
 import type { Order, OrderDetail, OrderStatus } from "@/lib/types";
@@ -45,6 +46,25 @@ export default function OrdersPage() {
 
   useEffect(() => { loadOrders(); }, [loadOrders]);
 
+  const hasShippingOrder = orders.some((order) => order.status === "shipping_ready");
+  useEffect(() => {
+    if (!hasShippingOrder) return;
+
+    const intervalId = window.setInterval(async () => {
+      try {
+        const data = await fetchOrders();
+        setOrders(data);
+        setSelectedOrder((current) => {
+          if (!current) return current;
+          return data.find((order) => order.id === current.id) ?? current;
+        });
+      } catch {
+      }
+    }, 2000);
+
+    return () => window.clearInterval(intervalId);
+  }, [hasShippingOrder]);
+
   // 주문 선택 시 상세 로드
   const handleSelectOrder = useCallback(async (order: Order) => {
     setSelectedOrder(order);
@@ -68,6 +88,29 @@ export default function OrdersPage() {
       setSelectedOrder(updated);
     } catch (err) {
       alert(err instanceof Error ? err.message : "상태 변경 실패");
+    } finally {
+      setActionLoading(false);
+    }
+  }, []);
+
+  // 출하 시작 — production_completed (ord_stat=DONE, 적재 완료) 상태에서 호출.
+  // orchestrator.start_shipping → TAT 가 적재장→출하장 운반, 완료 시 orchestrator 가 SHIP→COMP 자체 전이.
+  const handleStartShipping = useCallback(async (orderId: string) => {
+    try {
+      setActionLoading(true);
+      const result = await startShipping(orderId);
+      const summary = result.itemIds.length
+        ? `출하 시작: ${result.itemIds.length}개 item TAT 운반 task 가 스케줄링되었습니다.`
+        : (result.message || "출하 가능한 item 이 없습니다. PyQt 적재 상태를 확인하세요.");
+      const data = await fetchOrders();
+      setOrders(data);
+      setSelectedOrder((current) => {
+        if (!current) return current;
+        return data.find((order) => order.id === current.id) ?? current;
+      });
+      alert(summary);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "출하 시작 실패");
     } finally {
       setActionLoading(false);
     }
@@ -219,6 +262,7 @@ export default function OrdersPage() {
                 order={selectedOrder}
                 details={selectedDetails}
                 onStatusChange={handleStatusChange}
+                onStartShipping={handleStartShipping}
                 actionLoading={actionLoading}
               />
             )

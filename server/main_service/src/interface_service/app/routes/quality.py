@@ -2,6 +2,7 @@
 
 엔드포인트:
   GET  /api/quality/inspections           insp_task_txn 목록 (필터: ord_id, item_id)
+  GET  /api/quality/inspections/{inference_id}/image  Management gRPC 이미지 프록시
   GET  /api/quality/summary               핑크 GUI #6: 발주별 GP/DP/미검사 요약
   GET  /api/quality/summary/{ord_id}      특정 발주 요약
   POST /api/quality/inspections/{txn}/result  검사 결과 업데이트 (AI service 콜백)
@@ -9,14 +10,34 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
+from app.clients.management import (
+    InspectionImageNotFound,
+    ManagementClient,
+    ManagementUnavailable,
+    get_management_client,
+)
+
+# PyQt vision_feed 가 timezone-naive 시각을 그대로 HH:MM:SS 로 표시하므로
+# DB 의 naive UTC datetime 을 KST(UTC+9) 로 변환해 반환한다.
+_KST = timezone(timedelta(hours=9))
+
+
+def _to_kst(dt: datetime | None) -> datetime | None:
+    """naive UTC datetime → KST naive datetime (PyQt 표시용)."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(_KST).replace(tzinfo=None)
+
 from smart_cast_db.database import get_db
-from smart_cast_db.models import InspStat, InspTaskTxn, ItemStat, Ord
+from smart_cast_db.models import AiInferenceTxn, InspStat, InspTaskTxn, ItemStat, Ord
 from app.schemas.schemas import InspectionSummary, InspTaskTxnOut
 
 router = APIRouter(prefix="/api/quality", tags=["quality"])
@@ -28,33 +49,75 @@ def list_inspections(
     item_id: int | None = None,
     db: Session = Depends(get_db),
 ) -> list[InspTaskTxnOut]:
-    q = db.query(InspTaskTxn, InspStat).outerjoin(InspStat, InspStat.insp_txn_id == InspTaskTxn.txn_id)
+    # ai_inference_txn outerjoin — 옵션 B 의 segmented/result_image_url 노출 (2026-05-18).
+    # PatchCore 흐름은 insp_stat.patchcore_inference_id 로, YOLO 흐름은 yolo_inference_id 로
+    # 연결되므로 coalesce 로 한 컬럼만 처리. PR #36 도 isnt-patchcore 분기 갱신 정합.
+    q = (
+        db.query(InspTaskTxn, InspStat, AiInferenceTxn)
+        .outerjoin(InspStat, InspStat.insp_txn_id == InspTaskTxn.txn_id)
+        .outerjoin(
+            AiInferenceTxn,
+            AiInferenceTxn.inference_id == func.coalesce(
+                InspStat.patchcore_inference_id,
+                InspStat.yolo_inference_id,
+            ),
+        )
+    )
     if item_id is not None:
         q = q.filter(InspTaskTxn.item_stat_id == item_id)
     if ord_id is not None:
         q = q.join(ItemStat, ItemStat.item_stat_id == InspTaskTxn.item_stat_id).filter(ItemStat.ord_id == ord_id)
     out: list[InspTaskTxnOut] = []
-    for txn, stat in q.order_by(desc(InspTaskTxn.req_at)).limit(200).all():
+    for txn, stat, inference in q.order_by(desc(InspTaskTxn.req_at)).limit(200).all():
+        # PyQt vision_feed 가 "OK"/"NG" 문자열로 PASS/FAIL 배지 매칭하므로 문자열로 반환.
         result = None
         if stat and stat.final_result == "GP":
-            result = True
+            result = "OK"
         elif stat and stat.final_result == "DP":
-            result = False
+            result = "NG"
         out.append(
             InspTaskTxnOut.model_validate(
                 {
                     "txn_id": txn.txn_id,
                     "item_id": txn.item_stat_id,
-                    "res_id": txn.res_id,
+                    "res_id": None,  # insp_task_txn 에 res_id 컬럼 없음 — dev baseline 임시 fix
                     "txn_stat": txn.txn_stat,
                     "result": result,
                     "req_at": txn.req_at,
                     "start_at": txn.start_at,
                     "end_at": txn.end_at,
+                    # PyQt vision_feed 의 timestamp 표시용 — 검사 종료 시각 (KST 변환).
+                    "inspected_at": _to_kst(txn.end_at or txn.start_at or txn.req_at),
+                    "inference_id": inference.inference_id if inference else None,
+                    "segmented_image_url": inference.segmented_image_url if inference else None,
+                    "result_image_url": inference.result_image_url if inference else None,
                 }
             )
         )
     return out
+
+
+@router.get("/inspections/{inference_id}/image")
+def get_inspection_image(
+    inference_id: int,
+    kind: str = Query("result", pattern="^(result|segmented)$"),
+    client: ManagementClient = Depends(get_management_client),
+) -> Response:
+    """Management gRPC에서 검사 이미지를 읽어 HTTP bytes로 반환."""
+    try:
+        image = client.get_inspection_image(inference_id, kind=kind)
+    except InspectionImageNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ManagementUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Management Service unavailable: {exc}",
+        ) from exc
+
+    return Response(
+        content=image["image_bytes"],
+        media_type=str(image["content_type"]),
+    )
 
 
 @router.get("/summary", response_model=list[InspectionSummary])
@@ -207,11 +270,12 @@ def update_inspection_result(
         {
             "txn_id": txn.txn_id,
             "item_id": txn.item_stat_id,
-            "res_id": txn.res_id,
+            "res_id": None,  # insp_task_txn 에 res_id 컬럼 없음
             "txn_stat": txn.txn_stat,
-            "result": result,
+            "result": "OK" if result else "NG",
             "req_at": txn.req_at,
             "start_at": txn.start_at,
             "end_at": txn.end_at,
+            "inspected_at": txn.end_at or txn.start_at or txn.req_at,
         }
     )

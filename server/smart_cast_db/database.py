@@ -20,7 +20,6 @@ SERVER_DIR = os.path.dirname(BASE_DIR)
 def _load_env_local() -> None:
     """Load `.env.local` from known service roots without overriding existing env."""
     candidates = [
-        Path(SERVER_DIR) / "main_service" / "src" / "main_service" / ".env.local",
         Path(SERVER_DIR) / "main_service" / ".env.local",
     ]
     for env_path in candidates:
@@ -71,6 +70,32 @@ def _build_engine(url: str) -> Engine:
 engine: Engine = _build_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
+
+# 비동기 엔진 및 세션 팩토리 추가 정의 (gRPC 및 Orchestrator 비동기화 지원)
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+
+async_db_url = DATABASE_URL
+if DATABASE_URL and "://" in DATABASE_URL:
+    _, remain = DATABASE_URL.split("://", 1)
+    async_db_url = f"postgresql+psycopg://{remain}"
+
+async_engine = create_async_engine(
+    async_db_url,
+    connect_args={"options": "-c timezone=Asia/Seoul"},
+    pool_size=5,
+    max_overflow=10,
+    pool_pre_ping=True,
+    pool_recycle=1800,
+    echo=False,
+)
+AsyncSessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=async_engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+)
 
 
 def get_db() -> Generator[Session, None, None]:

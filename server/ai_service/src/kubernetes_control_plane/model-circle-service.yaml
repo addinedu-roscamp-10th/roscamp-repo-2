@@ -1,0 +1,12 @@
+# model-circle-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: model-circle-service
+spec:
+  type: ClusterIP
+  selector:
+    app: model-circle    # role 구분 없음, 단일 Pod
+  ports:
+  - port: 8080
+    targetPort: 8080

@@ -44,8 +44,16 @@ class ProductionRpcMixin:
             context.set_details("Either ord_id or order_ids must be provided")
             return management_pb2.StartProductionResponse()
 
+        orchestrator_thread = getattr(self, "orchestrator_thread", None)
+        if orchestrator_thread is None:
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details("Orchestrator thread is not configured.")
+            return management_pb2.StartProductionResponse()
+
         try:
-            ack_model = self.orchestrator.start_production(target_ids)
+            ack_model = orchestrator_thread.run_coro(
+                self.orchestrator.start_production(target_ids)
+            )
         except Exception as e:
             context.set_code(grpc.StatusCode.INTERNAL)
             context.set_details(str(e))
@@ -74,6 +82,55 @@ class ProductionRpcMixin:
 
         # We omit legacy work_orders and result fields. PyQt will use ack fallback.
         return management_pb2.StartProductionResponse(ack=pb_ack)
+
+    def StartShipping(self, request, context):
+        """출하 트리거 — orchestrator.start_shipping(ord_id) 위임.
+
+        호출 경로: 웹 /orders 화면 "출하 시작" 버튼 → FastAPI POST /api/production/shipping/start
+                  → ManagementClient.start_shipping → 본 RPC.
+        효과: 적재장 (Storage) 의 주문 item 들에 대해 TAT 출하 task (TASK_TYPE=PICK 등) 를
+              생성/할당/실행. 자원 미가용 시 pending queue 에 적재되며 후속 RESOURCE_AVAILABLE
+              이벤트로 재개된다. ord_stat 전이는 task 완료 이벤트 흐름이 담당하므로 본 RPC 는
+              상태를 직접 바꾸지 않는다.
+        """
+        ord_id = int(getattr(request, "ord_id", 0) or 0)
+        if ord_id <= 0:
+            context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+            context.set_details("ord_id must be a positive integer")
+            return management_pb2.StartShippingResponse()
+
+        orchestrator_thread = getattr(self, "orchestrator_thread", None)
+        if orchestrator_thread is None:
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details("Orchestrator thread is not configured.")
+            return management_pb2.StartShippingResponse()
+
+        try:
+            item_ids = orchestrator_thread.run_coro(
+                self.orchestrator.start_shipping(ord_id)
+            )
+        except Exception as exc:  # noqa: BLE001
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details(str(exc))
+            return management_pb2.StartShippingResponse()
+
+        item_ids = [int(x) for x in (item_ids or [])]
+        accepted = True
+        if item_ids:
+            message = f"Shipping task scheduled: {len(item_ids)} item(s)."
+        else:
+            # 빈 결과 = 적재 위치가 없어 ship task 가 생성되지 않은 경우.
+            # 운영 측면에서는 reject 이 아니라 noop 으로 분류해 UI 가 토스트만 띄우면 된다.
+            message = (
+                "No items eligible for shipping. Verify storage allocation and "
+                "production completion in PyQt before retrying."
+            )
+        return management_pb2.StartShippingResponse(
+            ord_id=ord_id,
+            item_ids=item_ids,
+            accepted=accepted,
+            message=message,
+        )
 
     def ListItems(self, request, context):
         stage_filter = (

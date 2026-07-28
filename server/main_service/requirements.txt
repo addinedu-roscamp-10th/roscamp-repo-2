@@ -4,12 +4,13 @@ sqlalchemy==2.0.35
 pydantic==2.9.0
 python-multipart==0.0.9
 websockets==13.0
+numpy>=1.26,<2.0
+httpx>=0.27,<1.0
 
 # PostgreSQL (Phase 1+)
 # 운영 DB: PostgreSQL 16 + TimescaleDB extension
 # pip install 후 DATABASE_URL 환경변수를 postgresql+psycopg://... 로 설정
 psycopg[binary]==3.2.3
-asyncpg==0.29.0
 alembic==1.13.3
 
 # MQTT bridge (Phase 1+)

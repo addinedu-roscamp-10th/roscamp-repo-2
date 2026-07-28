@@ -12,22 +12,26 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QColor
+import grpc
+from PyQt5.QtCore import QSize, Qt
+from PyQt5.QtGui import QColor, QIcon, QPixmap
 from PyQt5.QtWidgets import (
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
-from app.api_client import ApiClient
+from app import mock_data
+from app.management_client import ManagementClient
 from app.pages.dashboard import KpiCard
 from app.widgets.charts import (
     DefectRateChart,
@@ -35,15 +39,16 @@ from app.widgets.charts import (
     ProductionVsDefectsChart,
 )
 from app.widgets.defect_panels import InspectionStandardsPanel, TopDefectsPanel
-from app.widgets.sorter_dial import SorterCard
+# 2026-05-14: SorterCard 제거 — VisionFeedCard (web VisionCameraFeed 와 동등) 로 교체.
+from app.widgets.vision_feed import VisionFeedCard
 
 logger = logging.getLogger(__name__)
 
 
 class QualityPage(QWidget):
-    def __init__(self, api: ApiClient) -> None:
+    def __init__(self, mgmt: ManagementClient) -> None:
         super().__init__()
-        self._api = api
+        self._mgmt = mgmt
         self._kpis: dict[str, KpiCard] = {}
         self._build_ui()
         self.refresh()
@@ -53,7 +58,17 @@ class QualityPage(QWidget):
         return None
 
     def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
+        # 2026-05-14: 페이지 외곽 스크롤 (Dashboard 패턴 통일).
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        outer.addWidget(scroll)
+        content = QWidget()
+        scroll.setWidget(content)
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(14)
 
@@ -80,8 +95,8 @@ class QualityPage(QWidget):
         top_row = QHBoxLayout()
         top_row.setSpacing(14)
 
-        self._sorter_card = SorterCard()
-        top_row.addWidget(self._sorter_card, stretch=2)
+        self._vision_feed = VisionFeedCard()
+        top_row.addWidget(self._vision_feed, stretch=2)
 
         self._top_defects = TopDefectsPanel()
         top_row.addWidget(self._top_defects, stretch=2)
@@ -120,8 +135,19 @@ class QualityPage(QWidget):
         )
         self._table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._table.verticalHeader().setVisible(False)
+        self._table.setIconSize(QSize(96, 54))
         self._table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self._table.setMaximumHeight(220)
+        # 2026-05-14: 최근 검사 이력 풀 노출 — 페이지 외곽 스크롤이 처리.
+        self._table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # 행 클릭 → 비전 피드 동기화 + 선택 색상 자동 적용.
+        self._table.setSelectionBehavior(QTableWidget.SelectRows)
+        self._table.setSelectionMode(QTableWidget.SingleSelection)
+        self._table.cellClicked.connect(self._on_inspection_row_clicked)
+        self._inspections_cache: list[dict] = []
+        # 2026-05-15: 사용자 선택 보존. 주기 refresh 가 vision feed 를 덮어쓰지 않도록.
+        self._selected_inspection_id: str | None = None
+        self._loaded_inference_id: int | None = None
+        self._image_bytes_cache: dict[int, bytes] = {}
         layout.addWidget(self._table)
 
         # ===== 검사 진행 중 (PROC) — 결과 입력 (Gap 5, 2026-04-27) =====
@@ -131,7 +157,7 @@ class QualityPage(QWidget):
 
         self._proc_table = QTableWidget(0, 6)
         self._proc_table.setHorizontalHeaderLabels(
-            ["txn_id", "item_id", "res", "시작 시각", "양품 (GP)", "불량 (DP)"]
+            ["검사 ID", "제품 ID", "검사 결과", "시작 시각", "양품", "불량"]
         )
         self._proc_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._proc_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
@@ -142,48 +168,91 @@ class QualityPage(QWidget):
         layout.addWidget(self._proc_table)
 
     def refresh(self) -> None:
-        # KPI + 조건부 색상
-        stats = self._api.get_defect_stats()
-        if stats:
-            total = stats.get("total", 0)
-            ok = stats.get("ok", 0)
-            ng = stats.get("ng", 0)
-            rate = float(stats.get("defect_rate", 0))
-            self._kpis["total"].update_value(total)
-            self._kpis["ok"].update_value(ok)
-            self._kpis["ng"].update_value(ng)
-            self._kpis["rate"].update_value(f"{rate:.1f}")
-            self._colorize_rate(rate)
-
-        # 분류 다이얼
-        sorter = self._api.get_sorter_state()
-        if sorter:
-            self._sorter_card.set_state(
-                angle=sorter.get("angle"),
-                direction=sorter.get("direction"),
-                success=sorter.get("success"),
-                count_good=sorter.get("count_good"),
-                count_bad=sorter.get("count_bad"),
+        try:
+            snapshot = self._mgmt.get_quality_snapshot(
+                hours=24,
+                inspection_limit=200,
             )
+        except grpc.RpcError as exc:
+            logger.warning("GetQualitySnapshot 실패, 마지막 정상 화면 유지: %s", exc)
+            return
+
+        stats = snapshot["stats"]
+        total = stats.get("total", 0)
+        ok = stats.get("ok", 0)
+        ng = stats.get("ng", 0)
+        rate = float(stats.get("defect_rate", 0))
+        self._kpis["total"].update_value(total)
+        self._kpis["ok"].update_value(ok)
+        self._kpis["ng"].update_value(ng)
+        self._kpis["rate"].update_value(f"{rate:.1f}")
+        self._colorize_rate(rate)
+
+        # 2026-05-14: 분류 다이얼 → 비전 카메라 피드. 최신 검사 1건을 web 과 동일하게 표시.
+        # 2026-05-15: 사용자가 행을 선택한 상태면 그 row 유지, 아니면 latest (INSPECTIONS[0]).
+        inspections = snapshot["inspections"]
+        target = None
+        if self._selected_inspection_id:
+            target = next(
+                (i for i in inspections if i.get("id") == self._selected_inspection_id),
+                None,
+            )
+        if target is None:
+            target = inspections[0] if inspections else None
+        self._vision_feed.update_data(target)
+        self._load_inspection_image(target)
 
         # TOP3 + 기준 + 차트
-        defects = self._api.get_defect_type_dist()
+        defect_section = snapshot["defect_types"]
+        defect_source_available = bool(defect_section["source_available"])
+        defects = (
+            defect_section["entries"]
+            if defect_source_available
+            else mock_data.DEFECT_TYPE_DIST
+        )
         self._top_defects.update_data(defects)
-        self._standards.update_data(self._api.get_inspection_standards())
-
-        self._rate_chart.update_data(self._api.get_defect_rate_trend())
+        self._top_defects.set_source_available(defect_source_available)
         self._pie_chart.update_data(defects)
-        self._vs_chart.update_data(self._api.get_production_vs_defects())
+        self._pie_chart.set_source_available(defect_source_available)
 
-        # 검사 이력 (이미지 플레이스홀더 컬럼 포함)
-        inspections = self._api.get_quality_inspections() or []
-        self._table.setRowCount(len(inspections))
-        for row, item in enumerate(inspections[:200]):
-            # 이미지 플레이스홀더 (결과에 따라 이모지 아이콘)
+        standards_section = snapshot["standards"]
+        standards_source_available = bool(standards_section["source_available"])
+        standards = (
+            standards_section["entries"]
+            if standards_source_available
+            else mock_data.INSPECTION_STANDARDS
+        )
+        self._standards.update_data(standards)
+        self._standards.set_source_available(standards_source_available)
+
+        production_section = snapshot["production_vs_defects"]
+        production_source_available = bool(production_section["source_available"])
+        production_vs_defects = (
+            production_section["entries"]
+            if production_source_available
+            else mock_data.PRODUCTION_VS_DEFECTS
+        )
+        self._vs_chart.update_data(production_vs_defects)
+        self._vs_chart.set_source_available(production_source_available)
+
+        self._rate_chart.update_data(snapshot["trend"])
+
+        # 검사 이력 — 최근 10건만.
+        recent_inspections = inspections[:10]
+        self._inspections_cache = recent_inspections
+        self._table.setRowCount(len(recent_inspections))
+        for row, item in enumerate(recent_inspections):
             result = str(item.get("result", ""))
-            icon = "📷" if result == "OK" else ("⚠" if result == "NG" else "·")
-            image_item = QTableWidgetItem(icon)
+            inference_id = int(item.get("inference_id") or 0)
+            image_bytes = self._get_inspection_image_bytes(inference_id)
+            image_item = QTableWidgetItem()
             image_item.setTextAlignment(Qt.AlignCenter)
+            if image_bytes:
+                pixmap = QPixmap()
+                if pixmap.loadFromData(image_bytes) and not pixmap.isNull():
+                    image_item.setIcon(QIcon(pixmap))
+            if image_item.icon().isNull():
+                image_item.setText("—")
             self._table.setItem(row, 0, image_item)
 
             self._table.setItem(row, 1, QTableWidgetItem(str(item.get("inspected_at", ""))))
@@ -200,15 +269,78 @@ class QualityPage(QWidget):
             self._table.setItem(row, 5, QTableWidgetItem(str(item.get("inspector", ""))))
             self._table.setItem(row, 6, QTableWidgetItem(str(item.get("note", ""))))
 
-        # ===== 검사 진행 중 (insp_task_txn.txn_stat=PROC) — Gap 5 =====
-        self._refresh_proc_table()
+        # 모든 row 가 한 번에 보이도록 테이블 높이 동적 조정 (내부 스크롤 사용 안 함).
+        self._table.resizeRowsToContents()
+        total_h = self._table.horizontalHeader().height() + 4
+        for r in range(self._table.rowCount()):
+            self._table.setRowHeight(r, max(62, self._table.rowHeight(r)))
+            total_h += self._table.rowHeight(r)
+        self._table.setFixedHeight(max(80, total_h))
 
-    def _refresh_proc_table(self) -> None:
-        """진행 중 검사 row 만 골라 GP/DP 버튼 행으로 표시."""
+        # ===== 검사 진행 중 (insp_task_txn.txn_stat=PROC) — Gap 5 =====
+        self._refresh_proc_table(inspections)
+
+    def _on_inspection_row_clicked(self, row: int, _col: int) -> None:
+        """최근 검사 이력 행 클릭 → 비전 피드에 해당 검사 표시 + 이미지 fetch."""
+        if 0 <= row < len(self._inspections_cache):
+            insp = self._inspections_cache[row]
+            # 2026-05-15: 선택 보존 — 주기 refresh 가 latest 로 덮어쓰지 못하게.
+            self._selected_inspection_id = insp.get("id") or None
+            self._vision_feed.update_data(insp)
+            self._load_inspection_image(insp)
+
+    def _load_inspection_image(
+        self,
+        inspection: dict[str, Any] | None,
+    ) -> None:
+        """선택한 추론 결과 이미지를 Management gRPC로 조회."""
+        inference_id = int((inspection or {}).get("inference_id") or 0)
+        if inference_id <= 0:
+            self._loaded_inference_id = None
+            self._vision_feed.set_image(None)
+            return
+        if inference_id == self._loaded_inference_id:
+            return
+        self._loaded_inference_id = None
+
+        image_bytes = self._get_inspection_image_bytes(inference_id)
+        if image_bytes is None:
+            self._vision_feed.set_image(None)
+            return
+
+        if self._vision_feed.set_image_bytes(image_bytes):
+            self._loaded_inference_id = inference_id
+
+    def _get_inspection_image_bytes(self, inference_id: int) -> bytes | None:
+        """검사 결과 이미지를 한 번만 조회해 피드와 표 썸네일이 공유."""
+        if inference_id <= 0:
+            return None
+        cached = self._image_bytes_cache.get(inference_id)
+        if cached is not None:
+            return cached
+
         try:
-            rows = self._api.get_inspection_tasks()
-        except Exception:  # noqa: BLE001
-            rows = []
+            image = self._mgmt.get_inspection_image(
+                inference_id,
+                kind="result",
+            )
+        except grpc.RpcError as exc:
+            logger.warning(
+                "GetInspectionImage 실패 inference_id=%s: %s",
+                inference_id,
+                exc,
+            )
+            return None
+
+        image_bytes = bytes(image.get("image_bytes") or b"")
+        pixmap = QPixmap()
+        if not image_bytes or not pixmap.loadFromData(image_bytes) or pixmap.isNull():
+            return None
+        self._image_bytes_cache[inference_id] = image_bytes
+        return image_bytes
+
+    def _refresh_proc_table(self, rows: list[dict[str, Any]]) -> None:
+        """진행 중 검사 row 만 골라 GP/DP 버튼 행으로 표시."""
         proc_rows = [r for r in rows if str(r.get("txn_stat", "")).upper() == "PROC"]
         # 최신 우선 정렬
         proc_rows.sort(key=lambda r: r.get("start_at") or r.get("req_at") or "", reverse=True)
@@ -227,43 +359,43 @@ class QualityPage(QWidget):
                 qi.setTextAlignment(Qt.AlignCenter)
                 self._proc_table.setItem(row, col, qi)
 
-            gp_btn = QPushButton("✅ GP")
-            gp_btn.setToolTip("양품 처리 → insp_task_txn.result=True, item.is_defective=False")
+            gp_btn = QPushButton("✅ 양품")
+            gp_btn.setToolTip("양품으로 처리 (검사 완료 + 제품의 불량 여부 = 아니오)")
             gp_btn.clicked.connect(lambda _c, t=txn_id: self._complete_inspection(t, True))
             self._proc_table.setCellWidget(row, 4, gp_btn)
 
-            dp_btn = QPushButton("⚠ DP")
-            dp_btn.setToolTip("불량 처리 → insp_task_txn.result=False, item.is_defective=True")
+            dp_btn = QPushButton("⚠ 불량")
+            dp_btn.setToolTip("불량으로 처리 (검사 완료 + 제품의 불량 여부 = 예)")
             dp_btn.clicked.connect(lambda _c, t=txn_id: self._complete_inspection(t, False))
             self._proc_table.setCellWidget(row, 5, dp_btn)
 
     def _complete_inspection(self, txn_id: int, result: bool) -> None:
-        """GP/DP 버튼 핸들러 — POST /api/quality/inspections/{txn}/result?result=…"""
-        verdict = "양품 (GP)" if result else "불량 (DP)"
+        """양품/불량 버튼에서 검사 완료 RPC 호출."""
+        verdict = "양품" if result else "불량"
         confirm = QMessageBox.question(
             self,
             "검사 결과 확정",
-            f"insp_task_txn={txn_id} 를 {verdict} 으로 처리하시겠습니까?\n\n"
-            "✓ 확정 시 insp_task_txn SUCC + end_at + item.is_defective 갱신.",
+            f"검사 #{txn_id} 를 {verdict} 으로 처리하시겠습니까?\n\n"
+            "확정 시 검사가 완료 처리되고 제품의 불량 여부가 갱신됩니다.",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.Yes,
         )
         if confirm != QMessageBox.Yes:
             return
         try:
-            rsp = self._api.complete_inspection(txn_id, result)
+            rsp = self._mgmt.complete_inspection(txn_id, result)
         except Exception as exc:  # noqa: BLE001
-            QMessageBox.critical(self, "검사 완료 실패", f"txn_id={txn_id}\n{exc}")
+            QMessageBox.critical(self, "검사 완료 실패", f"검사 #{txn_id}\n{exc}")
             return
 
         QMessageBox.information(
             self,
             "검사 완료",
-            f"txn_id={txn_id}\n"
-            f"  txn_stat = {rsp.get('txn_stat')}\n"
-            f"  result = {verdict}\n"
-            f"  end_at = {rsp.get('end_at')}\n\n"
-            "→ 발주 관리 페이지에서 DONE/SHIP/COMP 진행하세요.",
+            f"검사 #{txn_id}\n"
+            f"  진행 상태: {rsp.get('txn_stat')}\n"
+            f"  결과: {verdict}\n"
+            f"  완료 시각: {rsp.get('end_at')}\n\n"
+            "→ 주문 관리 페이지에서 다음 단계로 진행하세요.",
         )
         self.refresh()
 
@@ -279,13 +411,3 @@ class QualityPage(QWidget):
         card.setStyleSheet(
             f"#kpiCard {{ border: 2px solid {color}; }}#kpiValue {{ color: {color}; }}"
         )
-
-    def handle_ws_message(self, payload: dict[str, Any]) -> None:
-        msg_type = payload.get("type", "")
-        if msg_type in (
-            "quality_update",
-            "inspection_completed",
-            "vision_result",
-            "sorter_update",
-        ):
-            self.refresh()

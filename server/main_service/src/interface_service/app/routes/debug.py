@@ -24,7 +24,7 @@
         POST /api/debug/sim/conveyor-tof1
         → 해당 item 의 모든 pp_task_txn(QUE/PROC) → SUCC, end_at=now()
         → item.flow_stat: PP → WAIT_INSP
-        → equip_task_txn 신규 INSERT (task_type=ToINSP, txn_stat=PROC, res_id=CONV-01)
+        → equip_task_txn 신규 INSERT (task_type=ToINSP, txn_stat=PROC, res_id=CONV1)
         → equip_stat INSERT (cur_stat=ON)
 
 규칙:
@@ -56,7 +56,7 @@ router = APIRouter(prefix="/api/debug", tags=["debug"])
 RFID_PAYLOAD_RE = re.compile(r"^order_(?P<ord>\d+)_item_(?P<date>\d{8})_(?P<seq>\d+)$")
 
 # 가상 모드의 기본 컨베이어 자원 ID
-DEFAULT_CONV_RES_ID = "CONV-01"
+DEFAULT_CONV_RES_ID = "CONV1"
 
 _FLOW_TO_LEGACY_STAGE = {
     "CREATED": "QUE",
@@ -180,7 +180,7 @@ def simulate_handoff_ack(
     )
     if _MGMT_DIR not in sys.path:
         sys.path.insert(0, _MGMT_DIR)
-    from services.core.legacy.handoff_pipeline import apply_handoff  # type: ignore
+    from services.legacy.handoff_pipeline import apply_handoff  # type: ignore
 
     operator_id = payload.get("operator_id")
     now_ms = int(datetime.now().timestamp() * 1000)
@@ -220,11 +220,11 @@ def simulate_rfid_scan(
     """가상 RFID 스캔 — rfid_scan_log INSERT + item + 후처리 옵션 조회.
 
     Body:
-      reader_id   : str  (default "ESP-CONV-01")
+      reader_id   : str  (default "ESP-CONV1")
       zone        : str  (default "postprocessing")
       raw_payload : str  required, 형식 "order_<ord_id>_item_<YYYYMMDD>_<seq>"
     """
-    reader_id = (payload.get("reader_id") or "ESP-CONV-01").strip()
+    reader_id = (payload.get("reader_id") or "ESP-CONV1").strip()
     zone = (payload.get("zone") or "postprocessing").strip() or None
     raw_payload = (payload.get("raw_payload") or "").strip()
     if not raw_payload:

@@ -1,9 +1,9 @@
 """Management Service gRPC 클라이언트 (Factory Operator PC 용).
 
 V6 아키텍처 규정:
-- PyQt 는 Interface Service(FastAPI :8000) 대신 Management Service(gRPC :50051) 직결
-- Interface Service 장애/AWS 이관 시에도 공장 가동 유지
-- 기존 api_client.py(HTTP) 는 WebSocket 수신과 비-Mgmt 조회용 (Phase 8 까지 점진 축소)
+- PyQt는 Management Service(gRPC :50051)에 직결
+- 업무 조회와 명령은 Management gRPC 계약만 사용
+- 검사 결과 이미지도 Management gRPC에서 bytes로 조회
 
 환경 변수:
     MANAGEMENT_GRPC_HOST   기본 localhost
@@ -19,16 +19,35 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime, timezone
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
+from uuid import uuid4
 
 import grpc
 
-# protoc 산출물 (monitoring/app/generated/, Makefile: monitoring/scripts/gen_proto.sh)
+# protoc 산출물 (app/generated/, scripts/gen_proto.sh)
 from app.generated import management_pb2, management_pb2_grpc
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_prod_id(row: Any) -> int | None:
+    """ProductionOrder row 에서 prod_id 를 안전하게 추출.
+
+    backend proto 에 prod_id 가 아직 노출되지 않은 환경에서도 AttributeError 없이 None 반환.
+    Phase 1 PR (proto `optional int32 prod_id`) 머지 후 자동으로 실 값 반환.
+    """
+    val = getattr(row, "prod_id", None)
+    if val is None:
+        return None
+    try:
+        as_int = int(val)
+    except (TypeError, ValueError):
+        return None
+    return as_int or None
+
 
 HOST = os.environ.get("MANAGEMENT_GRPC_HOST", "localhost")
 PORT = int(os.environ.get("MANAGEMENT_GRPC_PORT", "50051"))
@@ -68,6 +87,18 @@ _STAGE_CODE = {
     8: "SH",
 }
 
+_DASHBOARD_INT_KEYS = {
+    "total_orders",
+    "orders_in_production",
+    "orders_completed",
+    "orders_pending",
+    "total_items",
+    "good_items",
+    "defective_items",
+    "alerts_today",
+    "active_resources",
+}
+
 
 def _ack_from_proto(proto_ack) -> ProductionStartOrderAck:
     return ProductionStartOrderAck(
@@ -105,6 +136,7 @@ class ManagementClient:
         self._timeout = timeout
         self._channel = self._build_channel(host, port)
         self._stub = management_pb2_grpc.ManagementServiceStub(self._channel)
+        self._operator: dict[str, Any] | None = None
 
     @staticmethod
     def _build_channel(host: str, port: int):
@@ -245,6 +277,9 @@ class ManagementClient:
                 "requested_delivery": row.requested_delivery or "",
                 "confirmed_delivery": row.confirmed_delivery or "",
                 "created_at": row.created_at or "",
+                # 2026-05-14: proto 에 prod_id 가 아직 없을 수 있어 안전 접근.
+                # Phase 1 PR (backend) 머지 후 자동 반영.
+                "prod_id": _safe_prod_id(row),
             }
             for row in resp.orders
         ]
@@ -453,6 +488,31 @@ class ManagementClient:
         req = management_pb2.WatchAlertsRequest(severity_filter=severity_filter or "")
         return self._stub.WatchAlerts(req)
 
+    def list_alerts(
+        self,
+        severity_filter: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """alerts_stat 최근 알림 목록 조회 (일회성 unary RPC)."""
+        req = management_pb2.ListAlertsRequest(
+            severity_filter=severity_filter or "",
+            limit=limit,
+        )
+        resp = self._stub.ListAlerts(req, timeout=self._timeout)
+        return [
+            {
+                "id": a.id,
+                "level": a.severity or "info",
+                "source": a.equipment_id or a.zone or "",
+                "message": a.message or "",
+                "created_at": a.at.iso8601 or "",
+                "type": a.type or "",
+                "error_code": a.error_code or "",
+                "zone": a.zone or "",
+            }
+            for a in resp.alerts
+        ]
+
     def get_robot_status(self) -> list[dict]:
         """AMR/Cobot 실시간 상태 조회. dict list 반환."""
         try:
@@ -477,10 +537,476 @@ class ManagementClient:
             logger.warning("GetRobotStatus 실패: %s", e)
             return []
 
+    def get_quality_snapshot(
+        self,
+        *,
+        hours: int = 24,
+        inspection_limit: int = 200,
+    ) -> dict[str, Any]:
+        """품질 화면에 필요한 조회 데이터를 unary RPC 한 번으로 반환."""
+        response = self._stub.GetQualitySnapshot(
+            management_pb2.QualitySnapshotRequest(
+                hours=hours,
+                inspection_limit=inspection_limit,
+            ),
+            timeout=self._timeout,
+        )
+        inspections = [
+            {
+                "id": str(row.txn_id),
+                "txn_id": row.txn_id,
+                "item_id": row.item_id,
+                "inference_id": row.inference_id or None,
+                "casting_id": str(row.item_id),
+                "txn_stat": row.txn_stat,
+                "result": row.result,
+                "req_at": row.req_at,
+                "start_at": row.start_at,
+                "end_at": row.end_at,
+                "inspected_at": row.inspected_at,
+                "product": row.product,
+                "defect_type": row.defect_type,
+                "inspector": row.inspector,
+                "note": row.note,
+                "confidence": row.confidence,
+            }
+            for row in response.inspections
+        ]
+        return {
+            "stats": {
+                "total": response.stats.inspected,
+                "ok": response.stats.good,
+                "ng": response.stats.defective,
+                "pending": response.stats.pending,
+                "defect_rate": response.stats.defect_rate,
+            },
+            "inspections": inspections,
+            "trend": [
+                {
+                    "label": row.label,
+                    "rate": row.rate,
+                }
+                for row in response.trend
+            ],
+            "defect_types": {
+                "source_available": response.defect_types.source_available,
+                "entries": [
+                    {
+                        "type": row.type,
+                        "count": row.count,
+                    }
+                    for row in response.defect_types.entries
+                ],
+            },
+            "standards": {
+                "source_available": response.standards.source_available,
+                "entries": [
+                    {
+                        "product": row.product,
+                        "target": row.target,
+                        "tolerance": row.tolerance,
+                        "threshold": row.threshold,
+                    }
+                    for row in response.standards.entries
+                ],
+            },
+            "production_vs_defects": {
+                "source_available": response.production_vs_defects.source_available,
+                "entries": [
+                    {
+                        "label": row.label,
+                        "production": row.production,
+                        "defect_rate": row.defect_rate,
+                    }
+                    for row in response.production_vs_defects.entries
+                ],
+            },
+        }
+
+    def get_inspection_image(
+        self,
+        inference_id: int,
+        *,
+        kind: str = "result",
+    ) -> dict[str, Any]:
+        """검사 결과 이미지를 Management gRPC에서 bytes로 조회."""
+        image_kind = {
+            "result": management_pb2.INSPECTION_IMAGE_KIND_RESULT,
+            "segmented": management_pb2.INSPECTION_IMAGE_KIND_SEGMENTED,
+        }.get(kind)
+        if image_kind is None:
+            raise ValueError(f"unsupported inspection image kind={kind!r}")
+
+        response = self._stub.GetInspectionImage(
+            management_pb2.GetInspectionImageRequest(
+                inference_id=inference_id,
+                kind=image_kind,
+            ),
+            timeout=self._timeout,
+        )
+        return {
+            "image_bytes": bytes(response.image_bytes),
+            "content_type": response.content_type,
+        }
+
+    def complete_inspection(self, txn_id: int, result: bool) -> dict[str, Any]:
+        """진행 중 검사를 작업자 판정으로 완료."""
+        response = self._stub.CompleteInspection(
+            management_pb2.CompleteInspectionRequest(
+                txn_id=txn_id,
+                result=result,
+            ),
+            timeout=self._timeout,
+        )
+        return {
+            "txn_id": response.txn_id,
+            "item_id": response.item_id or None,
+            "txn_stat": response.txn_stat,
+            "result": response.result,
+            "req_at": response.req_at,
+            "start_at": response.start_at,
+            "end_at": response.end_at,
+            "inspected_at": response.inspected_at,
+        }
+
+    def get_operations_snapshot(self, *, hours: int = 24) -> dict[str, Any]:
+        """운영 현황 화면의 주기 갱신 데이터를 unary RPC 한 번으로 반환."""
+        response = self._stub.GetOperationsSnapshot(
+            management_pb2.OperationsSnapshotRequest(hours=hours),
+            timeout=self._timeout,
+        )
+        dashboard: dict[str, Any] = dict(response.dashboard)
+        for key in _DASHBOARD_INT_KEYS:
+            if key in dashboard:
+                dashboard[key] = int(dashboard[key])
+        if "defect_rate_pct" in dashboard:
+            dashboard["defect_rate_pct"] = float(
+                dashboard["defect_rate_pct"]
+            )
+        if "timescaledb_enabled" in dashboard:
+            dashboard["timescaledb_enabled"] = (
+                dashboard["timescaledb_enabled"].lower() == "true"
+            )
+
+        return {
+            "summary": [
+                {
+                    "ord_id": row.ord_id,
+                    "total_items": row.total_items,
+                    "good_count": row.good_count,
+                    "defective_count": row.defective_count,
+                    "pending_count": row.pending_count,
+                }
+                for row in response.summary
+            ],
+            "hourly": [
+                {
+                    "bucket": row.hour,
+                    "produced": row.count,
+                }
+                for row in response.hourly
+            ],
+            "err_trend": [
+                {
+                    "bucket": row.hour,
+                    "source": source,
+                    "count": count,
+                }
+                for row in response.err_trend
+                for source, count in (
+                    ("equip", row.equip),
+                    ("trans", row.trans),
+                )
+                if count
+            ],
+            "dashboard": dashboard,
+            "orders": [
+                {
+                    "ord_id": row.ord_id,
+                    "user_id": row.user_id,
+                    "latest_stat": row.latest_stat or "",
+                    "company_name": row.company_name or "-",
+                    "customer_name": row.customer_name or "-",
+                    "total_amount": row.total_amount or 0,
+                    "requested_delivery": row.requested_delivery or "",
+                    "confirmed_delivery": row.confirmed_delivery or "",
+                    "created_at": row.created_at or "",
+                    "prod_id": _safe_prod_id(row),
+                }
+                for row in response.orders
+            ],
+            "patterns": [
+                {
+                    "ord_id": row.ord_id,
+                    "pattern_id": (
+                        row.pattern_id
+                        if row.HasField("pattern_id")
+                        else None
+                    ),
+                    "ptn_loc_id": (
+                        row.ptn_loc_id
+                        if row.HasField("ptn_loc_id")
+                        else None
+                    ),
+                }
+                for row in response.patterns
+            ],
+            "stages": [
+                {
+                    "zone_id": row.zone_id,
+                    "zone_nm": row.zone_nm or "",
+                    "in_progress_count": row.in_progress_count,
+                    "name": row.zone_nm or "",
+                    "status": f"{row.in_progress_count}건 진행중",
+                    "equipment": "-",
+                }
+                for row in response.stages
+            ],
+            "items": [
+                {
+                    "item_id": int(row.id),
+                    "ord_id": int(row.order_id or 0),
+                    "flow_stat": row.flow_stat or None,
+                    "zone_nm": row.zone_nm or None,
+                    "result": (
+                        row.result if row.HasField("result") else None
+                    ),
+                    "equip_task_type": None,
+                    "trans_task_type": None,
+                    "cur_stat": (
+                        row.cur_stat
+                        or self.stage_code_to_label(int(row.cur_stage))
+                    ),
+                    "cur_res": row.curr_res or "",
+                    "is_defective": (
+                        row.is_defective
+                        if row.HasField("is_defective")
+                        else None
+                    ),
+                    "updated_at": row.mfg_at.iso8601 or None,
+                }
+                for row in response.items
+            ],
+        }
+
+    def get_production_telemetry_snapshot(
+        self,
+        *,
+        hours: int = 24,
+    ) -> dict[str, Any]:
+        """생산 telemetry 값과 section별 실데이터 연동 상태 반환."""
+        response = self._stub.GetProductionTelemetrySnapshot(
+            management_pb2.ProductionTelemetrySnapshotRequest(hours=hours),
+            timeout=self._timeout,
+        )
+        return {
+            "live": {
+                "source_available": response.live.source_available,
+                "value": {
+                    "mold_pressure": response.live.value.mold_pressure,
+                    "pour_angle": response.live.value.pour_angle,
+                    "furnace_heating_power": (
+                        response.live.value.furnace_heating_power
+                    ),
+                    "cooling_progress": response.live.value.cooling_progress,
+                    "cooling_current_temp": (
+                        response.live.value.cooling_current_temp
+                    ),
+                    "cooling_target_temp": (
+                        response.live.value.cooling_target_temp
+                    ),
+                    "cooling_remaining_min": (
+                        response.live.value.cooling_remaining_min
+                    ),
+                },
+            },
+            "temperature": {
+                "source_available": response.temperature.source_available,
+                "entries": [
+                    {
+                        "minute": row.minute,
+                        "temperature": row.temperature,
+                        "target": row.target,
+                    }
+                    for row in response.temperature.entries
+                ],
+            },
+            "hourly": {
+                "source_available": response.hourly.source_available,
+                "entries": [
+                    {
+                        "hour": row.hour,
+                        "good": row.good,
+                        "bad": row.bad,
+                    }
+                    for row in response.hourly.entries
+                ],
+            },
+        }
+
+    def get_logistics_snapshot(self) -> dict[str, Any]:
+        """물류 작업과 출고 주문을 실제 DB 필드로 반환."""
+        response = self._stub.GetLogisticsSnapshot(
+            management_pb2.LogisticsSnapshotRequest(),
+            timeout=self._timeout,
+        )
+        return {
+            "tasks": [
+                {
+                    "txn_id": row.txn_id,
+                    "res_id": row.res_id,
+                    "task_type": row.task_type,
+                    "txn_stat": row.txn_stat,
+                    "item_id": row.item_id,
+                    "ord_id": row.ord_id,
+                    "req_at": row.req_at,
+                    "start_at": row.start_at,
+                    "end_at": row.end_at,
+                }
+                for row in response.tasks
+            ],
+            "orders": [
+                {
+                    "ord_id": row.ord_id,
+                    "user_id": row.user_id,
+                    "stat": row.stat,
+                    "updated_at": row.updated_at,
+                }
+                for row in response.orders
+            ],
+        }
+
+    def list_warehouse_locations(self) -> list[dict[str, Any]]:
+        """창고 위치의 실제 상태와 품목 배치를 반환."""
+        response = self._stub.ListWarehouseLocations(
+            management_pb2.ListWarehouseLocationsRequest(),
+            timeout=self._timeout,
+        )
+        return [
+            {
+                "loc_id": row.loc_id,
+                "row": row.row,
+                "col": row.col,
+                "status": row.status,
+                "item_id": row.item_id or None,
+                "stored_at": row.stored_at,
+            }
+            for row in response.locations
+        ]
+
+    def calculate_priority(self, ord_ids: list[int]) -> list[dict[str, Any]]:
+        """APPR + 패턴 등록된 선택 주문들의 우선순위 계산.
+
+        Management Service 의 CalculateSchedulePriority RPC 를 호출하고
+        rank 오름차순(1 = 최우선)으로 정렬된 결과를 반환한다.
+        """
+        req = management_pb2.CalculateSchedulePriorityRequest(
+            order_ids=[str(i) for i in ord_ids]
+        )
+        resp = self._stub.CalculateSchedulePriority(req, timeout=self._timeout)
+        results = [
+            {
+                "order_id": int(r.order_id),
+                "rank": r.rank,
+                "total_score": round(r.total_score, 1),
+                "product_summary": r.product_summary or "-",
+                "requested_delivery": r.requested_delivery or "-",
+                "delay_risk": r.delay_risk or "low",
+            }
+            for r in resp.results
+        ]
+        results.sort(key=lambda x: x["rank"])
+        return results
+
     @staticmethod
     def stage_code_to_label(code: int) -> str:
         """proto enum 정수 → 코드 문자열 (UI 매핑용)."""
         return _STAGE_CODE.get(code, "UNSPECIFIED")
+
+    def list_operators(self, role_filter: str = "operator") -> list[dict[str, Any]]:
+        """DB의 작업자 목록 조회 (role_filter="" 이면 전체 반환)."""
+        req = management_pb2.ListOperatorsRequest(role_filter=role_filter)
+        resp = self._stub.ListOperators(req, timeout=self._timeout)
+        return [
+            {
+                "user_id": row.user_id,
+                "user_nm": row.user_nm or "",
+                "email": row.email or "",
+                "role": row.role or "",
+            }
+            for row in resp.operators
+        ]
+
+    def get_operator_by_email(self, email: str) -> dict[str, Any]:
+        """이메일로 작업자를 조회하고 현재 작업자로 보관."""
+        try:
+            row = self._stub.GetOperatorByEmail(
+                management_pb2.GetOperatorByEmailRequest(email=email),
+                timeout=self._timeout,
+            )
+        except grpc.RpcError:
+            self._operator = None
+            raise
+        self._operator = {
+            "user_id": row.user_id,
+            "user_nm": row.user_nm or "",
+            "email": row.email or "",
+            "role": row.role or "",
+        }
+        return dict(self._operator)
+
+    def current_operator_id(self) -> int | None:
+        operator = getattr(self, "_operator", None)
+        return int(operator["user_id"]) if operator else None
+
+    def current_operator_label(self) -> str:
+        operator = getattr(self, "_operator", None)
+        if not operator:
+            return "비로그인"
+        return (
+            f"{operator.get('user_nm') or '?'} "
+            f"({operator.get('role') or '?'}) #{operator.get('user_id')}"
+        )
+
+    def clear_operator(self) -> None:
+        self._operator = None
+
+    def report_handoff_ack(
+        self,
+        *,
+        source_device: str = "pyqt-operations",
+        zone: str = "postprocessing",
+        operator_id: int | None = None,
+    ) -> dict[str, Any]:
+        """후처리존 핸드오프 완료를 Management에 직접 보고."""
+        occurred_at = datetime.now(timezone.utc)
+        resolved_operator_id = (
+            self.current_operator_id() if operator_id is None else operator_id
+        )
+        request = management_pb2.HandoffAckEvent(
+            source_device=source_device,
+            zone=zone,
+            occurred_at=management_pb2.Timestamp(
+                iso8601=occurred_at.isoformat(),
+            ),
+            idempotency_key=f"{source_device}:{uuid4()}",
+        )
+        if resolved_operator_id is not None:
+            request.operator_id = resolved_operator_id
+        response = self._stub.ReportHandoffAck(
+            request,
+            timeout=self._timeout,
+        )
+        return {
+            "accepted": response.accepted,
+            "task_id": response.task_id,
+            "amr_id": response.amr_id,
+            "reason": response.reason,
+            "ack_at": response.ack_at,
+            "released": response.released,
+            "item_id": response.item_id or None,
+            "ord_id": response.ord_id or None,
+        }
 
     def close(self) -> None:
         self._channel.close()

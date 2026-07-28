@@ -11,14 +11,20 @@ SIM_SPEED 10px 보정으로 메인 맵에 한 번만 가동되도록 (mini map �
 
 from __future__ import annotations
 
-from PyQt5.QtCore import QTimer
-from PyQt5.QtGui import QBrush, QColor, QFont, QPen
+from pathlib import Path
+
+from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtGui import QBrush, QColor, QFont, QPen, QPixmap
 from PyQt5.QtWidgets import (
     QGraphicsEllipseItem,
+    QGraphicsPixmapItem,
     QGraphicsRectItem,
     QGraphicsScene,
     QGraphicsSimpleTextItem,
 )
+
+_ASSETS = Path(__file__).parent.parent.parent / "assets"
+_AMR_PIX_SIZE = 50  # scene px (정사각형 기준)
 
 from ._constants import (
     _POS,
@@ -67,21 +73,44 @@ class _CastingItem:
 
 
 class _SimAMR:
-    """시뮬레이션 전용 AMR 마커."""
+    """시뮬레이션 전용 AMR 마커 — AMR_topview.png 이미지, 없으면 노란 박스 fallback."""
 
     def __init__(self, scene: QGraphicsScene, label: str, x: float, y: float) -> None:
-        self._marker = QGraphicsRectItem(-20, -12, 40, 24)
-        self._marker.setBrush(QBrush(QColor(AMR_COLOR)))
-        self._marker.setPen(QPen(QColor("#b8a000"), 2))
-        self._marker.setZValue(55)
-        self._marker.setPos(x, y)
-        scene.addItem(self._marker)
+        pixmap = QPixmap(str(_ASSETS / "AMR_topview.png"))
 
-        txt = QGraphicsSimpleTextItem(label, self._marker)
-        txt.setFont(QFont("Sans", 7, QFont.Bold))
-        txt.setBrush(QBrush(QColor("#111111")))
-        tr = txt.boundingRect()
-        txt.setPos(-tr.width() / 2, -tr.height() / 2)
+        if not pixmap.isNull():
+            pixmap = pixmap.scaled(
+                _AMR_PIX_SIZE, _AMR_PIX_SIZE,
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation,
+            )
+            self._marker = QGraphicsPixmapItem(pixmap)
+            hw, hh = pixmap.width() / 2, pixmap.height() / 2
+            self._marker.setOffset(-hw, -hh)
+            self._marker.setZValue(55)
+            self._marker.setPos(x, y)
+            scene.addItem(self._marker)
+
+            # 레이블: 이미지 아래
+            txt = QGraphicsSimpleTextItem(label, self._marker)
+            txt.setFont(QFont("Sans", 7, QFont.Bold))
+            txt.setBrush(QBrush(QColor("#111111")))
+            tr = txt.boundingRect()
+            txt.setPos(-tr.width() / 2, hh + 2)
+        else:
+            # fallback: 기존 노란 박스
+            self._marker = QGraphicsRectItem(-20, -12, 40, 24)
+            self._marker.setBrush(QBrush(QColor(AMR_COLOR)))
+            self._marker.setPen(QPen(QColor("#b8a000"), 2))
+            self._marker.setZValue(55)
+            self._marker.setPos(x, y)
+            scene.addItem(self._marker)
+
+            txt = QGraphicsSimpleTextItem(label, self._marker)
+            txt.setFont(QFont("Sans", 7, QFont.Bold))
+            txt.setBrush(QBrush(QColor("#111111")))
+            tr = txt.boundingRect()
+            txt.setPos(-tr.width() / 2, -tr.height() / 2)
 
         self._scene = scene
         self._x, self._y = x, y
@@ -235,8 +264,8 @@ class _SimController:
         self._amr1.set_waypoints(
             [
                 _POS["corridor_charge_exit_1"],
-                (850, 440),
-                (850, 320),
+                (760, 238),
+                (760, 265),
                 _POS["cast_pickup"],
             ]
         )
@@ -267,10 +296,10 @@ class _SimController:
             # AMR-001 경로: Casting → Unloading Worker (zone 밖 통로)
             self._amr1.set_waypoints(
                 [
-                    (850, 250),
-                    (700, 250),
-                    (200, 250),
-                    (90, 250),
+                    (760, 238),
+                    (580, 238),
+                    (185, 238),
+                    (80, 238),
                     _POS["unload_worker"],
                 ]
             )
@@ -290,9 +319,9 @@ class _SimController:
         # AMR-001 Charging으로 복귀
         self._amr1.set_waypoints(
             [
-                (90, 250),
-                (450, 250),
-                (562, 440),
+                (80, 238),
+                (450, 238),
+                (525, 440),
                 _POS["amr1_home"],
             ]
         )
@@ -309,7 +338,7 @@ class _SimController:
         # 먼저 pp_worker로 → 그 다음 conv_left로
         if cy > 130:
             # pp_worker로 이동
-            nx, ny, arrived = _move_toward(cx, cy, 160, 130, SIM_SPEED)
+            nx, ny, arrived = _move_toward(cx, cy, 325, 105, SIM_SPEED)
             self._current.move_to(nx, ny)
         else:
             nx, ny, arrived = _move_toward(cx, cy, tx, ty, SIM_SPEED)
@@ -334,7 +363,7 @@ class _SimController:
             self._amr2.set_waypoints(
                 [
                     _POS["corridor_charge_exit_2"],
-                    (672, 250),
+                    (638, 238),
                     _POS["conv_pickup"],
                 ]
             )
@@ -370,7 +399,7 @@ class _SimController:
         self._amr3.set_waypoints(
             [
                 _POS["corridor_charge_exit_3"],
-                (782, 250),
+                (750, 238),
                 _POS["conv_pickup"],
             ]
         )
@@ -378,8 +407,8 @@ class _SimController:
         # AMR-002 복귀
         self._amr2.set_waypoints(
             [
-                (672, 250),
-                (672, 440),
+                (638, 238),
+                (638, 440),
                 _POS["amr2_home"],
             ]
         )
@@ -394,9 +423,9 @@ class _SimController:
                 self._amr3.attach_cargo(self._current)
             self._amr3.set_waypoints(
                 [
-                    (600, 250),
-                    (450, 250),
-                    (450, 430),
+                    (580, 238),
+                    (375, 238),
+                    (375, 440),
                     _POS["putaway"],
                 ]
             )
@@ -415,7 +444,7 @@ class _SimController:
             # AMR-003 대기 (rack 근처)
             self._amr3.set_waypoints(
                 [
-                    (310, 530),
+                    (268, 440),
                     _POS["rack_pickup"],
                 ]
             )
@@ -487,8 +516,8 @@ class _SimController:
             [
                 _POS["corridor_outbound_up"],
                 _POS["corridor_outbound_r"],
-                (782, 250),
-                (782, 440),
+                (750, 238),
+                (750, 440),
                 _POS["amr3_home"],
             ]
         )

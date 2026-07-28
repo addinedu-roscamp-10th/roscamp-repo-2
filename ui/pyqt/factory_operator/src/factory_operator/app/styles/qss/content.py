@@ -22,22 +22,34 @@ QGroupBox {{
     color: {c.text_primary};
     border: 1px solid {c.border};
     border-radius: {r.lg}px;
-    margin-top: {sp.md}px;
-    padding-top: {sp.lg}px;
-    font-size: {typo.size_md}px;
-    font-weight: 600;
+    margin-top: 36px;
+    padding-top: 16px;
+    font-size: 20px;
+    font-weight: 700;
+}}
+QGroupBox > QWidget {{
+    font-size: {typo.size_base}px;
+    font-weight: 400;
+}}
+#fieldLabel {{
+    font-size: {typo.size_lg}px;
+    font-weight: 700;
+    color: {c.text_primary};
+    background-color: transparent;
 }}
 QGroupBox::title {{
     subcontrol-origin: margin;
     subcontrol-position: top left;
-    left: {sp.md}px;
+    left: -3px;
     padding: 0 {sp.sm}px;
     color: {c.text_primary};
-    background-color: {c.bg_card};
+    background-color: transparent;
+    font-size: 25px;
+    font-weight: 700;
 }}
 #kpiTitle {{
     color: {c.text_muted};
-    font-size: {typo.size_sm}px;
+    font-size: {typo.size_lg}px;
     font-weight: 500;
     background-color: transparent;
 }}

@@ -6,7 +6,7 @@ import management_pb2  # type: ignore
 
 
 class TaskRpcMixin:
-    """Task allocator and robot executor RPCs."""
+    """Task allocator and task executor RPCs."""
 
     def AllocateItem(self, request, context):
         result = self.task_allocator.allocate(request.item_id)
@@ -18,11 +18,10 @@ class TaskRpcMixin:
         )
 
     def ExecuteCommand(self, request, context):
-        accepted, reason = self.robot_executor.dispatch(
+        accepted, reason = self.task_executor.dispatch(
             item_id=request.item_id,
             robot_id=request.robot_id,
             command=request.command,
             payload=request.payload,
         )
         return management_pb2.ExecuteCommandResponse(accepted=accepted, reason=reason)
-

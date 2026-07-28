@@ -1,0 +1,31 @@
+<?xml version='1.0' ?>
+
+<launch>
+    <arg name="use_sim_time" default="False"/>
+
+    <include file="$(find-pkg-share tat_description)/launch/upload_robot.launch.py">
+        <arg name="is_sim" value="$(var use_sim_time)"/>
+    </include>
+
+    <include file="$(find-pkg-share sllidar_ros2)/launch/sllidar_c1_launch.py">
+        <arg name="serial_port" value="/dev/ttyS0"/>
+        <arg name="frame_id" value="rplidar_link"/>
+        <arg name="inverted" value="false"/>
+        <arg name="angle_compensate" value="true"/>
+        <arg name="scan_mode" value="DenseBoost"/>
+    </include>
+
+    <node pkg="laser_filters" exec="scan_to_scan_filter_chain" name="scan_filter_chain_node">
+        <param from="$(find-pkg-share tat_bringup)/config/scan_filter.yaml"/>
+    </node>
+
+    <node pkg="tat_bringup" exec="bringup">
+        <param from="$(find-pkg-share tat_bringup)/config/tat_params.yaml"/>
+    </node>
+
+    <node pkg="tat_bringup" exec="battery_publisher">
+    </node>
+
+    <include file="$(find-pkg-share aruco_node)/launch/aruco_marker_pose_node.launch.xml"/>
+
+</launch>

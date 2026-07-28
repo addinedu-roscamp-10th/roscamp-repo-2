@@ -57,6 +57,14 @@ class FactoryMapView(QGraphicsView):
     def update_equipment(self, equipment: list[dict[str, Any]]) -> None:
         self._scene.update_equipment(equipment)
 
+    def update_robots(
+        self,
+        robots: list[dict[str, Any]],
+        equipment: list[dict[str, Any]],
+    ) -> None:
+        """gRPC 실데이터(TAT AMCL 위치 + PAT/MAT 상태)로 맵 마커 갱신."""
+        self._scene.update_robots(robots, equipment)
+
 
 class MiniFactoryMapView(FactoryMapView):
     """대시보드용 축소 맵.

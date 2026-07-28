@@ -15,6 +15,8 @@ if exist .env.local (
     )
 )
 
-echo -^> PyQt Monitoring 시작 (API_BASE_URL=%API_BASE_URL%)
+if not defined MANAGEMENT_GRPC_HOST set MANAGEMENT_GRPC_HOST=localhost
+if not defined MANAGEMENT_GRPC_PORT set MANAGEMENT_GRPC_PORT=50051
+echo -^> PyQt Monitoring 시작 (Management gRPC=%MANAGEMENT_GRPC_HOST%:%MANAGEMENT_GRPC_PORT%)
 python -m factory_operator.main
 endlocal

@@ -36,10 +36,8 @@ COLS = 6
 # 점유 상태별 색상
 STATUS_COLORS = {
     "empty": {"fill": "#f3f4f6", "border": "#d1d5db", "text": "#6b7280"},
-    "partial": {"fill": "#fef3c7", "border": "#f59e0b", "text": "#92400e"},
-    "full": {"fill": "#d1fae5", "border": "#10b981", "text": "#065f46"},
+    "occupied": {"fill": "#d1fae5", "border": "#10b981", "text": "#065f46"},
     "reserved": {"fill": "#dbeafe", "border": "#3b82f6", "text": "#1e40af"},
-    "locked": {"fill": "#fee2e2", "border": "#ef4444", "text": "#991b1b"},
 }
 
 
@@ -120,10 +118,13 @@ class WarehouseRackScene(QGraphicsScene):
                 self._cells[rack_id] = cell
 
     def update_racks(self, racks: list[dict[str, Any]]) -> None:
-        """racks: [{'id':'1','status':'full','content':'맨홀뚜껑','qty':12}, ...].
+        """racks: [{'id':'1','status':'occupied','content':'Item 10'}, ...].
 
         ID 는 정수 1..18 또는 그 문자열 형태. 다른 형식은 무시.
         """
+        for cell in self._cells.values():
+            cell.set_data("empty")
+
         for rack in racks:
             rack_id = str(rack.get("id", "")).strip()
             cell = self._cells.get(rack_id)
@@ -160,10 +161,8 @@ class WarehouseRackWidget(QFrame):
 
         legend_items = [
             ("비어있음", STATUS_COLORS["empty"]["fill"], STATUS_COLORS["empty"]["border"]),
-            ("부분점유", STATUS_COLORS["partial"]["fill"], STATUS_COLORS["partial"]["border"]),
-            ("점유", STATUS_COLORS["full"]["fill"], STATUS_COLORS["full"]["border"]),
+            ("점유", STATUS_COLORS["occupied"]["fill"], STATUS_COLORS["occupied"]["border"]),
             ("예약", STATUS_COLORS["reserved"]["fill"], STATUS_COLORS["reserved"]["border"]),
-            ("잠김", STATUS_COLORS["locked"]["fill"], STATUS_COLORS["locked"]["border"]),
         ]
         for label, fill, border in legend_items:
             header_row.addWidget(_LegendItem(label, fill, border))

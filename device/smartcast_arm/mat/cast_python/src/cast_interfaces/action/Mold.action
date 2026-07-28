@@ -1,0 +1,11 @@
+#Goal 
+int32 pattern_id 
+---
+# Result 
+bool success 
+string message 
+
+---
+# Feedback (진행 상황), # cur_stage "MM", "POUR", "DM" 중 하나 
+string cur_stage 
+int32 progress_pct 

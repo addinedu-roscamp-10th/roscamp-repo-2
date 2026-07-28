@@ -14,9 +14,6 @@ import type {
   WarehouseRack,
   OutboundOrder,
   OrderStatus,
-  PriorityResult,
-  ProductionJob,
-  PriorityChangeLog,
 } from "./types";
 
 const API_BASE =
@@ -66,6 +63,9 @@ const ORD_STAT_TO_LEGACY: Record<string, OrderStatus> = {
   MFG: "in_production",
   DONE: "production_completed",
   SHIP: "shipping_ready",
+  // DB ord_stat 테이블은 'SHIPPING' 으로 저장하고 ord_log 테이블은 'SHIP' 으로 저장한다.
+  // 2026-05-13: 두 값 모두 shipping_ready 로 매핑해 UI 가 동일하게 "출고" 로 노출하게 한다.
+  SHIPPING: "shipping_ready",
   COMP: "completed",
   REJT: "rejected",
   CNCL: "rejected",
@@ -189,6 +189,7 @@ export function fetchProcessStages(): Promise<ProcessStageData[]> {
 type SmartcastInspectionTask = {
   txnId: number;
   itemId: number | null;
+  inferenceId: number | null;
   resId: string | null;
   txnStat: string | null;
   result: boolean | null;
@@ -209,6 +210,7 @@ function adaptInspection(raw: Partial<InspectionRecord> & Partial<SmartcastInspe
       confidence: Number(raw.confidence ?? 0),
       inspectorId: raw.inspectorId ?? "",
       imageId: raw.imageId ?? "",
+      inferenceId: raw.inferenceId,
       inspectedAt: raw.inspectedAt,
       defectType: raw.defectType,
       defectDetail: raw.defectDetail,
@@ -227,6 +229,7 @@ function adaptInspection(raw: Partial<InspectionRecord> & Partial<SmartcastInspe
     confidence: hasResult ? 100 : 0,
     inspectorId: raw.resId ?? "CAM-001",
     imageId: raw.txnId != null ? `IMG-${raw.txnId}` : "",
+    inferenceId: raw.inferenceId ?? undefined,
     inspectedAt: raw.endAt ?? raw.startAt ?? raw.reqAt ?? "",
     defectType: raw.result === false ? "검사 불합격" : undefined,
     defectDetail:
@@ -243,6 +246,10 @@ export async function fetchInspections(): Promise<InspectionRecord[]> {
     "/api/quality/inspections",
   );
   return raw.map(adaptInspection);
+}
+
+export function inspectionImageUrl(inferenceId: number): string {
+  return `${API_BASE}/api/quality/inspections/${inferenceId}/image`;
 }
 
 export function fetchQualityStats(): Promise<{
@@ -325,41 +332,30 @@ export function updateOrder(
   return apiPatch<Order>(`/api/orders/${orderId}`, data);
 }
 
-// ── 생산 스케줄링 ──
-
-export function calculatePriority(
-  orderIds: string[],
-): Promise<{ results: PriorityResult[] }> {
-  return apiFetch("/api/production/schedule/calculate", {
+/** "출하 시작" — 적재 완료 (shipping_ready) 상태인 주문에 대해 TAT 운반 task 를 trigger.
+ *  orderId: "ord_{n}" 형태 → 숫자 ord_id 추출 후 백엔드 호출.
+ *  반환: { ordId, itemIds, accepted, message }. itemIds 가 비면 적재 위치가 없어 운반 task 가
+ *  생성되지 않은 경우이며, UI 는 message 를 토스트로 노출하면 된다.
+ */
+export async function startShipping(
+  orderId: string,
+): Promise<{ ordId: number; itemIds: number[]; accepted: boolean; message: string }> {
+  const numericId = Number(orderId.replace(/^ord_/, ""));
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    throw new Error(`잘못된 주문 ID 입니다: ${orderId}`);
+  }
+  const res = await fetch(`${API_BASE}/api/production/shipping/start`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ order_ids: orderIds }),
+    body: JSON.stringify({ ord_id: numericId }),
   });
-}
-
-export function startProduction(
-  orderIds: string[],
-): Promise<ProductionJob[]> {
-  return apiFetch("/api/production/schedule/start", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ order_ids: orderIds }),
-  });
-}
-
-export function fetchProductionJobs(): Promise<ProductionJob[]> {
-  return apiFetch<ProductionJob[]>("/api/production/schedule/jobs");
-}
-
-export function createPriorityLog(data: {
-  order_id: string;
-  old_rank: number;
-  new_rank: number;
-  reason: string;
-}): Promise<PriorityChangeLog> {
-  return apiFetch("/api/production/schedule/priority-log", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-  });
+  if (!res.ok) {
+    let detail = `${res.status} ${res.statusText}`;
+    try {
+      const body = await res.json();
+      if (body?.detail) detail = String(body.detail);
+    } catch {}
+    throw new Error(`출하 시작 실패: ${detail}`);
+  }
+  return convertKeys(await res.json());
 }

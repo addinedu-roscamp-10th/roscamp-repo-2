@@ -9,8 +9,8 @@
     python main.py
 
 환경 변수:
-    CASTING_API_HOST, CASTING_API_PORT     (기본: 192.168.0.16:8000) — api_client 레거시 (Phase A-2 에서 제거 예정)
-    MANAGEMENT_GRPC_HOST, MANAGEMENT_GRPC_PORT  (기본: localhost:50051) — V6 canonical Management 직결
+    MANAGEMENT_GRPC_HOST, MANAGEMENT_GRPC_PORT  (기본: localhost:50051)
+    EVENT_GATEWAY_TARGET  (기본: 미설정, 예: localhost:50051)
 """
 
 from __future__ import annotations

@@ -29,7 +29,6 @@ _FLOW_TO_LEGACY_STAGE = {
     "PICK": "TR_LD",
     "READY_TO_SHIP": "SH",
     "DISCARDED": "SH",
-    "HOLD": "QUE",
 }
 
 _WO_STATUS_TO_ENUM = {"QUE": 1, "PROC": 2, "SUCC": 3, "FAIL": 4}
@@ -85,17 +84,22 @@ def item_to_proto(item):
 
 
 def production_order_to_proto(row):
-    return management_pb2.ProductionOrder(
-        ord_id=row.ord_id,
-        user_id=row.user_id,
-        latest_stat=row.latest_stat or "",
-        company_name=row.company_name or "",
-        customer_name=row.customer_name or "",
-        total_amount=row.total_amount or 0.0,
-        requested_delivery=row.requested_delivery or "",
-        confirmed_delivery=row.confirmed_delivery or "",
-        created_at=row.created_at or "",
-    )
+    kwargs = {
+        "ord_id": row.ord_id,
+        "user_id": row.user_id,
+        "latest_stat": row.latest_stat or "",
+        "company_name": row.company_name or "",
+        "customer_name": row.customer_name or "",
+        "total_amount": row.total_amount or 0.0,
+        "requested_delivery": row.requested_delivery or "",
+        "confirmed_delivery": row.confirmed_delivery or "",
+        "created_at": row.created_at or "",
+    }
+    # proto `optional int32 prod_id` — set 만 됐을 때 노출, None 이면 미설정.
+    prod_id = getattr(row, "prod_id", None)
+    if prod_id is not None:
+        kwargs["prod_id"] = int(prod_id)
+    return management_pb2.ProductionOrder(**kwargs)
 
 
 def pattern_to_proto(row):

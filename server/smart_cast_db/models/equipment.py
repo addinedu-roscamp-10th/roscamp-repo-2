@@ -21,7 +21,7 @@ class EquipTaskTxn(Base):
     __tablename__ = "equip_task_txn"
     __table_args__ = (
         CheckConstraint(
-            "task_type IN ('MM', 'POUR', 'DM', 'PP', 'PA_GP', 'PA_DP', 'PICK', 'SHIP', 'ToINSP', 'ToPAWait')",
+            "task_type IN ('MM', 'POUR', 'DM', 'PA_GP', 'PA_DP', 'PICK', 'SHIP', 'ToINSP', 'ToPAWait')",
             name="chk_equip_task_type",
         ),
         CheckConstraint("txn_stat IN ('QUE', 'PROC', 'SUCC', 'FAIL')", name="chk_equip_txn_stat"),

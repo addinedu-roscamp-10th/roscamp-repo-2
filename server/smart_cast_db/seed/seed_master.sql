@@ -112,6 +112,9 @@ ON CONFLICT (prod_opt_id) DO UPDATE SET
     material = EXCLUDED.material,
     load_class = EXCLUDED.load_class;
 
+-- 명시적 prod_opt_id 삽입 후 SERIAL 시퀀스 동기화 (중복 키 방지)
+SELECT setval('product_option_prod_opt_id_seq', (SELECT MAX(prod_opt_id) FROM product_option));
+
 WITH desired_product_option(prod_id, diameter, thickness_values, material_values, load_class_values) AS (
     VALUES
         (1, 450, ARRAY[25, 30, 35, 40], ARRAY['FC200', 'FC250', 'GCD450'], ARRAY['B125', 'C250', 'D400']),
@@ -198,12 +201,12 @@ INSERT INTO zone (zone_id, zone_nm) VALUES
 ON CONFLICT (zone_id) DO UPDATE SET
     zone_nm = EXCLUDED.zone_nm;
 
--- PAT: RA for Putaway (in STRG zone) (putaway arm tool)
--- MAT: RA for manufacturing (manufacturing arm tool)
--- TAT: TAT for transport (transport TAT tool)
+-- PAT: Putaway Arm Tool (STRG zone)
+-- MAT: Manufacturing Arm Tool (CAST zone)
+-- TAT: Transport AMR
 INSERT INTO res (res_id, res_type, model_nm) VALUES
-('PAT',   'RA',   'JetCobot 280 CAST'),
-('MAT',   'RA',   'JetCobot 280 STRG'),
+('PAT1',  'PAT',  'JetCobot 280 STRG'),
+('MAT1',  'MAT',  'JetCobot 280 CAST'),
 ('CONV1', 'CONV', 'ESP32 Conveyor v5 INSP'),
 ('TAT1',  'TAT',  'PinkyPro'),
 ('TAT2',  'TAT',  'PinkyPro'),
@@ -213,8 +216,8 @@ ON CONFLICT (res_id) DO UPDATE SET
     model_nm = EXCLUDED.model_nm;
 
 INSERT INTO equip (res_id, zone_id) VALUES
-('PAT',   1),
-('MAT',   4),
+('PAT1',  4),
+('MAT1',  1),
 ('CONV1', 3)
 ON CONFLICT (res_id) DO UPDATE SET
     zone_id = EXCLUDED.zone_id;

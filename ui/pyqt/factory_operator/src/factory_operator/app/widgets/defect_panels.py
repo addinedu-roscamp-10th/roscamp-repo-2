@@ -31,9 +31,9 @@ class TopDefectsPanel(QFrame):
         layout.setContentsMargins(14, 12, 14, 14)
         layout.setSpacing(10)
 
-        title = QLabel("주요 불량 유형 TOP 3")
-        title.setObjectName("sectionTitle")
-        layout.addWidget(title)
+        self._title = QLabel("주요 불량 유형 TOP 3")
+        self._title.setObjectName("sectionTitle")
+        layout.addWidget(self._title)
 
         self._badges: list[tuple[QLabel, QLabel, QLabel]] = []
         for rank in range(3):
@@ -73,6 +73,10 @@ class TopDefectsPanel(QFrame):
                 name.setText("-")
                 count.setText("0 건")
 
+    def set_source_available(self, available: bool) -> None:
+        suffix = "" if available else " (예시 데이터, 실데이터 미연동)"
+        self._title.setText(f"주요 불량 유형 TOP 3{suffix}")
+
 
 class InspectionStandardsPanel(QFrame):
     """검사 기준 참조 패널."""
@@ -86,29 +90,13 @@ class InspectionStandardsPanel(QFrame):
         self._layout.setContentsMargins(14, 12, 14, 14)
         self._layout.setSpacing(10)
 
-        title = QLabel("검사 기준 참조")
-        title.setObjectName("sectionTitle")
-        self._layout.addWidget(title)
+        self._title = QLabel("검사 기준 참조")
+        self._title.setObjectName("sectionTitle")
+        self._layout.addWidget(self._title)
 
-        # 고정 기준 목록 (기본)
         self._items: list[dict[str, Any]] = []
         self._rows: list[QFrame] = []
-        self.update_data(
-            [
-                {
-                    "product": "맨홀뚜껑 M500",
-                    "target": "Φ500 × H40 mm",
-                    "tolerance": "±0.8 mm",
-                    "threshold": "95%",
-                },
-                {
-                    "product": "그레이팅 GR-A",
-                    "target": "500 × 300 × 25 mm",
-                    "tolerance": "±1.0 mm",
-                    "threshold": "92%",
-                },
-            ]
-        )
+        self.update_data([])
 
     def update_data(self, items: list[dict[str, Any]]) -> None:
         # 기존 행 제거
@@ -124,6 +112,10 @@ class InspectionStandardsPanel(QFrame):
 
         self._layout.addStretch()
         self._items = list(items)
+
+    def set_source_available(self, available: bool) -> None:
+        suffix = "" if available else " (예시 데이터, 실데이터 미연동)"
+        self._title.setText(f"검사 기준 참조{suffix}")
 
     def _make_row(self, item: dict[str, Any]) -> QFrame:
         card = QFrame()

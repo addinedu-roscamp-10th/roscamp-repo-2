@@ -13,7 +13,11 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 
-from smart_cast_db.database import Base
+from sqlalchemy.orm import declarative_base
+
+# Legacy 모델은 별도 declarative registry 를 사용해 활성 모델(smart_cast_db.models.*)과
+# 클래스명 충돌 (Item, Product, Alert, Order 등) 을 회피한다.
+Base = declarative_base()
 
 
 def _utc_now() -> datetime:
@@ -283,13 +287,13 @@ class HandoffAck(Base):
     """
 
     __tablename__ = "handoff_acks"
+    # smartcast 스키마에 생성된 handoff_acks 사용 (legacy transport_tasks FK 제거).
+    __table_args__ = ({"schema": "smartcast"},)
 
     # DB 서버에 TimescaleDB 미설치 → 단순 PK 사용. 추후 hypertable 전환 시 (id, ack_at) 로 변경.
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     ack_at = Column(DateTime(timezone=True), nullable=False, default=_utc_now, index=True)
-    task_id = Column(
-        String, ForeignKey("transport_tasks.id", ondelete="SET NULL"), nullable=True, index=True
-    )
+    task_id = Column(String, nullable=True, index=True)
     zone = Column(String, nullable=False, index=True)
     amr_id = Column(String, nullable=True)
     ack_source = Column(
@@ -411,12 +415,11 @@ class WorkOrder(Base):
     act_end = Column(String, nullable=True)
 
 
-class Item(Base):
-    """개별 제품 1개 단위 실시간 공정 추적 — Confluence DB v47 의 Item 테이블.
+class _LegacyItemUnused(Base):
+    """레거시 v47 Item 테이블 (현 활성 모델은 smart_cast_db.models.item.Item).
 
-    work_order.qty 만큼 생성. cur_stage 로 위치 추적, insp_id 로 검사 결과 연결.
-    @MX:ANCHOR: V6 아키텍처의 핵심 추적 단위. UI 의 "주문별 제품 실시간 위치" 테이블이 직접 표시.
-    @MX:REASON: 1개 생산되는 과정(생산+검사+적재)을 item_id 단위로 추적 (CASE1 채택).
+    SQLAlchemy registry 에서 "Item" 이름 충돌 회피를 위해 클래스명을 변경.
+    외부 import 사용처 없음 — 단순히 mapper 등록만 다른 이름으로 유지.
     """
 
     __tablename__ = "items"

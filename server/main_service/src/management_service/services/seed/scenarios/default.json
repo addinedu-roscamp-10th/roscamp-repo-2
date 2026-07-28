@@ -1,0 +1,119 @@
+{
+    "resources": [
+        {
+            "res_id": "TAT1",
+            "res_type": "TAT",
+            "x": 0.0,
+            "y": 0.0,
+            "battery_pct": 80,
+            "status": "ALLOC"
+        },
+        {
+            "res_id": "TAT2",
+            "res_type": "TAT",
+            "x": 0.0,
+            "y": 0.0,
+            "battery_pct": 65,
+            "status": "ALLOC"
+        },
+        {
+            "res_id": "TAT3",
+            "res_type": "TAT",
+            "x": 0.0,
+            "y": 0.0,
+            "battery_pct": 50,
+            "status": "IDLE"
+        },
+        {
+            "res_id": "CONV1",
+            "res_type": "CONV",
+            "x": 0.0,
+            "y": 0.0,
+            "battery_pct": 100,
+            "status": "ALLOC"
+        },
+        {
+            "res_id": "PAT1",
+            "res_type": "PAT",
+            "x": 0.0,
+            "y": 0.0,
+            "battery_pct": 100,
+            "status": "IDLE"
+        },
+        {
+            "res_id": "MAT1",
+            "res_type": "MAT",
+            "x": 0.0,
+            "y": 0.0,
+            "battery_pct": 100,
+            "status": "IDLE"
+        }
+    ],
+    "charger_slots": [
+        {
+            "row": 1,
+            "col": 1,
+            "res_id": "TAT1",
+            "status": "occupied",
+            "pose_nm": "ToCHG1"
+        },
+        {
+            "row": 1,
+            "col": 2,
+            "res_id": "TAT2",
+            "status": "occupied",
+            "pose_nm": "ToCHG2"
+        },
+        {
+            "row": 1,
+            "col": 3,
+            "res_id": "TAT3",
+            "status": "occupied",
+            "pose_nm": "ToCHG3"
+        }
+    ],
+    "transfer_points": {
+        "ToINSP": [
+            -0.67,
+            -0.10
+        ],
+        "ToSHIP": [
+            -0.67,
+            0.45
+        ],
+        "ToCAST": [
+            -0.256,
+            0.20
+        ],
+        "ToCHG1": [
+            0.044,
+            0.095
+        ],
+        "ToCHG2": [
+            0.044,
+            -0.027
+        ],
+        "ToCHG3": [
+            0.044,
+            -0.179
+        ],
+        "ToSTRG": [
+            -0.10,
+            -0.465
+        ],
+        "ToPICK": [
+            -0.223,
+            -0.465
+        ],
+        "ToPP": [
+            -0.447,
+            -1.05
+        ]
+    },
+    "battery_thresholds": {
+        "ToPP": 20,
+        "ToSTRG": 25,
+        "ToSHIP": 20,
+        "ToCHG": 15
+    }
+}

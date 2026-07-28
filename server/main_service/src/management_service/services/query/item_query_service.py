@@ -25,7 +25,7 @@ from smart_cast_db.models import (
 logger = logging.getLogger(__name__)
 
 _LEGACY_STAGE_TO_FLOW_STATS = {
-    "QUE": ("CREATED", "WAIT_INSP", "WAIT_PA", "HOLD"),
+    "QUE": ("CREATED", "WAIT_INSP", "WAIT_PA"),
     "MM": ("CAST",),
     "DM": tuple(),
     "TR_PP": ("WAIT_PP",),
@@ -48,7 +48,6 @@ _FLOW_TO_LEGACY_STAGE = {
     "PICK": "TR_LD",
     "READY_TO_SHIP": "SH",
     "DISCARDED": "SH",
-    "HOLD": "QUE",
 }
 
 
@@ -283,7 +282,7 @@ class ItemQueryService:
                 in_progress = (
                     db.query(func.count(Item.item_id))
                     .filter(Item.zone_nm == zone.zone_nm)
-                    .filter(Item.flow_stat.notin_(["READY_TO_SHIP", "DISCARDED", "HOLD"]))
+                    .filter(Item.flow_stat.notin_(["READY_TO_SHIP", "DISCARDED"]))
                     .scalar()
                     or 0
                 )

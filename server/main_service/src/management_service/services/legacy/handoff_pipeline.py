@@ -10,9 +10,10 @@ debug 라우트(가상 curl)와 Mgmt gRPC 핸들러가 동일 결과를 보장�
   apply_tof1()     — 컨베이어 TOF1 진입 (RFID 부착 후 작업자가 컨베이어에 올림)
                      pp_task_txn QUE/PROC → SUCC + item PP→ToINSP +
                      equip_task_txn ToINSP PROC + equip_stat ON
-  apply_tof2()     — 컨베이어 TOF2 도달 (검사 시작)
+  apply_tof2()     — 컨베이어 TOF2 도달 (ToINSP 종결)
                      equip_task_txn ToINSP SUCC + equip_stat OFF +
-                     item ToINSP→INSP + insp_task_txn PROC
+                     item ToINSP→WAIT_INSP. InspTaskTxn 은 task_executor
+                     (INSP task 진입 시) 가 생성하므로 본 함수는 INSERT 하지 않음.
 
 idempotency / FSM 전이는 호출자가 처리 (server.py).
 """
@@ -54,6 +55,7 @@ def apply_handoff(
     via: str,
     idempotency_key: str | None,
     operator_id: int | None = None,
+    zone: str = "postprocessing",
 ) -> HandoffApplyResult:
     """5단계 핸드오프 DB 변경을 단일 트랜잭션으로 적용.
 
@@ -97,13 +99,19 @@ def apply_handoff(
         ack = HandoffAck(
             ack_at=now_utc,
             task_id=None,
-            zone="postprocessing",
+            zone=zone,
             amr_id=None,
             ack_source=ack_source,
+            operator_id=str(operator_id) if operator_id is not None else None,
             button_device_id=button_device_id,
             orphan_ack=True,
             idempotency_key=idempotency_key,
-            extra={"via": via},
+            extra={
+                "via": via,
+                "released": False,
+                "item_id": None,
+                "ord_id": None,
+            },
         )
         db.add(ack)
         db.flush()
@@ -135,7 +143,9 @@ def apply_handoff(
     item: Item | None = db.get(Item, item_id) if item_id else None
     if item is not None:
         item.flow_stat = "PP"
-        item.zone_nm = "PP"
+        # item.zone_nm = "PP"  # ORM synonym=cur_res 는 res.res_id FK (CONV1/PAT1/MAT1/TAT*) —
+        # zone 명 "PP" 는 res_id 가 아니므로 FK violation. zone 정보는 별도 컬럼이 없으므로
+        # 기록하지 않음 (cur_stat 가 flow_stat synonym 으로 zone 의미 일부 표현).
         item.updated_at = now
         item_cur_stat = _item_state_label(item)
 
@@ -163,7 +173,7 @@ def apply_handoff(
         # 후처리 옵션이 0건이면 PP 단계 건너뛰고 ToINSP 로 직행
         if not maps:
             item.flow_stat = "WAIT_INSP"
-            item.zone_nm = "INSP"
+            # item.zone_nm = "INSP"  # FK 충돌 회피 (zone_nm=cur_res synonym, 위 line 139 참조)
             item_cur_stat = _item_state_label(item)
 
     # (5) handoff_acks 감사 로그
@@ -172,13 +182,20 @@ def apply_handoff(
     ack = HandoffAck(
         ack_at=now_utc,
         task_id=None,
-        zone="postprocessing",
+        zone=zone,
         amr_id=target.res_id,
         ack_source=ack_source,
+        operator_id=str(operator_id) if operator_id is not None else None,
         button_device_id=button_device_id,
         orphan_ack=False,
         idempotency_key=idempotency_key,
-        extra={"via": via, "trans_task_txn_id": target.txn_id},
+        extra={
+            "via": via,
+            "trans_task_txn_id": target.txn_id,
+            "released": True,
+            "item_id": item_id,
+            "ord_id": target.ord_id,
+        },
     )
     db.add(ack)
     db.flush()
@@ -217,7 +234,7 @@ class Tof1ApplyResult:
 def apply_tof1(
     db: Session,
     *,
-    res_id: str = "CONV-01",
+    res_id: str = "CONV1",
     rfid_payload: str | None = None,
     item_id: int | None = None,
     operator_id: int | None = None,
@@ -274,32 +291,57 @@ def apply_tof1(
 
     # (2) item 갱신 — PP/PA 완료 후 검사 대기 상태로 전환
     item.flow_stat = "WAIT_INSP"
-    item.zone_nm = "INSP"
+    # item.zone_nm = "INSP"  # FK 충돌 회피 (zone_nm=cur_res synonym, apply_handoff 와 동일 정책)
     item.updated_at = now
 
-    # (3) equip_task_txn 신규 (ToINSP, PROC)
-    new_txn = EquipTaskTxn(
-        res_id=res_id,
-        task_type="ToINSP",
-        txn_stat="PROC",
-        item_stat_id=item.item_stat_id,
-        ord_id=item.ord_id,
-        req_at=now,
-        start_at=now,
-    )
-    db.add(new_txn)
-    db.flush()
-
-    # (4) equip_stat INSERT (CONV ON)
-    db.add(
-        EquipStat(
-            res_id=res_id,
-            item_stat_id=item.item_stat_id,
-            txn_type="ToINSP",
-            cur_stat="ON",
-            updated_at=now,
+    # (3) equip_task_txn 신규 (ToINSP, PROC) — idempotent
+    # EquipTaskTxn ORM 컬럼: txn_id, res_id, task_type, txn_stat, item_id (synonym item_stat_id),
+    # strg_loc_id, ship_loc_id, req_at, start_at, end_at — ord_id 컬럼 없음 (item join 필요).
+    # V1 ReportConveyorEvent path + EventGateway TOF1_ENTRY path 두 번 호출 시 중복 INSERT
+    # 방지: 동일 (res_id, item_id, ToINSP, PROC) 가 이미 있으면 그 row 재사용.
+    existing_to_insp = (
+        db.query(EquipTaskTxn)
+        .filter(
+            EquipTaskTxn.res_id == res_id,
+            EquipTaskTxn.item_id == item.item_stat_id,
+            EquipTaskTxn.task_type == "ToINSP",
+            EquipTaskTxn.txn_stat == "PROC",
         )
+        .first()
     )
+    if existing_to_insp is not None:
+        new_txn = existing_to_insp
+    else:
+        new_txn = EquipTaskTxn(
+            res_id=res_id,
+            task_type="ToINSP",
+            txn_stat="PROC",
+            item_stat_id=item.item_stat_id,
+            req_at=now,
+            start_at=now,
+        )
+        db.add(new_txn)
+        db.flush()
+
+    # (4) equip_stat UPSERT (CONV ON) — res_id unique 제약 → INSERT or UPDATE 분기
+    existing_stat = (
+        db.query(EquipStat).filter(EquipStat.res_id == res_id).first()
+    )
+    if existing_stat is not None:
+        existing_stat.item_stat_id = item.item_stat_id
+        existing_stat.txn_type = "ToINSP"
+        existing_stat.cur_stat = "ON"
+        existing_stat.updated_at = now
+    else:
+        db.add(
+            EquipStat(
+                res_id=res_id,
+                item_stat_id=item.item_stat_id,
+                txn_type="ToINSP",
+                cur_stat="ON",
+                updated_at=now,
+            )
+        )
 
     return Tof1ApplyResult(
         ok=True,
@@ -333,14 +375,19 @@ class Tof2ApplyResult:
 def apply_tof2(
     db: Session,
     *,
-    res_id: str = "CONV-01",
+    res_id: str = "CONV1",
     item_id: int | None = None,
 ) -> Tof2ApplyResult:
-    """TOF2 도달 — ToINSP 종료 + insp_task_txn 시작.
+    """TOF2 도달 — ToINSP equip_task_txn 종결만 처리.
+
+    PR #11 변경 (2026-05-12): 본 함수가 InspTaskTxn(PROC) 을 직접 INSERT 하던
+    경로를 제거했다. 이유는 task_manager._create_result(INSP) 도 INSP 진입 시
+    동일 row 를 INSERT 하므로 두 경로가 공존하면 race / 중복 row 가 발생한다.
+    이제 InspTaskTxn 생성/PROC/SUCC lifecycle 은 task_executor 가 단독 owner.
 
     item_id 미지정 시 res_id 의 PROC ToINSP equip_task_txn 1건 자동 픽업.
     """
-    from smart_cast_db.models import EquipStat, EquipTaskTxn, InspTaskTxn, Item
+    from smart_cast_db.models import EquipStat, EquipTaskTxn, Item
 
     q = db.query(EquipTaskTxn).filter(
         EquipTaskTxn.res_id == res_id,
@@ -382,31 +429,32 @@ def apply_tof2(
     txn.txn_stat = "SUCC"
     txn.end_at = now
 
-    # (2) equip_stat OFF
-    db.add(
-        EquipStat(
-            res_id=res_id,
-            item_stat_id=item.item_stat_id,
-            txn_type="ToINSP",
-            cur_stat="OFF",
-            updated_at=now,
-        )
+    # (2) equip_stat UPSERT (CONV OFF) — res_id unique 제약
+    existing_stat = (
+        db.query(EquipStat).filter(EquipStat.res_id == res_id).first()
     )
+    if existing_stat is not None:
+        existing_stat.item_stat_id = item.item_stat_id
+        existing_stat.txn_type = "ToINSP"
+        existing_stat.cur_stat = "OFF"
+        existing_stat.updated_at = now
+    else:
+        db.add(
+            EquipStat(
+                res_id=res_id,
+                item_stat_id=item.item_stat_id,
+                txn_type="ToINSP",
+                cur_stat="OFF",
+                updated_at=now,
+            )
+        )
 
-    # (3) item WAIT_INSP → INSP
-    item.flow_stat = "INSP"
-    item.zone_nm = "INSP"
+    # (3) item flow_stat — WAIT_INSP 로 전이 (INSP txn 은 아직 미생성).
+    # 실제 INSP 진행 진입은 task_executor 가 InspTaskTxn 을 PROC 로 전이할 때.
+    item.flow_stat = "WAIT_INSP"
+    # item.zone_nm = "INSP"  # FK 충돌 회피 (zone_nm=cur_res synonym, apply_handoff 와 동일 정책)
     item.updated_at = now
 
-    # (4) insp_task_txn 신규 (PROC, start_at=now)
-    insp = InspTaskTxn(
-        item_stat_id=item.item_stat_id,
-        res_id=res_id,
-        txn_stat="PROC",
-        req_at=now,
-        start_at=now,
-    )
-    db.add(insp)
     db.flush()
 
     return Tof2ApplyResult(
@@ -415,9 +463,9 @@ def apply_tof2(
         ord_id=item.ord_id,
         res_id=res_id,
         equip_task_txn_succ_id=txn.txn_id,
-        insp_task_txn_id=insp.txn_id,
+        insp_task_txn_id=None,
         item_cur_stat=_item_state_label(item),
-        reason="TOF2 detected -> ToINSP SUCC + INSP started",
+        reason="TOF2 detected -> ToINSP SUCC (InspTaskTxn 은 task_executor 가 생성)",
     )
 
 

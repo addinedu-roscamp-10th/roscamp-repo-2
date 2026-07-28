@@ -1,0 +1,7 @@
+int32 pattern_id
+---
+bool success
+string message
+---
+string cur_stage
+int32 progress_pct

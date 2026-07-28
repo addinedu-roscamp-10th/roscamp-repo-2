@@ -10,8 +10,8 @@ PyQt5 관제 애플리케이션 핵심 코드 — 메인 윈도우, 페이지, �
 | File | Description |
 |------|-------------|
 | `main_window.py` | QMainWindow — 사이드바 내비게이션 + QStackedWidget 페이지 스택 (진입점) |
-| `api_client.py` | REST API client for Interface Service |
 | `management_client.py` | gRPC Management Service 클라이언트 (싱글톤) |
+| `event_gateway_client.py` | gRPC EventGateway publish/stream 클라이언트 |
 | `mock_data.py` | 개발용 mock 데이터 생성기 |
 
 ## Subdirectories
@@ -35,14 +35,13 @@ PyQt5 관제 애플리케이션 핵심 코드 — 메인 윈도우, 페이지, �
 
 ### Common Patterns
 - Page = QWidget 서브클래스, main_window의 page_stack에 추가
-- Worker = QThread 서브클래스, gRPC streaming 또는 REST polling
+- Worker = QThread 서브클래스, gRPC streaming 또는 unary polling
 - Widget = 재사용 가능한 UI 컴포넌트 (AMR, 컨베이어, 차트)
 
 ## Dependencies
 
 ### Internal
 - `backend/management/` — gRPC 서버
-- `backend/app/` — REST 서버 (보조)
 
 ### External
 - PyQt5, grpcio, protobuf

@@ -2,14 +2,16 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ClipboardList, FlaskConical, Factory } from "lucide-react";
+import { ClipboardList, FlaskConical, Factory, LayoutDashboard } from "lucide-react";
 
 // 관리자 웹 페이지 (Next.js).
 // 모니터링 관련 페이지(대시보드/생산 모니터링/품질 검사/물류 이송/생산 계획)는
 // PyQt5 데스크톱 앱(monitoring/)으로 분리됨.
 // @MX:NOTE: Confluence 17956894 결정 — UI 분리 정책
 // 2026-04-08: 생산 계획(우선순위 계산)·입출고 내역 페이지를 PyQt5로 이관
+// 2026-05-15: /admin/dashboard 운영 대시보드 복귀.
 const navItems = [
+  { href: "/admin/dashboard", label: "운영 대시보드", icon: LayoutDashboard },
   { href: "/orders", label: "주문 관리", icon: ClipboardList },
   { href: "/quality", label: "품질 관리", icon: FlaskConical },
 ];

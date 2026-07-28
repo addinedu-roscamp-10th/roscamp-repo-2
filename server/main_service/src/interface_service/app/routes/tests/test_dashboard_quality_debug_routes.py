@@ -178,7 +178,7 @@ def test_debug_lookup_and_sim_rfid_scan_use_item_stat_payload_matching(client, r
     scan = client.post(
         "/api/debug/sim/rfid-scan",
         json={
-            "reader_id": "ESP-CONV-01",
+            "reader_id": "ESP-CONV1",
             "zone": "postprocessing",
             "raw_payload": route_seed["rfid_payload"],
         },

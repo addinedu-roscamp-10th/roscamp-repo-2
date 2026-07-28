@@ -40,7 +40,7 @@ export function SmartCastHeader({
         <span className="text-base font-bold text-gray-900">
           SmartCast Robotics
         </span>
-        <span className="text-[10px] font-medium uppercase tracking-wider text-orange-600">
+        <span className="text-[10px] font-medium uppercase tracking-wider text-blue-600">
           Smart Casting · Automation
         </span>
       </div>

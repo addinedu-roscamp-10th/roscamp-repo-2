@@ -1,10 +1,10 @@
-"""Execution Monitor — Item 상태 변경 감지 + SLA 타임아웃 + alerts 통합 (V6 Phase 7).
+"""Execution Monitor — Item 상태 변경 감지 + SLA 타임아웃 이벤트.
 
 전략:
 - 1초 polling DB 스냅샷 대조 (in-memory cache)
 - 변경 감지: cur_stage 가 바뀐 item → ItemEvent emit
-- SLA 감시: 같은 stage 머무른 시간이 임계 초과 → alerts INSERT + 경고 ItemEvent emit
-- 동일 item-stage 조합 중복 알람 방지 (alert_id 캐시)
+- SLA 감시: 같은 stage 머무른 시간이 임계 초과 → 경고 ItemEvent emit
+- 동일 item-stage 조합 중복 경고 방지
 
 stage 별 SLA (초):
 - QUE: 무한 (대기는 정상)
@@ -14,10 +14,6 @@ stage 별 SLA (초):
 - PP:  600 (후처리 10분)
 - IP:   30 (검사 30초)
 - SH:  무한 (출고는 외부 트리거)
-
-@MX:NOTE: SLA 초과 시 alerts.severity='warning', type='stage_timeout' 으로 기록.
-@MX:WARN: 다중 클라이언트 동시 구독 시 각자 polling — alerts 는 1 source 가 처리하도록 보호 필요.
-        본 구현은 클라이언트별 독립 alerts INSERT 가 발생하지 않도록 동일 item-stage 캐시로 해결.
 """
 
 from __future__ import annotations
@@ -25,15 +21,14 @@ from __future__ import annotations
 import logging
 import os
 import time
-import uuid
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 import management_pb2  # type: ignore
-from db_session import SessionLocal
 from sqlalchemy import select
 
-from smart_cast_db.models import Alert, Item
+from smart_cast_db.database import SessionLocal
+from smart_cast_db.models import Item
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +57,6 @@ _FLOW_TO_LEGACY_STAGE = {
     "PICK": "TR_LD",
     "READY_TO_SHIP": "SH",
     "DISCARDED": "SH",
-    "HOLD": "QUE",
 }
 
 # stage 별 SLA (초). 0 또는 음수면 무한 (감시 안 함)
@@ -104,7 +98,7 @@ def _stage_enum(stage: str | None) -> int:
 
 
 def _now_iso() -> str:
-    return datetime.now(UTC).isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _now_mono() -> float:
@@ -116,31 +110,19 @@ def _legacy_stage_from_item(flow_stat: str | None) -> str:
 
 
 class ExecutionMonitor:
-    """진행 중 Item 감시 + ItemEvent stream + alerts 자동 기록.
-
-    각 클라이언트 연결마다 stream() generator 가 독립 실행되지만, alerts 기록 dedup 캐시는
-    인스턴스 공유로 동일 item-stage 중복 INSERT 를 방지한다.
-    """
+    """진행 중 Item 감시 + ItemEvent stream."""
 
     def __init__(
         self,
         poll_interval_sec: float = 1.0,
         sla_overrides: dict[str, float] | None = None,
-        image_forwarder=None,
     ) -> None:
         self._base_interval = poll_interval_sec
         self._interval = poll_interval_sec
         self._sla = dict(DEFAULT_SLA_SEC)
-        # V6 AI 학습 데이터 브리지: IP 진입 시 최신 프레임을 AI Server 로 전달
-        self._image_forwarder = image_forwarder
-        self._ip_camera_id = os.environ.get("MGMT_IP_CAMERA_ID", "CAM-INSP-01")
-        # snapshot dedup: (item_id, stage) → last_fired monotonic. bg+stream 양쪽에서 공유
-        self._last_snapshot_fired: dict[tuple[int, str], float] = {}
-        self._snapshot_lock = __import__("threading").Lock()
-        self._SNAPSHOT_TTL_SEC = 60.0  # 같은 item-stage 재발화 최소 간격
         if sla_overrides:
             self._sla.update(sla_overrides)
-        # 인스턴스 공유 캐시 (alerts dedup)
+        # 인스턴스 공유 캐시 (SLA warning dedup)
         self._last_alert: dict[tuple[int, str], float] = {}
         self._stage_started_mono: dict[int, tuple[str, float]] = {}
         # V6 P-001: Adaptive polling 상태
@@ -149,7 +131,7 @@ class ExecutionMonitor:
         sla_min_half = (min(positive_slas) / 2.0) if positive_slas else MAX_POLL_INTERVAL_SEC
         self._max_interval = min(MAX_POLL_INTERVAL_SEC, max(self._base_interval, sla_min_half))
         self._quiet_cycles = 0
-        # 백그라운드 자동 polling — 클라이언트 stream 없어도 SLA 감시 + alerts 발행
+        # 백그라운드 자동 polling — 클라이언트 stream 없어도 SLA 감시
         self._bg_snapshot: dict[int, str] = {}
         self._bg_first_pass = True
         self._bg_stop = False
@@ -160,14 +142,14 @@ class ExecutionMonitor:
         )
         self._bg_thread.start()
         logger.info(
-            "ExecutionMonitor background SLA polling 시작 (base=%.1fs, max=%.1fs, adaptive=%s)",
+            "ExecutionMonitor background polling 시작 (base=%.1fs, max=%.1fs, adaptive=%s)",
             self._base_interval,
             self._max_interval,
             ADAPTIVE_POLLING,
         )
 
     def _background_loop(self) -> None:
-        """클라이언트 연결 여부와 무관하게 SLA 감시. 이벤트는 버리고 alerts 만 INSERT.
+        """클라이언트 연결 여부와 무관하게 SLA 감시.
 
         V6 P-001: Adaptive interval — quiet cycles 가 누적되면 점진적으로 늘어나
         DB 부담 최소화. 변경/타임아웃 발생 시 즉시 base interval 로 복귀.
@@ -272,7 +254,7 @@ class ExecutionMonitor:
                         severity=r.severity or "info",
                         error_code=r.error_code or "",
                         message=r.message or "",
-                        equipment_id=r.equipment_id or "",
+                        equipment_id=r.res_id or "",
                         zone=r.zone or "",
                         at=management_pb2.Timestamp(iso8601=r.timestamp or _now_iso()),
                     )
@@ -321,33 +303,11 @@ class ExecutionMonitor:
                             item_id, stage, robot, message="" if first_pass else "stage_changed"
                         )
                     )
-                    # IP 진입 트리거 — AI 학습 데이터셋용 스냅샷 (bg+stream 중복 방지)
-                    if stage_changed and stage == "IP" and self._image_forwarder is not None:
-                        key = (item_id, "IP")
-                        with self._snapshot_lock:
-                            last = self._last_snapshot_fired.get(key)
-                            if last is not None and (now_mono - last) < self._SNAPSHOT_TTL_SEC:
-                                fire = False
-                            else:
-                                self._last_snapshot_fired[key] = now_mono
-                                fire = True
-                        if fire:
-                            try:
-                                self._image_forwarder.snapshot(
-                                    item_id=item_id,
-                                    stage="IP",
-                                    camera_id=self._ip_camera_id,
-                                )
-                            except Exception:  # noqa: BLE001
-                                logger.exception("image_forwarder.snapshot 실패 item=%d", item_id)
-
                 # 2) SLA 타임아웃 검사 (변경 없을 때만)
                 if not first_pass and not stage_changed:
                     timeout_event = self._check_sla(db, item_id, stage, robot, now_mono)
                     if timeout_event is not None:
                         events.append(timeout_event)
-
-            db.commit()  # alerts INSERT 반영
 
         return events, new_snapshot
 
@@ -361,7 +321,7 @@ class ExecutionMonitor:
         )
 
     def _check_sla(self, db, item_id: int, stage: str, robot_id: str, now_mono: float):
-        """SLA 초과 여부 판정. 위반 시 alerts INSERT + 경고 ItemEvent 반환."""
+        """SLA 초과 여부 판정. 위반 시 경고 ItemEvent 반환."""
         sla = self._sla.get(stage, 0)
         if sla <= 0:
             return None
@@ -380,31 +340,7 @@ class ExecutionMonitor:
             return None
         self._last_alert[key] = now_mono
 
-        # alerts INSERT 는 실제 task/res_id 기반으로 다시 설계할 때까지 비활성화.
-        # 지금은 item_stat.flow_stat / zone_nm 만 보고 SLA 경고를 만들기 때문에
-        # 실제 설비 할당이 없는 상태에서도 alerts_stat FK 위반을 만들 수 있다.
-        #
-        # alert_id = f"ALT-{uuid.uuid4().hex[:12]}"
-        # msg = f"Item {item_id} stage={stage} elapsed={elapsed:.0f}s > SLA {sla:.0f}s"
-        # try:
-        #     db.add(
-        #         Alert(
-        #             id=alert_id,
-        #             equipment_id=robot_id or "",
-        #             type="stage_timeout",
-        #             severity="warning",
-        #             error_code=f"SLA_{stage}",
-        #             message=msg,
-        #             abnormal_value=f"{elapsed:.0f}s",
-        #             zone=stage,
-        #             timestamp=_now_iso(),
-        #             acknowledged=False,
-        #         )
-        #     )
-        #     logger.warning("SLA 위반: %s (alert=%s)", msg, alert_id)
-        # except Exception as exc:  # noqa: BLE001
-        #     logger.exception("alerts INSERT 실패: %s", exc)
         msg = f"Item {item_id} stage={stage} elapsed={elapsed:.0f}s > SLA {sla:.0f}s"
-        logger.warning("SLA 위반 감지(INSERT 비활성화): %s", msg)
+        #logger.warning("SLA 위반 감지: %s", msg)
 
         return self._make_event(item_id, stage, robot_id, message=f"sla_timeout:{sla:.0f}s")

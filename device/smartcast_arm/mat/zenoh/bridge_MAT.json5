@@ -1,0 +1,29 @@
+// MAT zenoh bridge
+
+{
+    plugins: {
+        ros2dds: {
+            domain: <DOMAIN_ID>,  // domain id 채우기 (MAT1~: 41~)
+            namespace: "/MAT",  // robot namespace 채우기 (ex: MAT1, MAT2..)
+
+            allow: {
+                action_servers: [
+                    "/pattern_pick_action",
+                    "/die_stamp_action",
+                    "/pattern_return_action",
+                    "/crucible_pick_action",
+                    "/metal_pour_action",
+                    "/crucible_return_action",
+                    "/casting_pick_action",
+                    "/tat_load_action",
+                    "/return_to_base_action"
+                ],
+            },
+        },
+    },
+
+    mode: "client",
+    connect: {
+        endpoints: ["tcp/192.168.1.40:7447"],
+    },
+}

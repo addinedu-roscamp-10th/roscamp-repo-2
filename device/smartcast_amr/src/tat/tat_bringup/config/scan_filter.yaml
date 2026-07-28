@@ -1,0 +1,35 @@
+/**:
+  ros__parameters:
+    filter1:
+      name: mask_rear_left_leg
+      type: laser_filters/LaserScanAngularBoundsFilterInPlace
+      params:
+        lower_angle: -0.87   # -46.71 deg
+        upper_angle: -0.56   # -34.39 deg
+    filter2:
+      name: mask_rear_right_leg
+      type: laser_filters/LaserScanAngularBoundsFilterInPlace
+      params:
+        lower_angle: 0.56    # +34.39 deg
+        upper_angle: 0.87    # +46.71 deg
+    filter3:
+      name: mask_front_left_leg
+      type: laser_filters/LaserScanAngularBoundsFilterInPlace
+      params:
+        lower_angle: -2.35   # -128.94 deg
+        upper_angle: -1.9   # -113.71 deg
+    filter4:
+      name: mask_front_right_leg
+      type: laser_filters/LaserScanAngularBoundsFilterInPlace
+      params:
+        lower_angle: 1.9    # +113.71 deg
+        upper_angle: 2.35    # +128.94 deg
+    filter5:
+      name: drop_self
+      type: laser_filters/LaserScanRangeFilter
+      params:
+        use_message_range_limits: false
+        lower_threshold: 0.085
+        upper_threshold: 40.0
+        lower_replacement_value: .inf
+        upper_replacement_value: .inf

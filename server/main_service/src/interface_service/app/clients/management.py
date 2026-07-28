@@ -5,7 +5,8 @@ Management Service(gRPC, :50051) 를 호출할 때 사용하는 싱글톤 stub.
 
 현재 범위:
   - Health RPC proxy
-  - StartProduction write proxy
+  - StartShipping write proxy
+  - GetInspectionImage image proxy
   - Graceful degradation: Management 미가동 시 ManagementUnavailable 예외 → 503 응답
 
 환경변수:
@@ -26,10 +27,12 @@ import grpc
 
 logger = logging.getLogger("app.clients.management")
 
-# Management 의 proto 산출물은 src/main_service/management/ 에 있음 — sys.path 에 등록.
+# Management 의 proto 산출물은 src/management_service/ 에 *_pb2.py 형태로 위치.
+# 2026-05-13: 이전 코드는 src/main_service/management 를 가리켜 proto import 가 항상 실패하고
+#             ManagementUnavailable("proto stubs not compiled") 으로 폴백하던 버그를 수정.
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _SRC_DIR = os.path.abspath(os.path.join(_THIS_DIR, "..", "..", ".."))
-_MGMT_DIR = os.path.join(_SRC_DIR, "main_service", "management")
+_MGMT_DIR = os.path.join(_SRC_DIR, "management_service")
 if _MGMT_DIR not in sys.path:
     sys.path.insert(0, _MGMT_DIR)
 
@@ -39,8 +42,13 @@ try:
 
     _PROTO_AVAILABLE = True
 except ImportError as exc:
-    logger.warning(
-        "Management proto stubs unavailable (%s) — 'make proto' in backend/management 필요", exc
+    # proto stubs 로딩 실패는 Management 미가동(런타임 장애)이 아니라 빌드/배포 구성 오류다.
+    logger.error(
+        "Management proto stubs import FAILED (CONFIG ERROR, not a service outage): %s. "
+        "Regenerate via 'python -m grpc_tools.protoc -I proto --python_out=. --grpc_python_out=. "
+        "proto/management.proto' from the repository root "
+        "or verify sys.path includes the management_service stubs directory.",
+        exc,
     )
     management_pb2 = None  # type: ignore
     management_pb2_grpc = None  # type: ignore
@@ -54,6 +62,10 @@ TIMEOUT = float(os.environ.get("MANAGEMENT_GRPC_TIMEOUT", "3.0"))
 
 class ManagementUnavailable(RuntimeError):
     """Management Service 미가동 / proto stubs 없음 / 타임아웃 등."""
+
+
+class InspectionImageNotFound(LookupError):
+    """Management에 요청한 검사 이미지가 없음."""
 
 
 class ManagementClient:
@@ -134,19 +146,19 @@ class ManagementClient:
                 f"Management {self.endpoint} unreachable: {exc.code()}"
             ) from exc
 
-    def start_production(self, ord_id: int):
-        """SPEC-C2 Iteration 3: smartcast v2 단건 생산 개시 proxy.
+    def start_shipping(self, ord_id: int) -> dict:
+        """출하 트리거 — Management.StartShipping RPC proxy.
 
-        Returns: proto StartProductionResult (ord_id, item_id, equip_task_txn_id, message)
+        Returns: {"ord_id": int, "item_ids": list[int], "accepted": bool, "message": str}
         Raises:
-            ValueError — ord_id 무효 / 존재하지 않음 / 패턴 미등록 (gRPC INVALID_ARGUMENT)
-            ManagementUnavailable — Mgmt 미가동 또는 timeout
+            ValueError — INVALID_ARGUMENT (예: ord_id <= 0)
+            ManagementUnavailable — Mgmt 미가동, timeout, INTERNAL 에러
         """
         try:
             self._ensure_channel()
             assert self._stub is not None
-            resp = self._stub.StartProduction(
-                management_pb2.StartProductionRequest(ord_id=int(ord_id)),
+            resp = self._stub.StartShipping(
+                management_pb2.StartShippingRequest(ord_id=int(ord_id)),
                 timeout=self._timeout,
             )
         except grpc.RpcError as exc:
@@ -154,60 +166,52 @@ class ManagementClient:
             if code == grpc.StatusCode.INVALID_ARGUMENT:
                 raise ValueError(exc.details() or "invalid argument") from exc
             raise ManagementUnavailable(
-                f"StartProduction failed ({code}): {exc.details() if hasattr(exc, 'details') else exc}"
+                f"StartShipping failed ({code}): {exc.details() if hasattr(exc, 'details') else exc}"
             ) from exc
-        # Legacy result field may be empty while canonical ack is populated.
-        result = getattr(resp, "result", None)
-        if (
-            result is not None
-            and (
-                getattr(result, "ord_id", 0)
-                or getattr(result, "item_id", 0)
-                or getattr(result, "equip_task_txn_id", 0)
-                or getattr(result, "message", "")
-            )
-        ):
-            return result
+        return {
+            "ord_id": int(resp.ord_id),
+            "item_ids": [int(x) for x in resp.item_ids],
+            "accepted": bool(resp.accepted),
+            "message": resp.message or "",
+        }
 
-        ack = getattr(resp, "ack", None)
-        if ack is not None and getattr(ack, "orders", None):
-            first = ack.orders[0]
+    def get_inspection_image(
+        self,
+        inference_id: int,
+        *,
+        kind: str = "result",
+    ) -> dict[str, bytes | str]:
+        """Management에서 검사 이미지 bytes 조회."""
+        if kind not in {"result", "segmented"}:
+            raise ValueError(f"unsupported inspection image kind={kind!r}")
 
-            class _Result:
-                ord_id = first.ord_id
-                item_id = first.item_id
-                equip_task_txn_id = first.equip_task_txn_id
-                message = first.reason or ack.message or ""
-
-            return _Result()
-
-        raise ManagementUnavailable("StartProduction returned no result payload")
-
-    def register_pattern(self, ord_id: int, ptn_loc_id: int):
-        """발주↔패턴 위치 등록 proxy."""
         try:
             self._ensure_channel()
             assert self._stub is not None
-            resp = self._stub.RegisterPattern(
-                management_pb2.RegisterPatternRequest(
-                    ord_id=int(ord_id),
-                    ptn_loc_id=int(ptn_loc_id),
+            image_kind = (
+                management_pb2.INSPECTION_IMAGE_KIND_RESULT
+                if kind == "result"
+                else management_pb2.INSPECTION_IMAGE_KIND_SEGMENTED
+            )
+            response = self._stub.GetInspectionImage(
+                management_pb2.GetInspectionImageRequest(
+                    inference_id=int(inference_id),
+                    kind=image_kind,
                 ),
                 timeout=self._timeout,
             )
         except grpc.RpcError as exc:
             code = exc.code() if hasattr(exc, "code") else None
-            if code == grpc.StatusCode.INVALID_ARGUMENT:
-                raise ValueError(exc.details() or "invalid argument") from exc
+            details = exc.details() if hasattr(exc, "details") else str(exc)
             if code == grpc.StatusCode.NOT_FOUND:
-                raise LookupError(exc.details() or "not found") from exc
+                raise InspectionImageNotFound(details or "inspection image not found") from exc
             raise ManagementUnavailable(
-                f"RegisterPattern failed ({code}): {exc.details() if hasattr(exc, 'details') else exc}"
+                f"GetInspectionImage failed ({code}): {details}"
             ) from exc
+
         return {
-            "ord_id": resp.ord_id,
-            "pattern_id": resp.pattern_id if resp.HasField("pattern_id") else None,
-            "ptn_loc_id": resp.ptn_loc_id if resp.HasField("ptn_loc_id") else None,
+            "image_bytes": bytes(response.image_bytes),
+            "content_type": response.content_type,
         }
 
     def close(self) -> None:

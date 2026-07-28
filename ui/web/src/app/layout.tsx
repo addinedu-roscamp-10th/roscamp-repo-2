@@ -8,6 +8,7 @@ const inter = Inter({
   variable: "--font-inter",
 });
 
+
 export const metadata: Metadata = {
   title: "주물공장 생산 관제 시스템",
   description: "주물 생산 공정 실시간 모니터링 대시보드",

@@ -34,14 +34,14 @@ export function SmartCastLogo({
       <title>{title}</title>
       <defs>
         <linearGradient id="scBg" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="#dc2626" />
-          <stop offset="60%" stopColor="#ea580c" />
-          <stop offset="100%" stopColor="#f97316" />
+          <stop offset="0%" stopColor="#1e3a8a" />
+          <stop offset="55%" stopColor="#1d4ed8" />
+          <stop offset="100%" stopColor="#3b82f6" />
         </linearGradient>
         <radialGradient id="scGlow" cx="50%" cy="40%" r="70%">
-          <stop offset="0%" stopColor="#fef3c7" stopOpacity="1" />
-          <stop offset="55%" stopColor="#fbbf24" stopOpacity="0.95" />
-          <stop offset="100%" stopColor="#f97316" stopOpacity="0" />
+          <stop offset="0%" stopColor="#eff6ff" stopOpacity="1" />
+          <stop offset="55%" stopColor="#93c5fd" stopOpacity="0.95" />
+          <stop offset="100%" stopColor="#3b82f6" stopOpacity="0" />
         </radialGradient>
       </defs>
 
@@ -61,7 +61,7 @@ export function SmartCastLogo({
       <ellipse cx="24" cy="20" rx="9.5" ry="2.2" fill="url(#scGlow)" />
 
       {/* 용광로 하단 발광 (흐릿한 내부 빛) */}
-      <ellipse cx="24" cy="33" rx="6" ry="1.5" fill="#fbbf24" opacity="0.35" />
+      <ellipse cx="24" cy="33" rx="6" ry="1.5" fill="#60a5fa" opacity="0.4" />
 
       {/* 로봇 암 세그먼트 (상단, 3 관절) */}
       <g

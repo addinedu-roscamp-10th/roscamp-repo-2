@@ -218,6 +218,7 @@ export interface InspectionRecord {
   confidence: number;
   inspectorId: string;      // 검사자 ID 또는 비전 시스템 ID
   imageId: string;
+  inferenceId?: number;
   inspectedAt: string;
   defectType?: string;
   defectDetail?: string;    // 상세 사유 (치수 미달, 기포 등)
@@ -327,54 +328,4 @@ export interface MonthlyProductionSummary {
   totalDefects: number;
   defectRate: number;
   ordersFulfilled: number;
-}
-
-// ────────────────────────────────────────
-// 7. 생산 스케줄링 (Production Scheduling)
-// ────────────────────────────────────────
-
-export interface PriorityFactor {
-  name: string;
-  score: number;
-  maxScore: number;
-  detail: string;
-}
-
-export interface PriorityResult {
-  orderId: string;
-  companyName: string;
-  productSummary: string;
-  totalQuantity: number;
-  requestedDelivery: string | null;
-  totalScore: number;
-  rank: number;
-  factors: PriorityFactor[];
-  recommendationReason: string;
-  delayRisk: "high" | "medium" | "low";
-  readyStatus: "ready" | "not_ready";
-  blockingReasons: string[];
-  estimatedDays: number;
-}
-
-export interface ProductionJob {
-  id: string;
-  orderId: string;
-  priorityScore: number;
-  priorityRank: number;
-  assignedStage: string;
-  status: "queued" | "running" | "completed" | "cancelled";
-  estimatedCompletion: string | null;
-  startedAt: string | null;
-  completedAt: string | null;
-  createdAt: string;
-}
-
-export interface PriorityChangeLog {
-  id: number;
-  orderId: string;
-  oldRank: number;
-  newRank: number;
-  reason: string;
-  changedBy: string;
-  changedAt: string;
 }

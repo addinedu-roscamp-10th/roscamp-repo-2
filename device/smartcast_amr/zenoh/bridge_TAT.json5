@@ -1,0 +1,32 @@
+// TAT zenoh bridge
+
+{
+    plugins: {
+        ros2dds: {
+            domain: <DOMAIN_ID>,   // domain id 채우기 (TAT1~: 11~)
+            namespace: "/TAT",  // robot namespace 채우기 (ex: TAT1, TAT2...)
+
+            allow: {
+                publishers: [
+                    "/map",
+                    "/battery/percent",
+                    "/amcl_pose",
+                    "/plan"
+                ],
+                subscribers: [
+                    "/initialpose",
+                    "/goal_pose"
+                ],
+                action_servers: [
+                    "/dock_robot",
+                    "/undock_robot"
+                ],
+            },
+        },
+    },
+
+    mode: "client",
+    connect: {
+        endpoints: ["tcp/192.168.1.40:7447"],
+    },
+}

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # =====================
 # Common
@@ -166,28 +166,6 @@ class TransOut(_ORM):
 
 
 # =====================
-# ORD PATTERN (핑크 GUI #3)
-# =====================
-
-
-class OrdPatternIn(BaseModel):
-    """발주↔패턴 1:1 등록 요청."""
-
-    ord_id: int
-    ptn_loc_id: int = Field(
-        ge=1,
-        le=3,
-        validation_alias=AliasChoices("ptn_loc_id", "ptn_id"),
-    )
-
-
-class OrdPatternOut(_ORM):
-    ord_id: int
-    pattern_id: int | None = None
-    ptn_loc_id: int | None = None
-
-
-# =====================
 # ITEM
 # =====================
 
@@ -277,10 +255,20 @@ class InspTaskTxnOut(_ORM):
     item_id: int | None = None
     res_id: str | None = None
     txn_stat: str | None = None
-    result: bool | None = None
+    # PyQt vision_feed 의 PASS/FAIL 배지가 "OK"/"NG" 문자열로 매칭 — bool 대신 string.
+    result: str | None = None
     req_at: datetime | None = None
     start_at: datetime | None = None
     end_at: datetime | None = None
+    # 검사 시각 — PyQt vision_feed timestamp 영역에 표시.
+    # 우선순위: end_at (검사 종료) → start_at → req_at.
+    inspected_at: datetime | None = None
+    # Web UI 이미지 프록시가 Management GetInspectionImage를 호출할 때 사용하는 식별자.
+    inference_id: int | None = None
+    # AI /predict 결과 이미지 fetch URL — backend HttpImageServer 가 서빙.
+    # 정의: ai_inference_txn.segmented_image_url / result_image_url (옵션 B + 2026-05-18).
+    segmented_image_url: str | None = None
+    result_image_url: str | None = None
 
 
 # =====================
@@ -313,13 +301,8 @@ class ItemPpRequirements(BaseModel):
     pp_task_status: list[PpTaskTxnOut] = Field(default_factory=list)
 
 
-# =====================
-# 핑크 GUI #5 — 생산 시작 요청
-# =====================
-
-
-class ProductionStartRequest(BaseModel):
-    """발주 생산 시작 — 패턴 등록 후에만 호출 가능."""
+class ShippingStartRequest(BaseModel):
+    """출하 트리거 — 적재완료 상태 (ord_stat=SHIP) 인 발주에 대해서만 의미가 있다."""
 
     ord_id: int
 
