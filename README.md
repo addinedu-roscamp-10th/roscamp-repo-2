@@ -96,7 +96,7 @@ https://github.com/user-attachments/assets/6156e17b-4034-45b5-9016-b879d27fd837
 
 ### Map
 
-| 실제 공정 배치 | ROS Map |
+| 실제 공정 배치 | Occupancy Grid Map |
 | --- | --- |
 | <img width="882" height="504" alt="map_layout" src="https://github.com/user-attachments/assets/36d58250-c531-4ae6-878c-44579ea4d575" /> | <img width="915" height="503" alt="map" src="https://github.com/user-attachments/assets/1adeef5f-82c1-49d7-aa94-51296f579669" />|
 
