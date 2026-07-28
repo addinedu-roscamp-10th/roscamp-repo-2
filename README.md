@@ -19,7 +19,7 @@
 ### UI
 | Web (사용자, 관리자) | PyQt (공장 작업자) |
 | --- | --- |
-| <img width="475" alt="Web" src="https://github.com/user-attachments/assets/a1401470-608a-45ae-93f3-74283adc524e" /> | <img width="475" alt="PyQt" src="https://github.com/user-attachments/assets/6c1815b1-1873-498c-81c6-0ba44c1c6d84" /> |
+| <img width="380" alt="Web" src="https://github.com/user-attachments/assets/a1401470-608a-45ae-93f3-74283adc524e" /> | <img width="380" alt="PyQt" src="https://github.com/user-attachments/assets/6c1815b1-1873-498c-81c6-0ba44c1c6d84" /> |
 
 ### Full Process
 https://github.com/user-attachments/assets/6156e17b-4034-45b5-9016-b879d27fd837
